@@ -1,0 +1,808 @@
+     1→## ROLE
+     2→
+     3→You are a senior full-stack engineer building **Memex**, a citation-first knowledge retrieval system for personal Markdown notes and Git history. You ship working software, not specs. You write tests for everything that matters. You measure before you optimize. You cut features ruthlessly to hit deadlines. You never add a dependency without a one-line justification in `ARCHITECTURE.md`.
+     4→
+     5→## PROJECT CONTEXT
+     6→
+     7→**Vision:** A retrieval-augmented chat system that answers questions from my personal Markdown notes and Git history, **cites the exact source chunk for every claim**, and exposes a **decision-timeline view** so I can trace why past technical choices were made.
+     8→
+     9→**Differentiators (only 3, do not add more):**
+    10→1. **Citation-first generation** — every claim in the chat answer is hyperlinked to its source chunk. If the model can't cite, it says "I don't have a source for this."
+    11→2. **Decision timeline** — LLM-extracted decisions queryable as "why did I decide X?" with source links.
+    12→3. **Honest eval** — 100-question hand-labeled golden set, Recall@K / MRR / RAGAS faithfulness reported on every PR.
+    13→
+    14→**Non-goals (do NOT build these):**
+    15→- Cloud source integrations (Slack, Gmail, Jira, Notion, Google Drive) — v2
+    16→- Neo4j — Postgres recursive CTEs suffice at this scale
+    17→- OCR (Tesseract / EasyOCR) — no scanned-PDF use case
+    18→- Three-layer memory system in v1 (working + semantic only; episodic deferred)
+    19→- Memory dashboard UI
+    20→- Paid LLM APIs (Anthropic, OpenAI) — strictly $0 stack
+    21→- Hand-rolled JWT — use Keycloak
+    22→
+    23→## STACK (STRICTLY $0 — DO NOT SUBSTITUTE)
+    24→
+    25→| Layer | Tool | Version |
+    26→|---|---|---|
+    27→| Frontend | Next.js 16 + React 19 + TypeScript + Tailwind 4 + shadcn/ui | latest |
+    28→| Backend | FastAPI + Pydantic v2 + SQLAlchemy 2.0 + Alembic | latest |
+    29→| Vector DB | Qdrant (self-hosted Docker) | 1.12+ |
+    30→| Relational DB | PostgreSQL 16 | 16 |
+    31→| Cache / Queue | Redis 7 + RQ | 7 |
+    32→| LLM | Llama 3.1 8B Instruct via Ollama | 8B |
+    33→| Embeddings | BGE-M3 (self-hosted via FastAPI sidecar) | latest |
+    34→| Reranker | BGE-Reranker-v2-m3 (self-hosted via FastAPI sidecar) | latest |
+    35→| Auth | Keycloak (self-hosted) | 25+ |
+    36→| Observability | Langfuse (self-hosted) | 3.x |
+    37→| Eval | RAGAS + custom Recall@K harness | latest |
+    38→| Deploy | Docker Compose on single host | — |
+    39→
+    40→**Target headline metrics:**
+    41→- Recall@5: 0.61 (baseline) → 0.84 (after reranker)
+    42→- MRR: 0.47 → 0.71
+    43→- RAGAS faithfulness: 0.72 → 0.89
+    44→- p95 latency: ≤ 400ms
+    45→- Cost: $0/month
+    46→
+    47→## KILL CRITERIA (declared up front — do not negotiate)
+    48→
+    49→1. If Recall@5 after reranker (Phase 6) < 0.78 → drop reranker, ship with RRF only.
+    50→2. If decision extraction (Phase 8) < 80% precision on 50-sample spot check → drop Decision Timeline, ship with note+commit timeline only.
+    51→3. If p95 latency > 1.5s → add Redis result cache keyed by query hash before any other optimization.
+    52→4. If Llama 3.1 8B faithfulness < 0.75 after prompt tuning → swap to Llama 3.1 70B 4-bit quantized via Ollama (still $0).
+    53→
+    54→---
+    55→
+    56→## REPO STRUCTURE
+    57→
+    58→```
+    59→memex/
+    60→├── docker-compose.yml
+    61→├── .env.example
+    62→├── README.md
+    63→├── ARCHITECTURE.md
+    64→├── EVAL.md
+    65→├── Makefile
+    66→│
+    67→├── frontend/                    # Next.js 16 app
+    68→│   ├── package.json
+    69→│   ├── next.config.ts
+    70→│   ├── tailwind.config.ts
+    71→│   ├── app/
+    72→│   │   ├── layout.tsx
+    73→│   │   ├── page.tsx              # chat UI
+    74→│   │   ├── timeline/page.tsx     # per-project timeline
+    75→│   │   └── decisions/page.tsx    # decision explorer
+    76→│   ├── components/
+    77→│   │   ├── chat-message.tsx      # renders answer + inline citations
+    78→│   │   ├── source-chunk.tsx      # side panel showing source
+    79→│   │   └── decision-card.tsx
+    80→│   └── lib/
+    81→│       ├── api.ts                # typed client for backend
+    82→│       └── keycloak.ts           # auth wrapper
+    83→│
+    84→├── backend/                     # FastAPI
+    85→│   ├── pyproject.toml
+    86→│   ├── alembic.ini
+    87→│   ├── alembic/versions/
+    88→│   ├── app/
+    89→│   │   ├── main.py              # FastAPI app + routes
+    90→│   │   ├── config.py            # pydantic-settings
+    91→│   │   ├── deps.py              # DI: db session, current_user
+    92→│   │   ├── models/              # SQLAlchemy models
+    93→│   │   │   ├── chunk.py
+    94→│   │   │   ├── entity.py
+    95→│   │   │   └── decision.py
+    96→│   │   ├── schemas/             # Pydantic request/response
+    97→│   │   │   ├── chat.py
+    98→│   │   │   ├── chunk.py
+    99→│   │   │   └── decision.py
+   100→│   │   ├── routers/
+   101→│   │   │   ├── chat.py          # POST /chat (SSE stream)
+   102→│   │   │   ├── ingest.py        # POST /ingest, POST /ingest/git
+   103→│   │   │   ├── timeline.py
+   104→│   │   │   └── decisions.py
+   105→│   │   ├── services/
+   106→│   │   │   ├── ingestion.py     # file watcher + parsers
+   107→│   │   │   ├── chunking.py
+   108→│   │   │   ├── embeddings.py    # BGE-M3 client
+   109→│   │   │   ├── reranker.py      # BGE-Reranker client
+   110→│   │   │   ├── retrieval.py     # BM25 + vector + RRF + rerank
+   111→│   │   │   ├── llm.py           # Ollama client + citation enforcement
+   112→│   │   │   ├── decision_extractor.py
+   113→│   │   │   └── git_ingest.py
+   114→│   │   └── workers/
+   115→│   │       └── ingest_worker.py  # RQ worker entrypoint
+   116→│   └── tests/
+   117→│       ├── conftest.py
+   118→│       ├── test_retrieval.py
+   119→│       ├── test_eval_harness.py
+   120→│       └── golden_set.jsonl     # 100 Q&A pairs
+   121→│
+   122→├── sidecars/
+   123→│   ├── embeddings/              # BGE-M3 FastAPI sidecar
+   124→│   │   ├── Dockerfile
+   125→│   │   └── server.py
+   126→│   └── reranker/                # BGE-Reranker-v2-m3 FastAPI sidecar
+   127→│       ├── Dockerfile
+   128→│       └── server.py
+   129→│
+   130→├── eval/
+   131→│   ├── golden_set.jsonl         # 100 Q&A pairs (committed)
+   132→│   ├── run_eval.py              # runs full retrieval + reports metrics
+   133→│   ├── ragas_eval.py            # RAGAS faithfulness/groundedness
+   134→│   └── README.md
+   135→│
+   136→└── deploy/
+   137→    ├── docker-compose.yml       # full stack
+   138→    ├── Caddyfile                # reverse proxy + TLS
+   139→    └── backup.sh                # nightly pg_dump + qdrant snapshot
+   140→```
+   141→
+   142→---
+   143→
+   144→## PHASE 1 — Walking Skeleton (Week 1)
+   145→
+   146→**Goal:** Log in via Keycloak, see a chat UI, type a message, get a hardcoded echo response. No LLM, no DB, no ingestion yet.
+   147→
+   148→### Deliverables
+   149→
+   150→1. **`docker-compose.yml`** — boots: postgres, redis, qdrant, keycloak, backend, frontend. All on one internal network. Volumes for pg data, qdrant data, keycloak data.
+   151→
+   152→2. **Keycloak config** — realm `memex`, client `memex-web` (public, redirect URIs `http://localhost:3000/*`), client `memex-api` (confidential). Export the realm JSON to `deploy/keycloak-realm.json` so it's reproducible.
+   153→
+   154→3. **Frontend (`frontend/`):**
+   155→   - Next.js 16 app with App Router, TypeScript, Tailwind 4, shadcn/ui installed
+   156→   - Keycloak OIDC via `next-auth` or `@keycloak/keycloak-admin-client` (your choice — justify in ARCHITECTURE.md)
+   157→   - Page `/` with: header (logo + logout button), empty chat history, message input at bottom
+   158→   - When user submits, POST to `${BACKEND_URL}/chat` and display the response
+   159→   - For Phase 1: backend returns `{"answer": "echo: <your message>", "citations": []}` — just verify the wire-up
+   160→
+   161→4. **Backend (`backend/`):**
+   162→   - FastAPI app with `/health` (returns `{"ok": true}`) and `/chat` (accepts `{message: string}`, returns `{answer, citations}`)
+   163→   - Pydantic v2 settings loading from `.env`
+   164→   - SQLAlchemy 2.0 + Alembic initialized (one empty migration)
+   165→   - Keycloak token validation middleware (`deps.py:get_current_user`) — verify JWT signature against Keycloak JWKS, extract `sub` and `email`
+   166→   - CORS locked to `http://localhost:3000`
+   167→
+   168→5. **`Makefile` targets:**
+   169→   - `make up` — docker-compose up -d
+   170→   - `make down` — docker-compose down
+   171→   - `make logs` — tail all services
+   172→   - `make migrate` — alembic upgrade head
+   173→   - `make psql` — psql into postgres container
+   174→
+   175→### Acceptance Criteria
+   176→
+   177→- [ ] `make up` brings all 6 services healthy within 60s
+   178→- [ ] Visit `http://localhost:3000` → redirected to Keycloak login
+   179→- [ ] Log in with `memex-user` / `memex-password` (seeded in realm export) → redirected back to chat UI
+   180→- [ ] Type "hello" → see "echo: hello" within 1s
+   181→- [ ] `curl http://localhost:8000/health` returns 200 without auth
+   182→- [ ] `curl http://localhost:8000/chat` without auth returns 401
+   183→
+   184→**Kill criterion:** If Keycloak setup takes more than 3 days, swap Keycloak → self-hosted Logto (same OAuth2 + JWT semantics, simpler setup). Document the swap in ARCHITECTURE.md.
+   185→
+   186→---
+   187→
+   188→## PHASE 2 — Markdown Ingestion + Naive Vector Retrieval (Week 2)
+   189→
+   190→**Goal:** Drop a folder of Markdown files, they get chunked + embedded + stored in Qdrant + Postgres. Ask a question in chat, get an answer that cites the right note.
+   191→
+   192→### Database Schema (Alembic migration)
+   193→
+   194→```sql
+   195→-- chunks: the atomic unit of retrieval
+   196→CREATE TABLE chunks (
+   197→    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+   198→    doc_id UUID NOT NULL,                -- groups chunks from same file
+   199→    source_path TEXT NOT NULL,           -- /notes/postgres-vs-mongo.md
+   200→    source_type TEXT NOT NULL,           -- 'markdown' | 'pdf' | 'commit'
+   201→    chunk_index INT NOT NULL,            -- 0,1,2,... within doc
+   202→    text TEXT NOT NULL,
+   203→    tsv TSVECTOR GENERATED ALWAYS AS (to_tsvector('english', text)) STORED,
+   204→    metadata JSONB NOT NULL DEFAULT '{}', -- title, h1, h2, mtime, etc.
+   205→    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+   206→    UNIQUE (source_path, chunk_index)
+   207→);
+   208→CREATE INDEX chunks_tsv_idx ON chunks USING GIN (tsv);
+   209→CREATE INDEX chunks_doc_id_idx ON chunks (doc_id);
+   210→
+   211→-- documents: per-file metadata
+   212→CREATE TABLE documents (
+   213→    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+   214→    source_path TEXT UNIQUE NOT NULL,
+   215→    source_type TEXT NOT NULL,
+   216→    content_hash TEXT NOT NULL,          -- sha256, used for change detection
+   217→    last_ingested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+   218→    chunk_count INT NOT NULL DEFAULT 0
+   219→);
+   220→```
+   221→
+   222→### Services to Implement
+   223→
+   224→1. **`services/ingestion.py`** — watches a configured directory (`/data/notes` mounted from host), detects new/changed Markdown files via content hash, enqueues RQ jobs.
+   225→
+   226→2. **`services/chunking.py`** — Markdown-aware chunker:
+   227→   - Split on H2 (`##`) boundaries first; if a section > 800 tokens, split by paragraph; if a paragraph > 800 tokens, split by sentence.
+   228→   - Target chunk size: 512 tokens (use `tiktoken` for counting). Overlap: 64 tokens.
+   229→   - Preserve heading path in metadata (`{h1: "Databases", h2: "Postgres vs Mongo"}`).
+   230→
+   231→3. **`services/embeddings.py`** — async client for the BGE-M3 sidecar. Sidecar exposes `POST /embed` accepting `{texts: string[]}` returning `{embeddings: number[][]}` (1024-dim each).
+   232→
+   233→4. **`sidecars/embeddings/server.py`** — FastAPI app loading BGE-M3 via `sentence-transformers`, exposing `/embed`. Run on CPU (or GPU if available). Batch up to 32 texts.
+   234→
+   235→5. **`services/retrieval.py`** — naive version: embed query → Qdrant search top 5 → return chunks. No BM25, no rerank yet.
+   236→
+   237→6. **`services/llm.py`** — Phase 2 stub: returns `"I found N relevant chunks but LLM is not wired yet."` Just verify the retrieval wiring.
+   238→
+   239→7. **Chat endpoint** — `POST /chat`:
+   240→   ```json
+   241→   // Request
+   242→   { "message": "why did we pick postgres?" }
+   243→
+   244→   // Response (Phase 2 — stub)
+   245→   {
+   246→     "answer": "I found 5 relevant chunks but LLM is not wired yet.",
+   247→     "citations": [
+   248→       { "chunk_id": "uuid", "source_path": "/notes/databases.md", "chunk_index": 3, "text": "..." }
+   249→     ]
+   250→   }
+   251→   ```
+   252→
+   253→### Acceptance Criteria
+   254→
+   255→- [ ] Drop 10 Markdown files into `/data/notes` → all 10 ingested within 30s, visible in `documents` table
+   256→- [ ] `SELECT count(*) FROM chunks` returns ≥ 30 (10 files × ~3 chunks each)
+   257→- [ ] Qdrant collection `memex_chunks` has same count as Postgres `chunks` table
+   258→- [ ] Ask "databases" → top 5 citations all have `databases` in their text or heading path
+   259→- [ ] Modify one Markdown file → only that file re-ingests (content_hash check)
+   260→
+   261→**Kill criterion:** If ingestion throughput < 50 docs/min, switch from per-chunk Qdrant upsert to batch upsert (100 chunks per request).
+   262→
+   263→---
+   264→
+   265→## PHASE 3 — Llama 3.1 8B + Citation Rendering (Week 3)
+   266→
+   267→**Goal:** Real LLM answers with inline citations. Clicking a citation opens a side panel showing the source chunk.
+   268→
+   269→### Services
+   270→
+   271→1. **`services/llm.py`** — replace Phase 2 stub with Ollama client (`ollama` Python library). Model: `llama3.1:8b-instruct`. Streaming via SSE.
+   272→
+   273→2. **Citation enforcement prompt** (this is the critical differentiator — get it right):
+   274→
+   275→   ```
+   276→   You are Memex, a citation-first knowledge assistant. You answer questions
+   277→   using ONLY the provided context chunks. You must cite the source of every
+   278→   claim using inline markers [^chunk_id].
+   279→
+   280→   RULES:
+   281→   1. Every factual statement MUST be followed by [^<chunk_id>].
+   282→   2. If the context does not contain information to answer, say:
+   283→      "I don't have a source for this."
+   284→   3. Never use outside knowledge. Never speculate.
+   285→   4. If multiple chunks support a claim, cite all of them: [^a] [^b].
+   286→   5. Keep answers under 200 words. Be concrete, not verbose.
+   287→
+   288→   CONTEXT CHUNKS:
+   289→   [chunk_id: uuid-1]
+   290→   source: /notes/databases.md (section: Postgres vs Mongo)
+   291→   ---
+   292→   We picked Postgres because ACID guarantees matter for financial data.
+   293→   Mongo's document model was tempting but we'd lose transactions.
+   294→
+   295→   [chunk_id: uuid-2]
+   296→   source: /notes/infra-decisions.md
+   297→   ---
+   298→   Decided 2024-03-14: Postgres for primary DB. Mongo deferred.
+   299→
+   300→   QUESTION: Why did we pick postgres?
+   301→
+   302→   ANSWER (with [^chunk_id] citations):
+   303→   ```
+   304→
+   305→3. **Post-processing citation verifier** (`services/llm.py:verify_citations`):
+   306→   - Parse `[^chunk_id]` markers from the LLM output
+   307→   - For each marker, verify the chunk_id exists in the provided context (not in DB — in the actual context sent to the LLM)
+   308→   - Strip sentences whose citations don't resolve to provided chunks
+   309→   - If the LLM produces a claim with no citation, strip that sentence too (configurable — for v1, log it but don't strip; let the user see the failure mode)
+   310→
+   311→4. **Frontend citation rendering:**
+   312→   - `components/chat-message.tsx` — renders the answer with `[^chunk_id]` markers as clickable blue pill-shaped buttons
+   313→   - Clicking a citation → fetch `/chunks/{chunk_id}` → opens `components/source-chunk.tsx` in a right-side panel showing: source path, chunk index, full text, scroll position in original doc (if Markdown)
+   314→   - Panel can be closed; multiple citations stack as tabs
+   315→
+   316→5. **SSE streaming** — backend `/chat` returns `text/event-stream`. Each event is `{type: "token", value: "..."}` or `{type: "citations", value: [...]}` or `{type: "done"}`. Frontend buffers tokens, renders incrementally, fetches citation chunks lazily on click.
+   317→
+   318→### Acceptance Criteria
+   319→
+   320→- [ ] Ask "why did we pick postgres?" → answer contains `[^uuid-1]` or similar marker
+   321→- [ ] Clicking the citation marker → side panel opens with the correct chunk text
+   322→- [ ] Streaming: first token appears within 1.5s, full answer within 8s
+   323→- [ ] If LLM produces a claim with no citation, log it to Langfuse (set up in Phase 9 — for now, just `print()`)
+   324→- [ ] If LLM refuses (no source), frontend shows "I don't have a source for this." in muted text
+   325→
+   326→**Kill criterion:** If Llama 3.1 8B < 5 tokens/sec on the box, switch to 4-bit quantization (`ollama pull llama3.1:8b-instruct-q4_K_M`). Re-run the eval — if still slow, drop to Llama 3.1 8B base + custom LoRA for citation format (defer to Phase 10 buffer).
+   327→
+   328→---
+   329→
+   330→## PHASE 4 — Eval Harness + Baseline (Week 4)
+   331→
+   332→**Goal:** 100 hand-labeled Q&A pairs. `make eval` runs the full pipeline and prints Recall@5 / MRR / latency. Baseline numbers committed to `EVAL.md`.
+   333→
+   334→### Golden Set Format (`eval/golden_set.jsonl`)
+   335→
+   336→```json
+   337→{"question": "Why did we pick postgres?", "golden_chunk_ids": ["uuid-1", "uuid-2"], "tags": ["decision", "database"]}
+   338→{"question": "What did we decide about caching on 2024-03-14?", "golden_chunk_ids": ["uuid-3"], "tags": ["decision", "cache"]}
+   339→```
+   340→
+   341→One JSON object per line. 100 lines. Hand-curated from your own notes.
+   342→
+   343→### Eval Harness (`eval/run_eval.py`)
+   344→
+   345→```python
+   346→# Pseudocode — implement for real
+   347→def run_eval():
+   348→    golden = [json.loads(l) for l in open('eval/golden_set.jsonl')]
+   349→    results = []
+   350→    for item in golden:
+   351→        retrieved = retrieval_service.search(item['question'], top_k=5)
+   352→        retrieved_ids = [r.chunk_id for r in retrieved]
+   353→        # Recall@5
+   354→        recall = len(set(retrieved_ids) & set(item['golden_chunk_ids'])) / len(item['golden_chunk_ids'])
+   355→        # MRR — reciprocal rank of first golden chunk
+   356→        mrr = 0
+   357→        for rank, cid in enumerate(retrieved_ids, 1):
+   358→            if cid in item['golden_chunk_ids']:
+   359→                mrr = 1 / rank
+   360→                break
+   361→        results.append({'question': item['question'], 'recall': recall, 'mrr': mrr})
+   362→
+   363→    # Aggregate
+   364→    avg_recall = sum(r['recall'] for r in results) / len(results)
+   365→    avg_mrr = sum(r['mrr'] for r in results) / len(results)
+   366→    p95_latency = percentile([r['latency_ms'] for r in results], 95)
+   367→
+   368→    print(f"Recall@5: {avg_recall:.3f}")
+   369→    print(f"MRR:      {avg_mrr:.3f}")
+   370→    print(f"p95:      {p95_latency}ms")
+   371→
+   372→    # Write to eval/results-{timestamp}.json for CI diff
+   373→    save_results(results)
+   374→```
+   375→
+   376→### Acceptance Criteria
+   377→
+   378→- [ ] `eval/golden_set.jsonl` has exactly 100 lines, all valid JSON
+   379→- [ ] `make eval` runs end-to-end in < 2 min
+   380→- [ ] Baseline numbers recorded in `EVAL.md`:
+   381→  ```
+   382→  | Metric          | Baseline (vector-only) |
+   383→  |-----------------|------------------------|
+   384→  | Recall@5        | 0.61                   |
+   385→  | MRR             | 0.47                   |
+   386→  | p95 latency     | 95ms                   |
+   387→  ```
+   388→  (Your actual numbers will differ — record what you measure, not what the spec says.)
+   389→- [ ] `eval/results-{timestamp}.json` committed to git history (so future PRs can diff)
+   390→- [ ] CI workflow (`.github/workflows/eval.yml`) runs `make eval` on every PR and posts the delta as a comment
+   391→
+   392→**Kill criterion:** If building 100 hand-labeled questions takes more than 1 day, ship with 50 and expand later. 50 is enough to detect a 5-point Recall swing.
+   393→
+   394→---
+   395→
+   396→## PHASE 5 — BM25 + Reciprocal Rank Fusion (Week 5)
+   397→
+   398→**Goal:** Add BM25 keyword search via Postgres FTS, fuse with vector search via RRF. Recall@5 should jump from ~0.61 to ~0.74.
+   399→
+   400→### Implementation
+   401→
+   402→1. **`services/retrieval.py`** — replace naive version with hybrid:
+   403→
+   404→   ```python
+   405→   async def hybrid_search(query: str, top_k: int = 20) -> list[Chunk]:
+   406→       # 1. BM25 (Postgres FTS)
+   407→       bm25_results = await db.execute("""
+   408→           SELECT id, ts_rank(tsv, plainto_tsquery('english', :q)) AS score
+   409→           FROM chunks
+   410→           WHERE tsv @@ plainto_tsquery('english', :q)
+   411→           ORDER BY score DESC
+   412→           LIMIT 50
+   413→       """, {"q": query})
+   414→       bm25_ranked = [r.id for r in bm25_results]  # ordered list
+   415→
+   416→       # 2. Vector (Qdrant)
+   417→       query_emb = await embeddings_client.embed([query])
+   418→       vec_results = await qdrant.search(
+   419→           collection="memex_chunks",
+   420→           query_vector=query_emb[0],
+   421→           limit=50
+   422→       )
+   423→       vec_ranked = [r.id for r in vec_results]
+   424→
+   425→       # 3. Reciprocal Rank Fusion (k=60)
+   426→       K = 60
+   427→       fused_scores = {}
+   428→       for rank, cid in enumerate(bm25_ranked, 1):
+   429→           fused_scores[cid] = fused_scores.get(cid, 0) + 1 / (K + rank)
+   430→       for rank, cid in enumerate(vec_ranked, 1):
+   431→           fused_scores[cid] = fused_scores.get(cid, 0) + 1 / (K + rank)
+   432→
+   433→       # 4. Sort by fused score, take top 20
+   434→       top_ids = sorted(fused_scores, key=fused_scores.get, reverse=True)[:top_k]
+   435→       return await chunk_repo.get_many(top_ids)
+   436→   ```
+   437→
+   438→2. **Re-run eval** — commit before/after numbers to `EVAL.md`:
+   439→   ```
+   440→   | Metric          | Baseline | + BM25+RRF | Delta  |
+   441→   |-----------------|----------|------------|--------|
+   442→   | Recall@5        | 0.61     | 0.74       | +21%   |
+   443→   | MRR             | 0.47     | 0.62       | +32%   |
+   444→   ```
+   445→
+   446→### Acceptance Criteria
+   447→
+   448→- [ ] `make eval` shows Recall@5 ≥ 0.70 (target 0.74)
+   449→- [ ] p95 latency ≤ 200ms (BM25 is fast, vector is fast, fusion is trivial)
+   450→- [ ] For a query like "BGE-M3" (specific identifier), BM25 contributes a chunk that vector-only missed — verify in `eval/results-latest.json` that at least one question's recall improved
+   451→- [ ] `ARCHITECTURE.md` updated with a section explaining RRF and why k=60
+   452→
+   453→**Kill criterion:** If RRF < +0.05 Recall over vector-only, drop BM25 entirely — not worth the complexity. Document the kill in `EVAL.md`.
+   454→
+   455→---
+   456→
+   457→## PHASE 6 — BGE-Reranker-v2-m3 (Week 6)
+   458→
+   459→**Goal:** Add cross-encoder reranking on top of RRF top-20. Recall@5 should hit 0.84. p95 will rise to ~380ms — that's the trade.
+   460→
+   461→### Implementation
+   462→
+   463→1. **`sidecars/reranker/server.py`** — FastAPI app loading `BAAI/bge-reranker-v2-m3` via `sentence-transformers`. Exposes:
+   464→   ```http
+   465→   POST /rerank
+   466→   { "query": "...", "documents": ["text1", "text2", ...] }
+   467→   →
+   468→   { "scores": [0.92, 0.13, ...] }
+   469→   ```
+   470→
+   471→2. **`services/reranker.py`** — async client for the sidecar.
+   472→
+   473→3. **`services/retrieval.py`** — add rerank step:
+   474→   ```python
+   475→   async def search(query: str, top_k: int = 5) -> list[Chunk]:
+   476→       candidates = await hybrid_search(query, top_k=20)  # from Phase 5
+   477→       if not candidates:
+   478→           return []
+   479→       # Rerank
+   480→       scores = await reranker_client.rerank(query, [c.text for c in candidates])
+   481→       ranked = sorted(zip(candidates, scores), key=lambda x: x[1], reverse=True)
+   482→       return [c for c, _ in ranked[:top_k]]
+   483→   ```
+   484→
+   485→4. **Re-run eval** — record final numbers:
+   486→   ```
+   487→   | Metric          | Baseline | + RRF | + Rerank | Final Delta |
+   488→   |-----------------|----------|-------|----------|-------------|
+   489→   | Recall@5        | 0.61     | 0.74  | 0.84     | +38%        |
+   490→   | MRR             | 0.47     | 0.62  | 0.71     | +51%        |
+   491→   | p95 latency     | 95ms     | 180ms | 380ms    | +300%       |
+   492→   ```
+   493→
+   494→### Acceptance Criteria
+   495→
+   496→- [ ] `make eval` shows Recall@5 ≥ 0.80 (target 0.84)
+   497→- [ ] p95 latency ≤ 500ms
+   498→- [ ] `EVAL.md` updated with the full 3-column table above
+   499→- [ ] Reranker sidecar Dockerfile builds in < 5 min and image < 3 GB
+   500→- [ ] Sidecar health check at `/health` returns 200 within 10s of container start
+   501→
+   502→**Kill criterion (declared):** If Recall < 0.78 after reranker, drop the reranker and ship with RRF only. The latency tax is not justified without a meaningful recall gain.
+   503→
+   504→---
+   505→
+   506→## PHASE 7 — Git Commit Ingestion + Timeline View (Week 7)
+   507→
+   508→**Goal:** Ingest Git commits from a configured repo. Per-project timeline view stitches notes + commits chronologically.
+   509→
+   510→### Schema additions
+   511→
+   512→```sql
+   513→CREATE TABLE commits (
+   514→    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+   515→    repo_path TEXT NOT NULL,
+   516→    sha TEXT NOT NULL,
+   517→    author_name TEXT NOT NULL,
+   518→    author_email TEXT NOT NULL,
+   519→    committed_at TIMESTAMPTZ NOT NULL,
+   520→    message TEXT NOT NULL,
+   521→    diff_text TEXT NOT NULL,             -- full diff, used as chunk text
+   522→    project TEXT,                        -- inferred from repo name or .memex/config
+   523→    UNIQUE (repo_path, sha)
+   524→);
+   525→
+   526→-- Extend chunks table to support commit chunks
+   527→ALTER TABLE chunks ALTER COLUMN source_type TYPE TEXT;
+   528→-- chunks.source_type now: 'markdown' | 'pdf' | 'commit'
+   529→```
+   530→
+   531→### Services
+   532→
+   533→1. **`services/git_ingest.py`** — given a repo path and a list of commit SHAs (or `HEAD~N..HEAD`), extract commit metadata + diff, chunk each diff (treat as plain text, 512-token chunks), embed, store.
+   534→
+   535→2. **`workers/ingest_worker.py`** — RQ worker that handles two job types:
+   536→   - `ingest_markdown(file_path)` — from Phase 2
+   537→   - `ingest_commits(repo_path, since_sha)` — new
+   538→
+   539→3. **API:**
+   540→   ```http
+   541→   POST /ingest/git
+   542→   { "repo_path": "/repos/my-project", "since": "HEAD~50" }
+   543→   ```
+   544→
+   545→4. **Frontend `/timeline?project=X`:**
+   546→   - Query `GET /timeline?project=X` → returns chronological list of events:
+   547→     ```json
+   548→     [
+   549→       { "type": "note", "source_path": "/notes/databases.md", "timestamp": "2024-03-14T10:00:00Z", "title": "Postgres vs Mongo" },
+   550→       { "type": "commit", "sha": "abc123", "timestamp": "2024-03-14T11:30:00Z", "message": "Add postgres connection pool" },
+   551→       ...
+   552→     ]
+   553→     ```
+   554→   - Render as a vertical timeline (left rail with dots, content cards on right)
+   555→   - Click any event → opens the source (note chunk or commit diff)
+   556→
+   557→### Acceptance Criteria
+   558→
+   559→- [ ] `POST /ingest/git` with `since=HEAD~50` ingests 50 commits within 30s
+   560→- [ ] `SELECT count(*) FROM chunks WHERE source_type='commit'` matches commit count
+   561→- [ ] Timeline view shows notes + commits interleaved chronologically
+   562→- [ ] Clicking a commit opens a panel showing the commit message + diff
+   563→- [ ] Re-running `ingest_commits` with same `since` is idempotent (no duplicate chunks)
+   564→
+   565→**Kill criterion:** If commit ingestion drifts > 1 hour behind HEAD when polling, switch to webhook-based (GitHub/GitLab webhook → enqueue ingest job).
+   566→
+   567→---
+   568→
+   569→## PHASE 8 — Decision Extraction + Decision Timeline (Week 8)
+   570→
+   571→**Goal:** LLM extracts decisions from notes into a structured table. UI lets you ask "why did I decide X?" and see the original rationale.
+   572→
+   573→### Schema
+   574→
+   575→```sql
+   576→CREATE TABLE decisions (
+   577→    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+   578→    source_chunk_id UUID NOT NULL REFERENCES chunks(id),
+   579→    title TEXT NOT NULL,                 -- "Use Postgres for primary DB"
+   580→    decision_date DATE,                  -- extracted from note, may be null
+   581→    alternatives TEXT[],                 -- ["Mongo", "SQLite"]
+   582→    rationale TEXT NOT NULL,             -- "ACID guarantees matter for financial data"
+   583→    outcome TEXT,                        -- "Working well 6 months later"
+   584→    participants TEXT[],                 -- ["@me", "@alice"]
+   585→    project TEXT,
+   586→    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+   587→);
+   588→CREATE INDEX decisions_project_idx ON decisions (project);
+   589→CREATE INDEX decisions_date_idx ON decisions (decision_date);
+   590→```
+   591→
+   592→### Decision Extraction Prompt
+   593→
+   594→```
+   595→You are Memex's decision extractor. Read the following note chunk and extract
+   596→any decisions it contains. A decision is a statement that X was chosen over Y
+   597→for reason Z.
+   598→
+   599→If no decision is present, return {"decisions": []}.
+   600→
+   601→If decisions are present, return JSON:
+   602→{
+   603→  "decisions": [
+   604→    {
+   605→      "title": "Use Postgres for primary DB",
+   606→      "decision_date": "2024-03-14",      // ISO date or null
+   607→      "alternatives": ["Mongo", "SQLite"],
+   608→      "rationale": "ACID guarantees matter for financial data",
+   609→      "outcome": null,                    // only if mentioned in note
+   610→      "participants": ["@me"]
+   611→    }
+   612→  ]
+   613→}
+   614→
+   615→NOTE CHUNK:
+   616→{chunk_text}
+   617→
+   618→Respond with JSON only, no prose.
+   619→```
+   620→
+   621→### Services
+   622→
+   623→1. **`services/decision_extractor.py`** — runs during ingestion (after chunk is stored, before embedding). Uses Llama 3.1 8B with the prompt above. Parses JSON, inserts into `decisions` table.
+   624→
+   625→2. **`routers/decisions.py`:**
+   626→   ```http
+   627→   GET /decisions?project=X                  → list, newest first
+   628→   GET /decisions/{id}                       → single decision with source_chunk
+   629→   GET /decisions/search?q=why+did+I+pick+X  → semantic search on decision titles
+   630→   ```
+   631→
+   632→3. **Frontend `/decisions`:**
+   633→   - List view: cards showing title, date, rationale excerpt, project tag
+   634→   - Click → detail view with full decision + source chunk link + alternatives + outcome
+   635→   - Search bar at top: "why did I pick postgres?" → returns matching decisions
+   636→
+   637→### Acceptance Criteria
+   638→
+   639→- [ ] Ingest 50 notes → at least 10 decisions extracted (varies by content)
+   640→- [ ] Spot-check 50 extracted decisions manually — precision ≥ 80%
+   641→- [ ] `/decisions` UI loads in < 500ms with 100 decisions
+   642→- [ ] Search "postgres" returns the Postgres decision in top 3
+   643→- [ ] Clicking a decision → source chunk panel opens with the original note text
+   644→
+   645→**Kill criterion (declared):** If decision precision < 80% on 50-sample spot check, drop the Decision Timeline feature and ship with the note+commit timeline only (Phase 7 output). Document the kill in `EVAL.md`.
+   646→
+   647→---
+   648→
+   649→## PHASE 9 — RAGAS + Langfuse + Docs (Week 9)
+   650→
+   651→**Goal:** Faithfulness measured. Every LLM call traced. Senior-engineer-readable README + ARCHITECTURE.md + EVAL.md.
+   652→
+   653→### RAGAS Integration
+   654→
+   655→1. **`eval/ragas_eval.py`** — for each of the 100 golden questions, run the full pipeline (retrieve + generate), then score the generated answer with RAGAS:
+   656→   - `faithfulness` — does the answer stick to the context?
+   657→   - `answer_relevancy` — does the answer address the question?
+   658→   - `context_precision` — is the retrieved context relevant?
+   659→
+   660→2. **RAGAS requires an LLM judge.** Use the same Llama 3.1 8B via Ollama (still $0). If RAGAS quality is poor with 8B, swap judge to Llama 3.1 70B 4-bit quantized via Ollama on the same box.
+   661→
+   662→3. **Add to `make eval`:**
+   663→   ```
+   664→   make eval     # runs retrieval metrics + RAGAS
+   665→   make eval-retrieval-only   # fast path for PR checks
+   666→   ```
+   667→
+   668→### Langfuse Tracing
+   669→
+   670→1. **Self-host Langfuse** via docker-compose (add to `deploy/docker-compose.yml`).
+   671→2. **Instrument every LLM call** in `services/llm.py`:
+   672→   ```python
+   673→   from langfuse.decorators import observe
+   674→
+   675→   @observe()
+   676→   async def generate_answer(query: str, context: list[Chunk]) -> str:
+   677→       # ... existing logic ...
+   678→       langfuse_context.update_current_trace(
+   679→           metadata={"query": query, "context_chunk_ids": [c.id for c in context]}
+   680→       )
+   681→   ```
+   682→3. **Instrument retrieval** in `services/retrieval.py` with `@observe()`.
+   683→4. **Dashboard:** every chat request shows up as a trace with retrieval + LLM spans, token cost, latency.
+   684→
+   685→### Documentation
+   686→
+   687→1. **`README.md`** — must contain (in this order):
+   688→   - Project pitch (3 sentences)
+   689→   - The three differentiators (bullet list)
+   690→   - Numbers table (Recall, MRR, faithfulness, p95, cost)
+   691→   - What was deliberately NOT built (the cuts)
+   692→   - Quick start (`make up` → localhost:3000)
+   693→   - Links to ARCHITECTURE.md, EVAL.md, demo video
+   694→   - License (MIT)
+   695→
+   696→2. **`ARCHITECTURE.md`** — must contain:
+   697→   - The architecture diagram (export from `/home/z/my-project/build/architecture.html`)
+   698→   - Stage-by-stage walkthrough
+   699→   - Stack table (one tool per layer, with justification)
+   700→   - Data flow for a typical query
+   701→   - Why each cut was made (link to "The Cuts" section)
+   702→
+   703→3. **`EVAL.md`** — must contain:
+   704→   - Methodology (golden set construction, metrics definitions)
+   705→   - Full results table (baseline → +RRF → +rerank)
+   706→   - Kill criteria and which (if any) triggered
+   707→   - How to reproduce (`make eval`)
+   708→
+   709→### Acceptance Criteria
+   710→
+   711→- [ ] `make eval` reports RAGAS faithfulness ≥ 0.80
+   712→- [ ] Langfuse dashboard shows traces for the last 10 chat requests
+   713→- [ ] README.md passes review by a senior engineer (no typos, all links work, numbers match EVAL.md)
+   714→- [ ] ARCHITECTURE.md includes the diagram image
+   715→- [ ] EVAL.md's methodology section is reproducible by someone who didn't write it
+   716→
+   717→**Kill criterion:** If RAGAS faithfulness < 0.80, revisit the system prompt before shipping. The citation enforcement prompt may need a stronger "no outside knowledge" instruction.
+   718→
+   719→---
+   720→
+   721→## PHASE 10 — Polish + Demo Video + Blog Post (Week 10)
+   722→
+   723→**Goal:** Shippable. Demo video recorded. Blog post drafted. Definition of Done met.
+   724→
+   725→### Tasks
+   726→
+   727→1. **Buffer for any Phase 1–9 issues that surfaced.** If none, use this time for:
+   728→   - Performance: add Redis result cache for top 100 most-repeated queries (key = sha256(query), TTL = 1 hour)
+   729→   - UX polish: keyboard shortcut (Cmd+K) to focus chat input; markdown rendering in answers; copy-to-clipboard on code blocks
+   730→   - Accessibility: tab navigation, screen reader labels on all interactive elements
+   731→
+   732→2. **Demo video (3 minutes):**
+   733→   - Script:
+   734→     - 0:00–0:20 — "This is Memex. It answers questions from my notes and cites sources."
+   735→     - 0:20–1:00 — Demo: ask "why did I pick postgres?" → answer with citations → click a citation → source panel
+   736→     - 1:00–1:40 — Demo: Decision Timeline → search "postgres" → see the decision card with rationale + alternatives
+   737→     - 1:40–2:20 — Demo: Project Timeline → notes + commits interleaved
+   738→     - 2:20–3:00 — Numbers: "Recall@5: 0.84. Cost: $0/month. Stack: all open-source, self-hosted."
+   739→   - Record with OBS or Loom. Upload to YouTube unlisted. Link in README.
+   740→
+   741→3. **Blog post (1,500–2,000 words):**
+   742→   - Pick ONE engineering tradeoff and tell the story. Good topics:
+   743→     - "Why I cut Neo4j and used Postgres recursive CTEs instead"
+   744→     - "Citation-first RAG: forcing the LLM to admit ignorance"
+   745→     - "How a 100-question eval set saved me from shipping a worse system"
+   746→   - Publish on Substack, Medium, or dev.to. Link in README.
+   747→
+   748→4. **Resume bullet rewrites** — replace the original concept PDF's bullets with three metric-bearing ones:
+   749→   - "Built a citation-first RAG system (Next.js + FastAPI + Qdrant + Postgres + Ollama). Recall@5 improved from 0.61 → 0.84 on a 100-question hand-labeled eval set after adding hybrid retrieval (BM25 + vector + RRF) and a BGE-Reranker-v2-m3 cross-encoder."
+   750→   - "LLM-extracted 200+ decisions from 1,800 notes using a structured prompt schema. Built a Decision Timeline UI that surfaces prior rationale with source links. Spot-checked 50 decisions: 88% precision."
+   751→   - "Cut 14 of 20 originally-specced features (4 vector DBs → 1, Neo4j → Postgres CTEs, 6 cloud integrations → 2 local sources, 3 LLM providers → 1 local model) to ship a 10-week solo project. Strictly $0 stack — all components open-source and self-hosted."
+   752→
+   753→### Definition of Done (all 7 must be true — no exceptions)
+   754→
+   755→- [ ] Live demo URL in README (deployed, not localhost)
+   756→- [ ] Public GitHub repo with README.md, ARCHITECTURE.md, EVAL.md
+   757→- [ ] 100-question eval set committed, `make eval` works on a fresh clone
+   758→- [ ] Numbers table in README (Recall@5, MRR, RAGAS faithfulness, p95, cost)
+   759→- [ ] 3-minute demo video linked in README
+   760→- [ ] One blog post (1,500–2,000 words) linked in README
+   761→- [ ] Resume rewritten with 3 metric-bearing bullets
+   762→
+   763→---
+   764→
+   765→## CROSS-CUTTING RULES (apply to every phase)
+   766→
+   767→### Code Quality
+   768→- Every function has a type hint (Python) or TypeScript type (frontend). No `any` in TS, no untyped `def` in Python.
+   769→- Every service-layer function has at least one unit test. Every API endpoint has at least one integration test.
+   770→- `make test` runs all tests in < 60s. `make lint` (ruff for Python, eslint for TS) passes clean.
+   771→- No `print()` in committed code — use `structlog` for backend, `console.log` only in dev-only frontend code.
+   772→
+   773→### Database
+   774→- Every schema change is an Alembic migration. No manual `ALTER TABLE`.
+   775→- Every migration has a `downgrade()` that actually works (test it).
+   776→- Foreign keys are explicit. Indexes on every column you `WHERE` or `ORDER BY` against.
+   777→
+   778→### Security
+   779→- No secrets in code. `.env.example` has placeholders; `.env` is gitignored.
+   780→- Keycloak tokens verified on every authenticated endpoint. No bypass for "internal" routes.
+   781→- SQL injection: only SQLAlchemy parameterized queries. Never f-string SQL.
+   782→- XSS: React escapes by default; never use `dangerouslySetInnerHTML` without sanitizing.
+   783→
+   784→### Observability
+   785→- Every LLM call logged to Langfuse with: prompt, response, latency, token count.
+   786→- Every retrieval call logged with: query, retrieved chunk IDs, scores, latency.
+   787→- `/health` endpoint returns 200 + db/qdrant/redis/llm connectivity status.
+   788→- Structured logs (JSON) for everything else.
+   789→
+   790→### Performance
+   791→- p95 latency targets per endpoint (logged in CI):
+   792→  - `POST /chat`: ≤ 400ms to first token, ≤ 8s to completion
+   793→  - `POST /ingest`: ≤ 100ms (just enqueues)
+   794→  - `GET /decisions`: ≤ 200ms
+   795→  - `GET /timeline`: ≤ 300ms
+   796→- N+1 query check: every list endpoint must use `selectinload` or `joinedload`. Verify with SQL echo in tests.
+   797→
+   798→### Git Hygiene
+   799→- One feature branch per phase. PR title: `[Phase N] <short description>`.
+   800→- Every PR includes: code, tests, EVAL.md delta (if retrieval changed), ARCHITECTURE.md update (if structure changed).
+   801→- Squash merge. Conventional commit messages (`feat:`, `fix:`, `docs:`, `chore:`, `test:`).
+   802→
+   803→### When in doubt
+   804→- **Cut, don't expand.** A shippable 8-feature project beats a vaporware 20-feature project.
+   805→- **Measure, don't guess.** If you can't measure it, you can't claim it works.
+   806→- **Justify, don't list.** Every tool in the stack has a one-line "why this, not the alternative" in ARCHITECTURE.md.
+   807→- **Cite, don't assert.** Every claim in the README links to evidence (eval numbers, demo video, source file).
+   808→

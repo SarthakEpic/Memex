@@ -1,0 +1,153 @@
+// Memex — citation-first knowledge retrieval for personal Markdown notes
+// Adapted to sandbox stack: Next.js + Prisma/SQLite + z-ai-web-dev-sdk
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Notes & chunks (the atomic unit of retrieval)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Note {
+  id          String   @id @default(cuid())
+  title       String
+  content     String
+  sourcePath  String   @unique // e.g. /notes/databases.md
+  project     String   @default("general")
+  tags        String   @default("") // comma-separated
+  contentHash String   // sha256, used for change detection
+  chunkCount  Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  chunks    Chunk[]
+  decisions Decision[]
+
+  @@index([project])
+  @@index([createdAt])
+}
+
+model Chunk {
+  id           String   @id @default(cuid())
+  noteId       String
+  note         Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  chunkIndex   Int
+  text         String
+  headingPath  String   @default("") // e.g. "Databases > Postgres vs Mongo"
+  tokens       Int      @default(0)
+  // Precomputed term frequencies for BM25 (JSON map: {term: count})
+  termFreq     String   @default("{}")
+  createdAt    DateTime @default(now())
+
+  decisions Decision[]
+
+  @@unique([noteId, chunkIndex])
+  @@index([noteId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Decisions (LLM-extracted)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Decision {
+  id           String   @id @default(cuid())
+  noteId       String
+  note         Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
+  chunkId      String
+  chunk        Chunk    @relation(fields: [chunkId], references: [id], onDelete: Cascade)
+  title        String
+  decisionDate String   @default("") // ISO date or empty
+  rationale    String
+  alternatives String   @default("") // pipe-separated
+  outcome      String   @default("")
+  participants String   @default("") // pipe-separated
+  project      String   @default("general")
+  confidence   Float    @default(0.8) // 0..1 LLM self-reported
+  createdAt    DateTime @default(now())
+
+  @@index([project])
+  @@index([decisionDate])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Chat sessions & messages (with inline citations)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model ChatSession {
+  id        String   @id @default(cuid())
+  title     String   @default("New chat")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages ChatMessage[]
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String   // 'user' | 'assistant'
+  content   String
+  // JSON array of {chunkId, noteId, sourcePath, chunkIndex, snippet, score}
+  citations String   @default("[]")
+  createdAt DateTime @default(now())
+
+  @@index([sessionId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email integration (simulated SMTP — stored in DB with status pipeline)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Email {
+  id         String   @id @default(cuid())
+  toAddress  String
+  fromName   String   @default("Memex")
+  subject    String
+  bodyMarkdown String // markdown body
+  bodyHtml   String   @default("") // rendered html (computed on send)
+  status     String   @default("queued") // queued | sent | delivered | failed
+  sourceType String   @default("manual") // manual | chat | decision | note | digest
+  sourceId   String   @default("") // related entity id
+  errorMessage String @default("")
+  queuedAt   DateTime @default(now())
+  sentAt     DateTime?
+  deliveredAt DateTime?
+
+  @@index([status])
+  @@index([sourceType])
+  @@index([queuedAt])
+}
+
+model EmailTemplate {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  type      String   // digest | brief | snapshot | custom
+  subject   String
+  bodyMarkdown String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Profile — single demo user + email settings
+// ─────────────────────────────────────────────────────────────────────────────
+
+model Profile {
+  id            String   @id @default("me")
+  email         String   @default("you@memex.local")
+  name          String   @default("Memex User")
+  smtpHost      String   @default("smtp.memex.local")
+  smtpPort      Int      @default(587)
+  smtpUser      String   @default("")
+  dailyDigest   Boolean  @default(true)
+  digestHour    Int      @default(9) // hour of day for digest
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
