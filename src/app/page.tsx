@@ -10,9 +10,11 @@ import { Decisions } from "@/components/memex/decisions"
 import { Timeline } from "@/components/memex/timeline"
 import { Email } from "@/components/memex/email"
 import { Settings } from "@/components/memex/settings"
+import { Analytics } from "@/components/memex/analytics"
 import { SourcePanel } from "@/components/memex/source-panel"
 import { EmailComposer } from "@/components/memex/email-composer"
 import { CommandPalette } from "@/components/memex/command-palette"
+import { ShortcutsHelp } from "@/components/memex/shortcuts-help"
 import { useMemex } from "@/components/memex/store"
 
 export default function Home() {
@@ -49,6 +51,11 @@ export default function Home() {
           {section === "notes" && <Notes />}
           {section === "decisions" && <Decisions />}
           {section === "timeline" && <Timeline />}
+          {section === "analytics" && (
+            <div className="h-full overflow-y-auto thin-scroll">
+              <Analytics />
+            </div>
+          )}
           {section === "email" && <Email />}
           {section === "settings" && (
             <div className="h-full overflow-y-auto thin-scroll">
@@ -62,6 +69,7 @@ export default function Home() {
       <SourcePanel />
       <EmailComposer />
       <CommandPalette />
+      <ShortcutsHelp />
     </div>
   )
 }

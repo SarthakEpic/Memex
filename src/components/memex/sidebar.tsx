@@ -12,6 +12,7 @@ import {
   ScrollText,
   Command,
   Search,
+  BarChart3,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -26,6 +27,7 @@ const NAV: { id: Section; label: string; icon: React.ElementType; desc: string }
   { id: "notes", label: "Notes", icon: FileText, desc: "Markdown ingestion" },
   { id: "decisions", label: "Decisions", icon: Brain, desc: "Extracted rationale" },
   { id: "timeline", label: "Timeline", icon: ScrollText, desc: "Chronological view" },
+  { id: "analytics", label: "Analytics", icon: BarChart3, desc: "Citation insights" },
   { id: "email", label: "Email", icon: Mail, desc: "Outbox & digests" },
   { id: "settings", label: "Settings", icon: Settings, desc: "Profile & SMTP" },
 ]
@@ -133,7 +135,7 @@ export function Sidebar() {
           <Mail className="h-3.5 w-3.5 mr-1.5" />
           Compose email
         </Button>
-        <div className="text-[10px] text-muted-foreground text-center px-1">
+        <div className="flex items-center justify-between text-[10px] text-muted-foreground px-1">
           {stats ? (
             <span>
               {stats.counts.notes} notes · {stats.corpus.chunkCount} chunks ·{" "}
@@ -142,6 +144,13 @@ export function Sidebar() {
           ) : (
             <span>Loading…</span>
           )}
+          <button
+            onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "?" }))}
+            className="shrink-0 ml-2 inline-flex items-center justify-center h-5 w-5 rounded border border-border bg-muted hover:bg-accent transition-colors font-mono font-medium"
+            title="Keyboard shortcuts (?)"
+          >
+            ?
+          </button>
         </div>
       </div>
     </aside>

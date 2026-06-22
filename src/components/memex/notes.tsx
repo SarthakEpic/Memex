@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Card,
@@ -37,6 +37,7 @@ import {
   Sparkles,
   Link2,
   Globe,
+  Pencil,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -213,6 +214,7 @@ function NoteListItem({
 function NoteDetailPanel({ noteId }: { noteId: string }) {
   const qc = useQueryClient()
   const openEmail = useMemex((s) => s.openEmailComposer)
+  const [openEdit, setOpenEdit] = useState(false)
   const { data, isLoading } = useQuery<{ note: NoteDetail }>({
     queryKey: ["note", noteId],
     queryFn: async () => {
@@ -254,6 +256,7 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
   }
 
   return (
+    <>
     <ScrollArea className="h-full thin-scroll">
       <div className="p-4 sm:p-6 space-y-4 max-w-4xl memex-fade-up">
         {/* Header */}
@@ -266,6 +269,14 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
               </p>
             </div>
             <div className="flex gap-2 shrink-0">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setOpenEdit(true)}
+              >
+                <Pencil className="h-3.5 w-3.5 mr-1" />
+                Edit
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -401,6 +412,12 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
         )}
       </div>
     </ScrollArea>
+      <EditNoteDialog
+        open={openEdit}
+        onOpenChange={setOpenEdit}
+        note={note}
+      />
+    </>
   )
 }
 
@@ -688,3 +705,152 @@ function ImportUrlDialog({
     </Dialog>
   )
 }
+
+function EditNoteDialog({
+  open,
+  onOpenChange,
+  note,
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+  note: NoteDetail
+}) {
+  const qc = useQueryClient()
+  const [title, setTitle] = useState(note.title)
+  const [content, setContent] = useState(note.content)
+  const [project, setProject] = useState(note.project)
+  const [tags, setTags] = useState(note.tags.join(", "))
+  const [extract, setExtract] = useState(true)
+  const [saving, setSaving] = useState(false)
+
+  // Reset form when the note changes or dialog opens
+  useEffect(() => {
+    if (open) {
+      setTitle(note.title)
+      setContent(note.content)
+      setProject(note.project)
+      setTags(note.tags.join(", "))
+      setExtract(true)
+    }
+  }, [open, note.id])
+
+  const handleSave = async () => {
+    if (!content.trim()) {
+      toast.error("Content is required")
+      return
+    }
+    setSaving(true)
+    try {
+      const r = await fetch(`/api/notes/${note.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: title.trim() || undefined,
+          content,
+          project: project.trim() || "general",
+          tags: tags
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean),
+          extractDecisions: extract,
+        }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error)
+      toast.success(d.message || "Note updated")
+      onOpenChange(false)
+      qc.invalidateQueries({ queryKey: ["note", note.id] })
+      qc.invalidateQueries({ queryKey: ["notes"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+      qc.invalidateQueries({ queryKey: ["decisions"] })
+      qc.invalidateQueries({ queryKey: ["timeline"] })
+    } catch (e: any) {
+      toast.error(e.message || "Failed to update note")
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] flex flex-col gap-0 p-0">
+        <DialogHeader className="p-4 border-b border-border">
+          <DialogTitle className="text-base flex items-center gap-2">
+            <Pencil className="h-4 w-4 text-primary" />
+            Edit note
+          </DialogTitle>
+          <DialogDescription>
+            Editing re-chunks the content and re-extracts decisions. Old chunks
+            and decisions are replaced.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex-1 overflow-y-auto thin-scroll p-4 space-y-3">
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr] gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Title</Label>
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Project</Label>
+              <Input
+                value={project}
+                onChange={(e) => setProject(e.target.value)}
+                className="text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Tags (comma)</Label>
+              <Input
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                className="text-sm"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">Markdown content</Label>
+            <Textarea
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              className="text-sm font-mono min-h-[320px] resize-y"
+            />
+          </div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={extract}
+              onChange={(e) => setExtract(e.target.checked)}
+              className="rounded"
+            />
+            Re-extract decisions with LLM after saving (best-effort)
+          </label>
+        </div>
+
+        <DialogFooter className="p-4 border-t border-border">
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={handleSave} disabled={saving || !content.trim()}>
+            {saving ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                Saving…
+              </>
+            ) : (
+              <>
+                <Pencil className="h-4 w-4 mr-1" />
+                Save changes
+              </>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+

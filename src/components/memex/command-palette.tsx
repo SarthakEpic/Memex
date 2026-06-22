@@ -23,6 +23,7 @@ import {
   Plus,
   Clock,
   CornerDownLeft,
+  BarChart3,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { useQuery } from "@tanstack/react-query"
@@ -88,6 +89,7 @@ export function CommandPalette() {
     { id: "nav-notes", label: "Notes", hint: "Markdown ingestion", icon: FileText, group: "navigation", action: () => navTo("notes"), keywords: "documents markdown" },
     { id: "nav-decisions", label: "Decisions", hint: "Extracted rationale", icon: Brain, group: "navigation", action: () => navTo("decisions"), keywords: "why rationale alternatives" },
     { id: "nav-timeline", label: "Timeline", hint: "Chronological view", icon: ScrollText, group: "navigation", action: () => navTo("timeline"), keywords: "history chronological" },
+    { id: "nav-analytics", label: "Analytics", hint: "Citation insights", icon: BarChart3, group: "navigation", action: () => navTo("analytics"), keywords: "charts stats insights citations" },
     { id: "nav-email", label: "Email", hint: "Outbox & digests", icon: Mail, group: "navigation", action: () => navTo("email"), keywords: "inbox outbox smtp" },
     { id: "nav-settings", label: "Settings", hint: "Profile & SMTP", icon: Settings, group: "navigation", action: () => navTo("settings"), keywords: "profile smtp config" },
   ]

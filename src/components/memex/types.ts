@@ -7,6 +7,7 @@ export type Section =
   | "decisions"
   | "timeline"
   | "email"
+  | "analytics"
   | "settings"
 
 export interface NoteSummary {
@@ -180,5 +181,35 @@ export interface ChunkDetail {
       rationale: string
       decisionDate: string
     }[]
+  }
+}
+
+export interface AnalyticsData {
+  mostCitedChunks: {
+    chunkId: string
+    sourcePath: string
+    headingPath: string
+    chunkIndex: number
+    count: number
+  }[]
+  recentQuestions: {
+    question: string
+    timestamp: string
+  }[]
+  questionActivity: {
+    date: string
+    count: number
+  }[]
+  projectStats: {
+    project: string
+    notes: number
+    decisions: number
+  }[]
+  summary: {
+    totalQuestions: number
+    totalAnswers: number
+    totalCitations: number
+    avgCitationsPerAnswer: number
+    uniqueCitedChunks: number
   }
 }

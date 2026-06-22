@@ -141,3 +141,68 @@ Priority recommendations for next phase:
 - Add email scheduling (queue an email for delivery at a specific time).
 - Add a note content editor (currently notes can be added but not edited after ingestion).
 - Consider adding a simple analytics view showing chat question frequency / most-cited chunks.
+
+---
+Task ID: 8 (current cron round)
+Agent: main (cron webDevReview)
+Task: QA, note editor, keyboard shortcuts help, analytics view, styling polish
+
+Work Log:
+- QA sweep via agent-browser: all sections verified working (dashboard, chat, notes, decisions, timeline, email, analytics, settings). Tested chat with "Why did we pick postgres?" → LLM returned cited answer with [^chunkId] pills. No errors, no console warnings.
+- Retried decision extraction — still rate-limited (429). 5/8 decisions confirmed.
+
+- Feature: Note content editor.
+  - Created shared ingestion helper `src/lib/ingest.ts` (`reingestNote()`) to avoid code duplication between POST and PATCH — re-chunks + re-extracts decisions, deletes old chunks/decisions first.
+  - New API: `PATCH /api/notes/[id]` — accepts {title?, content?, project?, tags?, extractDecisions?}, merges with existing values, calls reingestNote.
+  - New UI: EditNoteDialog component with title/project/tags inputs + markdown content textarea + re-extract checkbox. Opens from "Edit" button in NoteDetailPanel header (next to Extract decisions). Form resets when dialog opens or note changes. On save, invalidates note/notes/stats/decisions/timeline queries.
+  - Tested: dialog opens with current values populated, save button disabled when content empty.
+
+- Feature: Keyboard shortcuts help modal.
+  - New component: `src/components/memex/shortcuts-help.tsx` — listens for "?" keypress (ignores when typing in inputs/textareas), shows a Dialog with categorized shortcuts (Global, Navigation, Chat, Theme) using styled <kbd> elements.
+  - Added "?" hint button to sidebar footer (next to stats text) that dispatches a synthetic keydown event.
+  - Wired into page.tsx as a global overlay.
+  - Tested: "?" opens dialog with all shortcuts listed, Esc closes.
+
+- Feature: Analytics view.
+  - New API: `GET /api/analytics` — computes: most-cited chunks (top 10 by citation frequency across all assistant messages), recent questions (last 10), question activity (14-day bar chart data), project stats (notes + decisions per project), summary stats (total questions/answers/citations, avg citations per answer, unique cited chunks).
+  - New UI: `src/components/memex/analytics.tsx` — 5 summary stat cards, most-cited chunks list with progress bars + clickable rows (opens source panel), 14-day question activity bar chart, project distribution with progress bars, recent questions list.
+  - Added "analytics" to Section type, sidebar NAV (BarChart3 icon, "Citation insights" desc), command palette nav items, and page.tsx routing.
+  - Tested: shows 6 questions, 6 answers, 10 citations, 1.7 avg/answer, 6 unique cited chunks. Most-cited chunk: database-selection.md #0 (3× cited). Bar chart renders 14-day activity.
+
+- Styling polish:
+  - Analytics summary cards: compact 5-column grid with accent-colored icons.
+  - Most-cited chunks: numbered rank circles, progress bars, hover-to-open-source interaction.
+  - Question activity: inline bar chart with hover tooltips showing count + date.
+  - Shortcuts help: styled <kbd> elements with border + muted background.
+  - Sidebar footer: "?" button with monospace font, hover state.
+  - EditNoteDialog: matches AddNoteDialog styling (bordered header/footer, scrollable body).
+
+Verification:
+- agent-browser tested all new features: Analytics section renders with real data, keyboard shortcuts (?) opens dialog, note Edit button opens editor with populated fields.
+- Lint clean. Dev log: all API routes 200 (including new /api/analytics, PATCH /api/notes/[id]).
+- No console errors or runtime errors.
+
+Stage Summary:
+- Note editor: users can now edit existing notes — content is re-chunked and decisions re-extracted automatically.
+- Keyboard shortcuts: "?" opens a help modal listing all available shortcuts with styled key indicators.
+- Analytics: a new dedicated section surfaces citation insights (most-cited chunks), question activity over 14 days, project distribution, and recent questions — making the "honest eval" differentiator more visible.
+- 22 API routes, 19 UI components, 6 lib modules.
+
+Current project status:
+- Memex is a fully functional citation-first knowledge retrieval system with 8 sections: dashboard, chat, notes (with edit + URL import + search), decisions (with related decisions), timeline, analytics (new), email, settings.
+- 8 notes, 36 chunks, 5 decisions, 2 emails, 4 chat sessions, 6 questions, 10 citations in DB.
+- Dark mode, command palette (Cmd+K), keyboard shortcuts (?), chat export, chat rename all functional.
+- Lint clean, no runtime errors.
+
+Unresolved issues / risks:
+- 3/8 notes still lack extracted decisions due to LLM 429 rate limits. Will retry in future cron runs.
+- No real embeddings (BM25 + LLM rerank used instead).
+- URL import depends on page_reader function which may hit rate limits.
+- Eval/RAGAS metrics not implemented (Python only in original spec).
+
+Priority recommendations for next phase:
+- Add email scheduling (queue an email for delivery at a specific time).
+- Add a note content preview that renders Markdown (currently shown as raw text in the detail panel).
+- Add a "copy citation" button on source chunks for easy referencing.
+- Consider adding a simple A/B comparison view for two chat answers.
+- Add export of analytics data as CSV/JSON.
