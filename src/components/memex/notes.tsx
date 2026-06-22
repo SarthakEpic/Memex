@@ -25,6 +25,12 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
   Plus,
   FileText,
   Trash2,
@@ -43,11 +49,15 @@ import {
   PinOff,
   Download,
   Clock3,
+  Mic,
+  FileUp,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
 import { MarkdownPreview } from "./markdown-preview"
 import { NoteToc } from "./note-toc"
+import { FileUploadDialog } from "./file-upload-dialog"
+import { AudioNoteDialog } from "./audio-note-dialog"
 import { useRecentSearches } from "./use-recent-searches"
 import type { NoteSummary, NoteDetail } from "./types"
 
@@ -56,11 +66,25 @@ export function Notes() {
   const [search, setSearch] = useState("")
   const [openAdd, setOpenAdd] = useState(false)
   const [openImport, setOpenImport] = useState(false)
+  const [openUpload, setOpenUpload] = useState(false)
+  const [openAudio, setOpenAudio] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [pinnedOnly, setPinnedOnly] = useState(false)
   const { recent, addSearch, clearSearches } = useRecentSearches("memex-note-searches")
+
+  // Listen for note updates from audio/file imports
+  useEffect(() => {
+    const handler = () => {
+      qc.invalidateQueries({ queryKey: ["notes"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+      qc.invalidateQueries({ queryKey: ["decisions"] })
+      qc.invalidateQueries({ queryKey: ["timeline"] })
+    }
+    window.addEventListener("memex-notes-updated", handler)
+    return () => window.removeEventListener("memex-notes-updated", handler)
+  }, [qc])
 
   const { data: notesData, isLoading } = useQuery<{ notes: NoteSummary[] }>({
     queryKey: ["notes"],
@@ -127,19 +151,32 @@ export function Notes() {
               >
                 <Download className="h-3.5 w-3.5" />
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => setOpenImport(true)}
-                title="Import from URL"
-              >
-                <Link2 className="h-3.5 w-3.5 mr-1" />
-                URL
-              </Button>
-              <Button size="sm" onClick={() => setOpenAdd(true)}>
-                <Plus className="h-3.5 w-3.5 mr-1" />
-                Add
-              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button size="sm">
+                    <Plus className="h-3.5 w-3.5 mr-1" />
+                    Add
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="w-52">
+                  <DropdownMenuItem onClick={() => setOpenAdd(true)} className="cursor-pointer">
+                    <Plus className="h-3.5 w-3.5 mr-2" />
+                    Write note manually
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setOpenImport(true)} className="cursor-pointer">
+                    <Link2 className="h-3.5 w-3.5 mr-2" />
+                    Import from URL
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setOpenUpload(true)} className="cursor-pointer">
+                    <FileUp className="h-3.5 w-3.5 mr-2" />
+                    Upload file (PDF/Word/PPT)
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setOpenAudio(true)} className="cursor-pointer">
+                    <Mic className="h-3.5 w-3.5 mr-2" />
+                    Audio to note (speak)
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
           <div className="relative">
@@ -276,6 +313,8 @@ export function Notes() {
 
       <AddNoteDialog open={openAdd} onOpenChange={setOpenAdd} />
       <ImportUrlDialog open={openImport} onOpenChange={setOpenImport} />
+      <FileUploadDialog open={openUpload} onOpenChange={setOpenUpload} />
+      <AudioNoteDialog open={openAudio} onOpenChange={setOpenAudio} />
     </div>
   )
 }
@@ -729,23 +768,22 @@ function AddNoteDialog({
         <DialogHeader className="p-4 border-b border-border">
           <DialogTitle className="text-base flex items-center gap-2">
             <FileText className="h-4 w-4 text-primary" />
-            Ingest a Markdown note
+            Write a Note
           </DialogTitle>
           <DialogDescription>
-            Content is chunked (H2 → paragraph → sentence, ~512 tokens each) and
-            indexed for citation-first retrieval. Decisions are extracted
-            automatically.
+            Write in Markdown. Use <code className="text-xs px-1 py-0.5 rounded bg-muted">## Section</code> headings
+            to organize your note. AI will auto-extract decisions.
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex-1 overflow-y-auto thin-scroll p-4 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_1fr] gap-3">
             <div className="space-y-1">
-              <Label className="text-xs">Title</Label>
+              <Label className="text-xs">Title <span className="text-muted-foreground">(optional)</span></Label>
               <Input
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
-                placeholder="Auto from # heading"
+                placeholder="Auto-detected from # heading"
                 className="text-sm"
               />
             </div>
@@ -767,6 +805,25 @@ function AddNoteDialog({
               />
             </div>
           </div>
+
+          {/* Quick start templates */}
+          <div className="flex flex-wrap gap-1.5">
+            <span className="text-[10px] text-muted-foreground self-center">Quick start:</span>
+            {[
+              { label: "Decision", text: "# \n\n## Context\n\n\n\n## Decision\n\n\n\n## Rationale\n\n\n\n## Alternatives Considered\n\n" },
+              { label: "Meeting", text: "# Meeting Notes\n\n**Date:** \n**Attendees:** \n\n## Agenda\n\n\n\n## Discussion\n\n\n\n## Action Items\n\n- [ ] \n" },
+              { label: "Blank", text: "" },
+            ].map((tpl) => (
+              <button
+                key={tpl.label}
+                onClick={() => { setContent(tpl.text); setSplitView(true) }}
+                className="text-[10px] px-2 py-0.5 rounded-full border border-border hover:border-primary/40 hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+              >
+                {tpl.label}
+              </button>
+            ))}
+          </div>
+
           <div className="space-y-1">
             <div className="flex items-center justify-between">
               <Label className="text-xs">Markdown content</Label>

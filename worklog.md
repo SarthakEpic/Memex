@@ -639,3 +639,55 @@ Priority recommendations for next phase:
 - Add a "daily email briefing" feature that summarizes the day's important emails.
 - Add real IMAP integration using a server-side mail library (imapflow or similar).
 - Add two-factor authentication for email account connections.
+
+---
+Task ID: 15 (current cron round)
+Agent: main (user-requested features)
+Task: Simplified note adding, file imports (PDF/Word/PPT), audio-to-note with Hindi/Hinglish
+
+Work Log:
+- Simplified Add Note dialog: renamed to "Write a Note", clearer description with ## heading hint, "(optional)" title label, quick start template buttons (Decision/Meeting/Blank) that auto-fill content and enable split view.
+- Unified "Add" dropdown menu replaces separate buttons — 4 options: Write manually, Import URL, Upload file, Audio to note.
+
+- Feature: File Upload (PDF/Word/PPT/TXT/MD).
+  - New API: `POST /api/notes/upload-file` — accepts base64-encoded file + fileName. Uses:
+    - `pdf-parse` for PDF text extraction
+    - `mammoth` for Word (.docx) text extraction
+    - `jszip` for PowerPoint (.pptx) — unzips, parses slide XML, extracts `<a:t>` text tags
+    - Direct UTF-8 read for TXT/MD
+  - `textToMarkdown()` converts plain text to structured Markdown: detects title from first line, groups paragraphs, detects potential headings.
+  - New UI: `FileUploadDialog` component with drag-and-drop area, supported format badges (PDF/DOCX/PPTX/TXT/MD), file size display, project/tags fields.
+  - Tested: dialog opens with all format badges, drag-and-drop area renders.
+
+- Feature: Audio to Note (voice recording → ASR → LLM structuring).
+  - New API: `POST /api/notes/audio` — accepts base64 audio + language hint. Pipeline:
+    1. ASR transcription via `zai.audio.asr.create({ file_base64 })` with retry
+    2. LLM structuring via `zai.chat.completions.create()` with special prompt that:
+       - Detects Hindi → outputs Hinglish (Hindi in Roman script)
+       - Cleans up filler words (um, uh)
+       - Adds # Title, ## sections, bullet points, bold
+       - Organizes logically (not just transcribes)
+       - Adds "> Voice note — transcribed and structured by AI" blockquote
+    3. Ingests structured content as a note (chunk + extract decisions)
+  - New UI: `AudioNoteDialog` component with:
+    - Language selector: Auto-detect / English / हिंदी (Hindi → Hinglish)
+    - Browser MediaRecorder API for audio recording
+    - Recording state: idle → recording (red mic with timer) → recorded → transcribing → done
+    - Live preview of structured note after processing
+    - Collapsible raw transcription view
+    - Microphone permission handling with error messages
+  - Tested: dialog opens with language selector, mic button, description.
+
+- Packages installed: pdf-parse, mammoth, jszip.
+- Listens for `memex-notes-updated` custom event to refresh queries when notes are added via audio/file.
+
+Verification:
+- agent-browser tested: Add dropdown shows all 4 options, Write dialog has quick start templates, Upload dialog shows format badges + drag area, Audio dialog shows language selector + mic button.
+- Lint clean. Dev log: all API routes 200.
+- No console errors.
+
+Stage Summary:
+- Note adding is now user-friendly with a unified dropdown menu and 4 import options.
+- File imports support PDF, Word, PowerPoint, TXT, and Markdown with automatic text extraction + Markdown structuring.
+- Audio-to-Note records voice in the browser, transcribes via ASR, and structures into clean Markdown with Hindi→Hinglish support.
+- 31 API routes, 23 UI components, 11 lib modules.
