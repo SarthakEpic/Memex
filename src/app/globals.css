@@ -190,3 +190,74 @@
 .memex-fade-up {
   animation: memex-fade-up 0.2s ease-out;
 }
+
+/* ── Shimmer for loading states ─────────────────────────────────────── */
+@keyframes memex-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.memex-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    var(--muted) 40%,
+    var(--accent) 50%,
+    var(--muted) 60%,
+    var(--muted) 100%
+  );
+  background-size: 200% 100%;
+  animation: memex-shimmer 1.6s ease-in-out infinite;
+}
+
+/* ── Card hover lift ────────────────────────────────────────────────── */
+.memex-lift {
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.memex-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px -2px rgb(0 0 0 / 0.08);
+}
+
+/* ── Focus ring polish ──────────────────────────────────────────────── */
+*:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* ── Prose tweaks for email HTML preview ────────────────────────────── */
+.prose-sm h1 { font-size: 1.25rem; font-weight: 600; margin: 0.5rem 0; }
+.prose-sm h2 { font-size: 1.1rem; font-weight: 600; margin: 0.5rem 0; }
+.prose-sm h3 { font-size: 1rem; font-weight: 600; margin: 0.4rem 0; }
+.prose-sm p { margin: 0.4rem 0; line-height: 1.6; }
+.prose-sm ul { margin: 0.4rem 0; padding-left: 1.2rem; list-style: disc; }
+.prose-sm li { margin: 0.15rem 0; }
+.prose-sm a { color: var(--primary); text-decoration: underline; text-underline-offset: 2px; }
+.prose-sm code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  background: var(--muted);
+}
+.prose-sm pre {
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: var(--muted);
+  overflow-x: auto;
+  font-size: 0.85em;
+}
+.prose-sm pre code { padding: 0; background: none; }
+.prose-sm blockquote {
+  border-left: 3px solid var(--border);
+  padding-left: 0.75rem;
+  margin: 0.5rem 0;
+  font-style: italic;
+  color: var(--muted-foreground);
+}
+.prose-sm hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 0.75rem 0;
+}

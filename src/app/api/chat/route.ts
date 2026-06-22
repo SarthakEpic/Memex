@@ -47,7 +47,7 @@ export async function POST(req: NextRequest) {
     .map((h) => ({ role: h.role as "user" | "assistant", content: h.content }))
 
   // Generate cited answer
-  const { answer, citedChunkIds, refused } = await generateCitedAnswer(
+  const { answer, citedChunkIds, refused, serviceError } = await generateCitedAnswer(
     message,
     chunks,
     historyClean
@@ -91,6 +91,7 @@ export async function POST(req: NextRequest) {
     citations,
     context,
     refused,
+    serviceError,
     retrievalCount: chunks.length,
   })
 }

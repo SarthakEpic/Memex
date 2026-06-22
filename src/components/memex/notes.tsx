@@ -35,6 +35,8 @@ import {
   Calendar,
   Search,
   Sparkles,
+  Link2,
+  Globe,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -44,6 +46,7 @@ export function Notes() {
   const qc = useQueryClient()
   const [search, setSearch] = useState("")
   const [openAdd, setOpenAdd] = useState(false)
+  const [openImport, setOpenImport] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const { data: notesData, isLoading } = useQuery<{ notes: NoteSummary[] }>({
@@ -69,10 +72,21 @@ export function Notes() {
         <div className="p-3 border-b border-border space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">Notes</h2>
-            <Button size="sm" onClick={() => setOpenAdd(true)}>
-              <Plus className="h-3.5 w-3.5 mr-1" />
-              Add
-            </Button>
+            <div className="flex gap-1">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setOpenImport(true)}
+                title="Import from URL"
+              >
+                <Link2 className="h-3.5 w-3.5 mr-1" />
+                URL
+              </Button>
+              <Button size="sm" onClick={() => setOpenAdd(true)}>
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                Add
+              </Button>
+            </div>
           </div>
           <div className="relative">
             <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
@@ -132,6 +146,7 @@ export function Notes() {
       </div>
 
       <AddNoteDialog open={openAdd} onOpenChange={setOpenAdd} />
+      <ImportUrlDialog open={openImport} onOpenChange={setOpenImport} />
     </div>
   )
 }
@@ -526,6 +541,145 @@ function AddNoteDialog({
               <>
                 <Plus className="h-4 w-4 mr-1" />
                 Ingest note
+              </>
+            )}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ImportUrlDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+}) {
+  const qc = useQueryClient()
+  const [url, setUrl] = useState("")
+  const [project, setProject] = useState("web")
+  const [tags, setTags] = useState("")
+  const [extract, setExtract] = useState(true)
+  const [importing, setImporting] = useState(false)
+
+  const reset = () => {
+    setUrl("")
+    setProject("web")
+    setTags("")
+    setExtract(true)
+  }
+
+  const handleImport = async () => {
+    if (!url.trim()) {
+      toast.error("URL is required")
+      return
+    }
+    if (!/^https?:\/\//.test(url.trim())) {
+      toast.error("URL must start with http:// or https://")
+      return
+    }
+    setImporting(true)
+    try {
+      const r = await fetch("/api/notes/import-url", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: url.trim(),
+          project: project.trim() || "web",
+          tags: tags
+            .split(",")
+            .map((t) => t.trim())
+            .filter(Boolean),
+          extractDecisions: extract,
+        }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || "Import failed")
+      toast.success(d.message || "URL imported")
+      reset()
+      onOpenChange(false)
+      qc.invalidateQueries({ queryKey: ["notes"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+      qc.invalidateQueries({ queryKey: ["decisions"] })
+      qc.invalidateQueries({ queryKey: ["timeline"] })
+    } catch (e: any) {
+      toast.error(e.message || "Failed to import URL")
+    } finally {
+      setImporting(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-base flex items-center gap-2">
+            <Globe className="h-4 w-4 text-primary" />
+            Import note from URL
+          </DialogTitle>
+          <DialogDescription>
+            Fetches a web page, extracts its content, converts to Markdown, and
+            ingests it as a note. Decisions are extracted automatically.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 py-2">
+          <div className="space-y-1">
+            <Label className="text-xs">URL</Label>
+            <Input
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://example.com/article"
+              className="text-sm"
+              autoFocus
+            />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label className="text-xs">Project</Label>
+              <Input
+                value={project}
+                onChange={(e) => setProject(e.target.value)}
+                className="text-sm"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Tags (comma)</Label>
+              <Input
+                value={tags}
+                onChange={(e) => setTags(e.target.value)}
+                placeholder="article, web"
+                className="text-sm"
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
+            <input
+              type="checkbox"
+              checked={extract}
+              onChange={(e) => setExtract(e.target.checked)}
+              className="rounded"
+            />
+            Extract decisions with LLM (best-effort)
+          </label>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button onClick={handleImport} disabled={importing || !url.trim()}>
+            {importing ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                Importing…
+              </>
+            ) : (
+              <>
+                <Link2 className="h-4 w-4 mr-1" />
+                Import
               </>
             )}
           </Button>

@@ -1,5 +1,7 @@
 "use client"
 
+import { useEffect } from "react"
+import { toast } from "sonner"
 import { Sidebar, MobileNav } from "@/components/memex/sidebar"
 import { Dashboard } from "@/components/memex/dashboard"
 import { Chat } from "@/components/memex/chat"
@@ -10,10 +12,27 @@ import { Email } from "@/components/memex/email"
 import { Settings } from "@/components/memex/settings"
 import { SourcePanel } from "@/components/memex/source-panel"
 import { EmailComposer } from "@/components/memex/email-composer"
+import { CommandPalette } from "@/components/memex/command-palette"
 import { useMemex } from "@/components/memex/store"
 
 export default function Home() {
   const section = useMemex((s) => s.section)
+
+  // Listen for cross-component toast events (e.g. from command palette actions)
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as {
+        type: "info" | "success" | "error"
+        title: string
+        desc?: string
+      }
+      if (detail.type === "success") toast.success(detail.title, { description: detail.desc })
+      else if (detail.type === "error") toast.error(detail.title, { description: detail.desc })
+      else toast.info(detail.title, { description: detail.desc })
+    }
+    window.addEventListener("memex-toast", handler)
+    return () => window.removeEventListener("memex-toast", handler)
+  }, [])
 
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background">
@@ -42,6 +61,7 @@ export default function Home() {
       {/* Global overlays */}
       <SourcePanel />
       <EmailComposer />
+      <CommandPalette />
     </div>
   )
 }

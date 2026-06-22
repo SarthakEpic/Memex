@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { useQuery } from "@tanstack/react-query"
 import {
   Card,
@@ -37,6 +37,16 @@ export function Decisions() {
   const [search, setSearch] = useState("")
   const [project, setProject] = useState<string>("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
+
+  // Listen for "open decision" events from related-decision clicks
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as string
+      setSelectedId(detail)
+    }
+    window.addEventListener("memex-open-decision", handler)
+    return () => window.removeEventListener("memex-open-decision", handler)
+  }, [])
 
   const params = new URLSearchParams()
   if (search) params.set("q", search)
@@ -225,6 +235,28 @@ function DecisionDetailDialog({
     enabled: !!id,
   })
 
+  // Related decisions by term overlap
+  const { data: relatedData } = useQuery<{
+    related: {
+      id: string
+      title: string
+      rationale: string
+      decisionDate: string
+      project: string
+      confidence: number
+      score: number
+      sharedTerms: number
+      note: { id: string; title: string; sourcePath: string }
+    }[]
+  }>({
+    queryKey: ["decision-related", id],
+    queryFn: async () => {
+      const r = await fetch(`/api/decisions/${id}/related?limit=4`)
+      return r.json()
+    },
+    enabled: !!id,
+  })
+
   return (
     <Dialog open={!!id} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] flex flex-col gap-0 p-0">
@@ -352,6 +384,52 @@ function DecisionDetailDialog({
                   View source
                 </Button>
               </div>
+
+              {/* Related decisions */}
+              {relatedData && relatedData.related.length > 0 && (
+                <div className="space-y-2 pt-3 border-t border-border">
+                  <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium flex items-center gap-1.5">
+                    <GitCompare className="h-3 w-3" />
+                    Related decisions ({relatedData.related.length})
+                  </div>
+                  <div className="space-y-1.5">
+                    {relatedData.related.map((r) => (
+                      <button
+                        key={r.id}
+                        onClick={() => {
+                          onClose()
+                          // Small delay to let dialog close, then open the related one
+                          setTimeout(() => {
+                            window.dispatchEvent(
+                              new CustomEvent("memex-open-decision", { detail: r.id })
+                            )
+                          }, 100)
+                        }}
+                        className="w-full text-left rounded-md border border-border p-2.5 hover:border-amber-500/40 hover:bg-amber-500/5 transition-colors group"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0 flex-1">
+                            <div className="text-sm font-medium leading-tight group-hover:text-amber-600 dark:group-hover:text-amber-400 transition-colors">
+                              {r.title}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground mt-0.5 truncate">
+                              {r.note.sourcePath}
+                            </div>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            <div className="text-[9px] text-muted-foreground">
+                              {Math.round(r.score * 100)}% match
+                            </div>
+                            <div className="text-[9px] text-muted-foreground">
+                              {r.sharedTerms} terms
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </ScrollArea>
         )}

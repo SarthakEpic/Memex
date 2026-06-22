@@ -50,18 +50,34 @@ export function Dashboard() {
   }
 
   const counts = stats.counts
+  const healthScore = Math.round(
+    (stats.citationCoverage * 0.5 + (100 - stats.refusalRate) * 0.3 + Math.min(100, counts.emails * 10) * 0.2)
+  )
 
   return (
     <div className="p-4 sm:p-6 space-y-6 memex-fade-up">
-      {/* Header */}
-      <div className="space-y-1">
-        <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">
-          Retrieval health
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Live snapshot of your knowledge corpus, citation coverage, and email
-          delivery. Every claim cites a source chunk — or honestly says it can&apos;t.
-        </p>
+      {/* Hero header */}
+      <div className="relative overflow-hidden rounded-xl border border-border bg-gradient-to-br from-primary/5 via-background to-primary/5 p-5 sm:p-6">
+        <div className="absolute top-0 right-0 h-32 w-32 rounded-full bg-primary/10 blur-3xl -mr-12 -mt-12" />
+        <div className="absolute bottom-0 left-0 h-24 w-24 rounded-full bg-emerald-500/10 blur-2xl -ml-8 -mb-8" />
+        <div className="relative space-y-2">
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-[10px] gap-1 bg-background/50 backdrop-blur">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Live
+            </Badge>
+            <span className="text-[11px] text-muted-foreground">
+              Health score: <span className="font-semibold text-foreground">{healthScore}/100</span>
+            </span>
+          </div>
+          <h1 className="text-xl sm:text-2xl font-semibold tracking-tight">
+            Retrieval health
+          </h1>
+          <p className="text-sm text-muted-foreground max-w-2xl">
+            Live snapshot of your knowledge corpus, citation coverage, and email
+            delivery. Every claim cites a source chunk — or honestly says it can&apos;t.
+          </p>
+        </div>
       </div>
 
       {/* Stat grid */}
@@ -254,20 +270,31 @@ function StatCard({
   onClick?: () => void
 }) {
   const accentClass = {
-    emerald: "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10",
-    teal: "text-teal-600 dark:text-teal-400 bg-teal-500/10",
-    amber: "text-amber-600 dark:text-amber-400 bg-amber-500/10",
-    rose: "text-rose-600 dark:text-rose-400 bg-rose-500/10",
+    emerald: "text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 group-hover:bg-emerald-500/20",
+    teal: "text-teal-600 dark:text-teal-400 bg-teal-500/10 group-hover:bg-teal-500/20",
+    amber: "text-amber-600 dark:text-amber-400 bg-amber-500/10 group-hover:bg-amber-500/20",
+    rose: "text-rose-600 dark:text-rose-400 bg-rose-500/10 group-hover:bg-rose-500/20",
   }[accent]
   return (
     <Card
-      className={onClick ? "cursor-pointer hover:border-primary/50 transition-colors" : ""}
+      className={`group relative overflow-hidden transition-all duration-200 ${
+        onClick
+          ? "cursor-pointer hover:border-primary/40 hover:shadow-md hover:-translate-y-0.5"
+          : ""
+      }`}
       onClick={onClick}
     >
+      {/* Subtle top gradient line */}
+      <div className={`absolute top-0 left-0 right-0 h-0.5 bg-gradient-to-r opacity-0 group-hover:opacity-100 transition-opacity ${
+        accent === "emerald" ? "from-emerald-500/0 via-emerald-500/50 to-emerald-500/0" :
+        accent === "teal" ? "from-teal-500/0 via-teal-500/50 to-teal-500/0" :
+        accent === "amber" ? "from-amber-500/0 via-amber-500/50 to-amber-500/0" :
+        "from-rose-500/0 via-rose-500/50 to-rose-500/0"
+      }`} />
       <CardContent className="p-4">
         <div className="flex items-center justify-between">
-          <span className="text-xs text-muted-foreground">{label}</span>
-          <div className={`rounded-md p-1.5 ${accentClass}`}>
+          <span className="text-xs text-muted-foreground font-medium">{label}</span>
+          <div className={`rounded-md p-1.5 transition-colors ${accentClass}`}>
             <Icon className="h-3.5 w-3.5" />
           </div>
         </div>

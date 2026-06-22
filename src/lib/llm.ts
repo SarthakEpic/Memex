@@ -9,6 +9,38 @@ function getClient(): Promise<ZAI> {
   return zaiPromise
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Retry wrapper with exponential backoff for 429 (rate limit) errors.
+// The z-ai SDK does not retry by default, and bulk operations (decision
+// extraction, chat during traffic spikes) can hit 429s. We retry up to 4
+// times with 3s, 6s, 12s, 24s backoff.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const MAX_RETRIES = 4
+const BASE_BACKOFF_MS = 3000
+
+function isRateLimited(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return msg.includes("429") || msg.toLowerCase().includes("too many requests")
+}
+
+async function withRetry<T>(fn: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+  let lastErr: unknown
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const value = await fn()
+      return { ok: true, value }
+    } catch (err) {
+      lastErr = err
+      if (!isRateLimited(err)) return { ok: false, error: err }
+      if (attempt === MAX_RETRIES) break
+      const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt)
+      await new Promise((r) => setTimeout(r, backoff))
+    }
+  }
+  return { ok: false, error: lastErr }
+}
+
 export interface ContextChunk {
   id: string
   sourcePath: string
@@ -22,6 +54,7 @@ export interface CitedAnswer {
   answer: string
   citedChunkIds: string[]
   refused: boolean
+  serviceError: boolean
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -59,6 +92,7 @@ export async function generateCitedAnswer(
       answer: "I don't have a source for this.",
       citedChunkIds: [],
       refused: true,
+      serviceError: false,
     }
   }
 
@@ -78,29 +112,32 @@ ANSWER (with [^chunk_id] citations):`
 
   const zai = await getClient()
   let raw = ""
-  try {
-    const completion = await zai.chat.completions.create({
+  const result = await withRetry(() =>
+    zai.chat.completions.create({
       messages,
       temperature: 0.3,
       max_tokens: 600,
     })
-    // SDK returns either a string or an object with choices
-    if (typeof completion === "string") {
-      raw = completion
-    } else if (completion?.choices?.[0]?.message?.content) {
-      raw = completion.choices[0].message.content
-    } else if (completion?.content) {
-      raw = completion.content
-    } else {
-      raw = String(completion ?? "")
-    }
-  } catch (err) {
+  )
+  if (!result.ok) {
+    // Distinguish a genuine service error from an honest refusal.
     return {
       answer:
-        "I don't have a source for this.\n\n_(The reasoning service is temporarily unavailable.)_",
+        "⚠️ The reasoning service is temporarily unavailable (rate limited). Please try again in a moment — your question has been saved.",
       citedChunkIds: [],
-      refused: true,
+      refused: false,
+      serviceError: true,
     }
+  }
+  const completion = result.value
+  if (typeof completion === "string") {
+    raw = completion
+  } else if (completion?.choices?.[0]?.message?.content) {
+    raw = completion.choices[0].message.content
+  } else if (completion?.content) {
+    raw = completion.content
+  } else {
+    raw = String(completion ?? "")
   }
 
   // Post-process: verify every [^chunk_id] marker exists in the provided context.
@@ -122,6 +159,7 @@ ANSWER (with [^chunk_id] citations):`
     answer: raw.trim(),
     citedChunkIds: Array.from(cited),
     refused,
+    serviceError: false,
   }
 }
 
@@ -149,18 +187,22 @@ ${numbered}
 
 JSON scores:`
   try {
-    const completion = await zai.chat.completions.create({
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a relevance rater. Output only a JSON array of floats between 0 and 1.",
-        },
-        { role: "user", content: prompt },
-      ],
-      temperature: 0,
-      max_tokens: 200,
-    })
+    const result = await withRetry(() =>
+      zai.chat.completions.create({
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are a relevance rater. Output only a JSON array of floats between 0 and 1.",
+          },
+          { role: "user", content: prompt },
+        ],
+        temperature: 0,
+        max_tokens: 200,
+      })
+    )
+    if (!result.ok) return chunks
+    const completion = result.value
     let raw = ""
     if (typeof completion === "string") raw = completion
     else if (completion?.choices?.[0]?.message?.content)
@@ -218,8 +260,8 @@ export async function extractDecisions(
   headingPath: string
 ): Promise<ExtractedDecision[]> {
   const zai = await getClient()
-  try {
-    const completion = await zai.chat.completions.create({
+  const result = await withRetry(() =>
+    zai.chat.completions.create({
       messages: [
         { role: "system", content: DECISION_PROMPT },
         {
@@ -230,6 +272,10 @@ export async function extractDecisions(
       temperature: 0.1,
       max_tokens: 600,
     })
+  )
+  if (!result.ok) return []
+  try {
+    const completion = result.value
     let raw = ""
     if (typeof completion === "string") raw = completion
     else if (completion?.choices?.[0]?.message?.content)

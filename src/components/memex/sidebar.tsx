@@ -10,11 +10,14 @@ import {
   Settings,
   Brain,
   ScrollText,
+  Command,
+  Search,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useMemex } from "./store"
+import { ThemeToggle } from "./theme-toggle"
 import type { Section, StatsData } from "./types"
 
 const NAV: { id: Section; label: string; icon: React.ElementType; desc: string }[] = [
@@ -31,6 +34,7 @@ export function Sidebar() {
   const section = useMemex((s) => s.section)
   const setSection = useMemex((s) => s.setSection)
   const openEmail = useMemex((s) => s.openEmailComposer)
+  const openCommandPalette = useMemex((s) => s.openCommandPalette)
 
   const { data: stats } = useQuery<StatsData>({
     queryKey: ["stats"],
@@ -54,13 +58,28 @@ export function Sidebar() {
               <span className="relative inline-flex h-3 w-3 rounded-full bg-primary border border-background" />
             </span>
           </div>
-          <div className="leading-tight">
+          <div className="leading-tight flex-1">
             <div className="font-semibold text-sm tracking-tight">Memex</div>
             <div className="text-[10px] text-muted-foreground">
               citation-first retrieval
             </div>
           </div>
+          <ThemeToggle />
         </div>
+      </div>
+
+      {/* Search trigger */}
+      <div className="p-2 border-b border-border">
+        <button
+          onClick={() => openCommandPalette()}
+          className="w-full flex items-center gap-2 rounded-md border border-border bg-muted/40 px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted hover:border-border/80 transition-colors group"
+        >
+          <Search className="h-3.5 w-3.5" />
+          <span className="flex-1 text-left">Search…</span>
+          <kbd className="hidden sm:inline-flex items-center gap-0.5 rounded border border-border bg-background px-1 py-0.5 text-[9px] font-mono font-medium">
+            ⌘K
+          </kbd>
+        </button>
       </div>
 
       {/* Nav */}

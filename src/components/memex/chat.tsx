@@ -23,6 +23,10 @@ import {
   History,
   Trash2,
   FileText,
+  AlertTriangle,
+  Download,
+  Pencil,
+  X,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -44,6 +48,7 @@ export function Chat() {
     answer: string
     citations: Citation[]
     refused: boolean
+    serviceError: boolean
   } | null>(null)
   const sessionId = useMemex((s) => s.activeSessionId)
   const setSessionId = useMemex((s) => s.setActiveSession)
@@ -87,6 +92,7 @@ export function Chat() {
       answer: "",
       citations: [],
       refused: false,
+      serviceError: false,
     })
 
     try {
@@ -108,6 +114,7 @@ export function Chat() {
           answer: words.slice(0, i).join(" "),
           citations: data.citations,
           refused: data.refused,
+          serviceError: data.serviceError,
         })
         if (i < words.length) {
           setTimeout(tick, 20)
@@ -139,6 +146,36 @@ export function Chat() {
     if (sessionId === id) setSessionId(null)
     qc.invalidateQueries({ queryKey: ["chat-sessions"] })
     toast.success("Chat deleted")
+  }
+
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editTitle, setEditTitle] = useState("")
+
+  const startRename = (id: string, currentTitle: string) => {
+    setEditingId(id)
+    setEditTitle(currentTitle)
+  }
+
+  const saveRename = async () => {
+    if (!editingId || !editTitle.trim()) {
+      setEditingId(null)
+      return
+    }
+    try {
+      await fetch(`/api/chat/sessions/${editingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: editTitle.trim() }),
+      })
+      qc.invalidateQueries({ queryKey: ["chat-sessions"] })
+      if (sessionId === editingId) {
+        qc.invalidateQueries({ queryKey: ["chat-session", editingId] })
+      }
+      toast.success("Chat renamed")
+    } catch {
+      toast.error("Rename failed")
+    }
+    setEditingId(null)
   }
 
   const handleEmailAnswer = (answer: string, citations: Citation[]) => {
@@ -179,24 +216,65 @@ export function Chat() {
                     ? "bg-accent text-accent-foreground"
                     : "hover:bg-accent/50"
                 }`}
-                onClick={() => setSessionId(s.id)}
+                onClick={() => editingId !== s.id && setSessionId(s.id)}
               >
                 <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                <div className="flex-1 min-w-0">
-                  <div className="text-xs font-medium truncate">{s.title}</div>
-                  <div className="text-[10px] text-muted-foreground">
-                    {s.messageCount} msgs
+                {editingId === s.id ? (
+                  <div className="flex-1 min-w-0 flex items-center gap-1">
+                    <input
+                      autoFocus
+                      value={editTitle}
+                      onChange={(e) => setEditTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveRename()
+                        if (e.key === "Escape") setEditingId(null)
+                      }}
+                      onClick={(e) => e.stopPropagation()}
+                      className="flex-1 min-w-0 bg-background border border-primary rounded px-1 py-0.5 text-xs"
+                    />
+                    <button
+                      onClick={(e) => { e.stopPropagation(); saveRename() }}
+                      className="text-emerald-600 hover:text-emerald-700 shrink-0"
+                    >
+                      <Check className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setEditingId(null) }}
+                      className="text-muted-foreground hover:text-destructive shrink-0"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
                   </div>
-                </div>
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    handleDeleteSession(s.id)
-                  }}
-                  className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </button>
+                ) : (
+                  <>
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate">{s.title}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {s.messageCount} msgs
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        startRename(s.id, s.title)
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-primary transition-opacity"
+                      title="Rename"
+                    >
+                      <Pencil className="h-3 w-3" />
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleDeleteSession(s.id)
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+                      title="Delete"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -215,11 +293,25 @@ export function Chat() {
               Citation-first · answers cite source chunks or honestly refuse
             </p>
           </div>
-          {sessionData?.session && (
-            <Badge variant="outline" className="text-[10px] shrink-0">
-              {messages.length} messages
-            </Badge>
-          )}
+          <div className="flex items-center gap-2 shrink-0">
+            {sessionData?.session && messages.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                onClick={() => exportChat(sessionData.session, "md")}
+                title="Export as Markdown"
+              >
+                <Download className="h-3.5 w-3.5 mr-1" />
+                Export
+              </Button>
+            )}
+            {sessionData?.session && (
+              <Badge variant="outline" className="text-[10px]">
+                {messages.length} messages
+              </Badge>
+            )}
+          </div>
         </div>
 
         {/* Messages */}
@@ -342,6 +434,12 @@ function MessageBubble({
 }) {
   const [copied, setCopied] = useState(false)
   const isUser = message.role === "user"
+  const isServiceError = message.content.startsWith("⚠️")
+  const isRefusal =
+    !isUser &&
+    message.citations.length === 0 &&
+    !isServiceError &&
+    message.content.trim().toLowerCase().startsWith("i don't have a source for this")
 
   return (
     <div className="flex gap-3 memex-fade-up">
@@ -349,10 +447,18 @@ function MessageBubble({
         className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
           isUser
             ? "bg-muted text-muted-foreground"
+            : isServiceError
+            ? "bg-amber-500 text-white"
             : "bg-primary text-primary-foreground"
         }`}
       >
-        {isUser ? <User className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
+        {isUser ? (
+          <User className="h-4 w-4" />
+        ) : isServiceError ? (
+          <AlertTriangle className="h-4 w-4" />
+        ) : (
+          <Bot className="h-4 w-4" />
+        )}
       </div>
       <div className="flex-1 min-w-0 space-y-2">
         {isUser ? (
@@ -360,7 +466,13 @@ function MessageBubble({
         ) : (
           <>
             <AnswerRenderer answer={message.content} />
-            {!isUser && message.citations.length === 0 && (
+            {isServiceError && (
+              <div className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5 mt-1 p-2 rounded-md bg-amber-500/10 border border-amber-500/30">
+                <AlertTriangle className="h-3 w-3 shrink-0" />
+                <span>The reasoning service hit a rate limit. Please retry in a few seconds.</span>
+              </div>
+            )}
+            {isRefusal && (
               <div className="text-xs text-muted-foreground italic flex items-center gap-1.5 mt-1">
                 <FileText className="h-3 w-3" />
                 No source citation — the model honestly refused.
@@ -429,4 +541,62 @@ function CitationStrip({ citations }: { citations: Citation[] }) {
       </div>
     </div>
   )
+}
+
+// Export a chat session as a Markdown file download.
+function exportChat(
+  session: { id: string; title: string; messages: ChatMessageData[] },
+  format: "md" | "json"
+) {
+  const stamp = new Date().toISOString().slice(0, 10)
+  let content: string
+  let mime: string
+  let ext: string
+
+  if (format === "json") {
+    content = JSON.stringify(session, null, 2)
+    mime = "application/json"
+    ext = "json"
+  } else {
+    const lines: string[] = []
+    lines.push(`# ${session.title}`)
+    lines.push("")
+    lines.push(`_Exported from Memex on ${new Date().toLocaleString()}_`)
+    lines.push(`_Session ID: ${session.id} · ${session.messages.length} messages_`)
+    lines.push("")
+    lines.push("---")
+    lines.push("")
+    for (const m of session.messages) {
+      const role = m.role === "user" ? "🧑 You" : "🤖 Memex"
+      const time = new Date(m.createdAt).toLocaleString()
+      lines.push(`## ${role}`)
+      lines.push(`_${time}_`)
+      lines.push("")
+      lines.push(m.content)
+      if (m.citations.length > 0) {
+        lines.push("")
+        lines.push("**Sources:**")
+        for (const c of m.citations) {
+          lines.push(`- ${c.sourcePath} (chunk #${c.chunkIndex}) — _${c.snippet.slice(0, 100)}…_`)
+        }
+      }
+      lines.push("")
+      lines.push("---")
+      lines.push("")
+    }
+    content = lines.join("\n")
+    mime = "text/markdown"
+    ext = "md"
+  }
+
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `memex-chat-${stamp}.${ext}`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  toast.success(`Exported as ${ext.toUpperCase()}`)
 }

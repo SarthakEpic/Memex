@@ -30,6 +30,11 @@ interface MemexState {
   activeSessionId: string | null
   setActiveSession: (id: string | null) => void
 
+  // Command palette
+  commandPaletteOpen: boolean
+  setCommandPaletteOpen: (o: boolean) => void
+  openCommandPalette: () => void
+
   // Toast-less inline notice (for non-blocking ops)
   notice: string | null
   setNotice: (msg: string | null) => void
@@ -58,6 +63,10 @@ export const useMemex = create<MemexState>((set) => ({
 
   activeSessionId: null,
   setActiveSession: (id) => set({ activeSessionId: id }),
+
+  commandPaletteOpen: false,
+  setCommandPaletteOpen: (o) => set({ commandPaletteOpen: o }),
+  openCommandPalette: () => set({ commandPaletteOpen: true }),
 
   notice: null,
   setNotice: (msg) => set({ notice: msg }),
