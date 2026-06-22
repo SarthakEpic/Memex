@@ -9,6 +9,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Progress } from "@/components/ui/progress"
 import { Separator } from "@/components/ui/separator"
 import {
@@ -21,7 +22,9 @@ import {
   FileText,
   Loader2,
   Hash,
+  Download,
 } from "lucide-react"
+import { toast } from "sonner"
 import { useMemex } from "./store"
 import type { AnalyticsData } from "./types"
 
@@ -56,15 +59,39 @@ export function Analytics() {
   return (
     <div className="p-4 sm:p-6 space-y-6 memex-fade-up max-w-5xl">
       {/* Header */}
-      <div className="space-y-1">
-        <h1 className="text-xl sm:text-2xl font-semibold tracking-tight flex items-center gap-2">
-          <BarChart3 className="h-5 w-5 text-primary" />
-          Analytics
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Insights from your chat activity — which source chunks get cited most,
-          what questions you ask, and how your knowledge base is distributed.
-        </p>
+      <div className="space-y-2">
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-1">
+            <h1 className="text-xl sm:text-2xl font-semibold tracking-tight flex items-center gap-2">
+              <BarChart3 className="h-5 w-5 text-primary" />
+              Analytics
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Insights from your chat activity — which source chunks get cited most,
+              what questions you ask, and how your knowledge base is distributed.
+            </p>
+          </div>
+          <div className="flex gap-1.5 shrink-0">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => exportAnalytics(data, "csv")}
+              title="Export as CSV"
+            >
+              <Download className="h-3.5 w-3.5 mr-1" />
+              CSV
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => exportAnalytics(data, "json")}
+              title="Export as JSON"
+            >
+              <Download className="h-3.5 w-3.5 mr-1" />
+              JSON
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* Summary stats */}
@@ -278,3 +305,68 @@ function SummaryStat({
     </Card>
   )
 }
+
+// Export analytics data as CSV or JSON.
+function exportAnalytics(data: AnalyticsData, format: "csv" | "json") {
+  const stamp = new Date().toISOString().slice(0, 10)
+  let content: string
+  let mime: string
+  let ext: string
+
+  if (format === "json") {
+    content = JSON.stringify(data, null, 2)
+    mime = "application/json"
+    ext = "json"
+  } else {
+    // CSV: most-cited chunks table
+    const lines: string[] = []
+    lines.push("# Summary")
+    lines.push("metric,value")
+    lines.push(`total_questions,${data.summary.totalQuestions}`)
+    lines.push(`total_answers,${data.summary.totalAnswers}`)
+    lines.push(`total_citations,${data.summary.totalCitations}`)
+    lines.push(`avg_citations_per_answer,${data.summary.avgCitationsPerAnswer}`)
+    lines.push(`unique_cited_chunks,${data.summary.uniqueCitedChunks}`)
+    lines.push("")
+    lines.push("# Most-cited chunks")
+    lines.push("rank,chunk_id,source_path,heading_path,chunk_index,citation_count")
+    data.mostCitedChunks.forEach((c, i) => {
+      lines.push(
+        `${i + 1},${c.chunkId},"${c.sourcePath}","${c.headingPath.replace(/"/g, '""')}",${c.chunkIndex},${c.count}`
+      )
+    })
+    lines.push("")
+    lines.push("# Question activity (14 days)")
+    lines.push("date,question_count")
+    data.questionActivity.forEach((d) => {
+      lines.push(`${d.date},${d.count}`)
+    })
+    lines.push("")
+    lines.push("# Project stats")
+    lines.push("project,notes,decisions")
+    data.projectStats.forEach((p) => {
+      lines.push(`${p.project},${p.notes},${p.decisions}`)
+    })
+    lines.push("")
+    lines.push("# Recent questions")
+    lines.push("timestamp,question")
+    data.recentQuestions.forEach((q) => {
+      lines.push(`${q.timestamp},"${q.question.replace(/"/g, '""')}"`)
+    })
+    content = lines.join("\n")
+    mime = "text/csv"
+    ext = "csv"
+  }
+
+  const blob = new Blob([content], { type: mime })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement("a")
+  a.href = url
+  a.download = `memex-analytics-${stamp}.${ext}`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+  toast.success(`Exported as ${ext.toUpperCase()}`)
+}
+

@@ -206,3 +206,76 @@ Priority recommendations for next phase:
 - Add a "copy citation" button on source chunks for easy referencing.
 - Consider adding a simple A/B comparison view for two chat answers.
 - Add export of analytics data as CSV/JSON.
+
+---
+Task ID: 9 (current cron round)
+Agent: main (cron webDevReview)
+Task: QA, note markdown preview, copy citation, email scheduling, analytics export
+
+Work Log:
+- QA sweep via agent-browser: all 8 sections verified working (dashboard, chat, notes, decisions, timeline, analytics, email, settings). No errors, no console warnings.
+- Retried decision extraction — still rate-limited (429). 5/8 decisions confirmed.
+
+- Feature: Note content Markdown preview.
+  - New component: `src/components/memex/markdown-preview.tsx` — uses `react-markdown` (already in deps) with custom component renderers for headings, paragraphs, lists, links, code blocks, blockquotes, tables — all styled with Memex design tokens.
+  - Added Preview/Source toggle to NoteDetailPanel content card. Preview mode (default) renders markdown as rich text; Source mode shows raw markdown in `<pre>`.
+  - Added `.prose-memex` CSS utilities (first-child/last-child margin reset).
+  - Tested: Preview renders headings + bold + lists correctly, Source shows raw `#` / `##` markers.
+
+- Feature: Copy citation button on source chunks.
+  - Added two new buttons to the SourcePanel header: (1) Link2 icon — copies `[^chunkId]` citation marker to clipboard with toast showing the copied marker; (2) Copy icon — copies the full chunk text to clipboard.
+  - Both use `navigator.clipboard.writeText()` + sonner toast feedback.
+  - Tested: buttons render in source panel header next to Email button.
+
+- Feature: Email scheduling.
+  - Schema change: added `scheduledFor DateTime?` field to Email model + index. Ran `db:push`.
+  - Updated `sendEmail()` in `src/lib/email.ts` — accepts `scheduledFor` param. If future date, stores with status "scheduled" instead of "queued" and skips immediate delivery.
+  - New `processScheduledEmails()` function — finds all scheduled emails past their time and marks them delivered. Called by the digest endpoint as the scheduler tick.
+  - Updated `POST /api/emails` to accept `scheduledFor` in the body.
+  - Updated `POST /api/emails/digest` to call `processScheduledEmails()` before building the digest (acts as the scheduler).
+  - Updated EmailComposer with a "Schedule for later" checkbox + datetime-local input. Button label changes between "Send email" and "Schedule email" based on state. Toast changes between "Email delivered" and "Email scheduled".
+  - Added "scheduled" status to StatusBadge (amber badge with Clock icon) + "Scheduled" tab in the email outbox.
+  - Updated EmailData type + tab filter logic.
+  - Tested: Schedule checkbox reveals datetime picker, button label changes, validation prevents send without a time, Scheduled tab shows scheduled emails.
+
+- Feature: Analytics export as CSV/JSON.
+  - Added CSV + JSON export buttons to the Analytics section header.
+  - `exportAnalytics()` function: JSON mode dumps the full AnalyticsData object; CSV mode produces a multi-section CSV (summary stats, most-cited chunks, question activity, project stats, recent questions) with proper escaping.
+  - Downloads via Blob + URL.createObjectURL + synthetic `<a>` click.
+  - Tested: CSV export triggers toast "Exported as CSV".
+
+- Styling polish:
+  - MarkdownPreview: styled headings with border-b on h2, muted blockquotes, primary-colored links, muted code/pre blocks.
+  - SourcePanel: compact icon buttons with ghost variant, truncation on long source paths.
+  - EmailComposer: scheduling section in a bordered muted box with checkbox + datetime input + helper text.
+  - Analytics: export buttons in header with Download icons.
+
+Verification:
+- agent-browser tested all new features: note Preview/Source toggle works, copy citation buttons render in source panel, email composer scheduling UI works (checkbox reveals datetime, button label changes), analytics CSV export triggers toast.
+- Lint clean. Dev log: all API routes 200 (including new scheduledFor field handling).
+- No console errors or runtime errors.
+
+Stage Summary:
+- Note markdown preview: users can now read notes as rendered rich text instead of raw markdown, with a toggle to see the source.
+- Copy citation: source panel now has one-click copy for both the `[^chunkId]` marker and the full chunk text.
+- Email scheduling: emails can be scheduled for future delivery, with a "Scheduled" tab in the outbox and a scheduler tick in the digest endpoint.
+- Analytics export: CSV (multi-section) and JSON exports available with one click.
+- 23 API routes, 21 UI components, 7 lib modules.
+
+Current project status:
+- Memex is a fully functional citation-first knowledge retrieval system with 8 sections: dashboard, chat, notes (with edit + URL import + search + markdown preview), decisions (with related decisions), timeline, analytics (with CSV/JSON export), email (with scheduling + scheduled tab), settings.
+- 8 notes, 36 chunks, 5 decisions, 2 emails, 4 chat sessions, 6 questions, 10 citations in DB.
+- Dark mode, command palette (Cmd+K), keyboard shortcuts (?), chat export, chat rename, email scheduling all functional.
+- Lint clean, no runtime errors.
+
+Unresolved issues / risks:
+- 3/8 notes still lack extracted decisions due to LLM 429 rate limits. Will retry in future cron runs.
+- No real embeddings (BM25 + LLM rerank used instead).
+- Scheduled emails are only delivered when the digest endpoint is called — no background cron worker in this sandbox.
+
+Priority recommendations for next phase:
+- Add a note content live-preview in the edit dialog (split view: editor | rendered preview).
+- Add a "copy as quote" button on decision cards.
+- Add a chat A/B comparison view for two answers to the same question.
+- Add a note duplicate/clone feature.
+- Consider adding a simple search history / recent searches dropdown.

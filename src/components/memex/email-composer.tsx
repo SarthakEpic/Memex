@@ -22,7 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
-import { Loader2, Mail, Send, Sparkles } from "lucide-react"
+import { Loader2, Mail, Send, Sparkles, Clock } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
 import type { EmailTemplateData } from "./types"
@@ -37,6 +37,8 @@ export function EmailComposer() {
   const [sourceType, setSourceType] = useState<string>("manual")
   const [sending, setSending] = useState(false)
   const [templates, setTemplates] = useState<EmailTemplateData[]>([])
+  const [scheduleEnabled, setScheduleEnabled] = useState(false)
+  const [scheduledFor, setScheduledFor] = useState("")
 
   useEffect(() => {
     if (draft) {
@@ -44,6 +46,8 @@ export function EmailComposer() {
       setSubject(draft.subject)
       setBodyMarkdown(draft.bodyMarkdown)
       setSourceType(draft.sourceType)
+      setScheduleEnabled(false)
+      setScheduledFor("")
     }
   }, [draft])
 
@@ -68,6 +72,10 @@ export function EmailComposer() {
       toast.error("Subject and body are required.")
       return
     }
+    if (scheduleEnabled && !scheduledFor) {
+      toast.error("Please pick a schedule time, or disable scheduling.")
+      return
+    }
     setSending(true)
     try {
       const res = await fetch("/api/emails", {
@@ -79,13 +87,20 @@ export function EmailComposer() {
           bodyMarkdown,
           sourceType,
           sourceId: draft.sourceId,
+          scheduledFor: scheduleEnabled ? new Date(scheduledFor).toISOString() : null,
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Failed to send")
-      toast.success("Email delivered", {
-        description: `To: ${toAddress === "me" ? "your inbox" : toAddress}`,
-      })
+      if (scheduleEnabled) {
+        toast.success("Email scheduled", {
+          description: `For ${new Date(scheduledFor).toLocaleString()}`,
+        })
+      } else {
+        toast.success("Email delivered", {
+          description: `To: ${toAddress === "me" ? "your inbox" : toAddress}`,
+        })
+      }
       qc.invalidateQueries({ queryKey: ["emails"] })
       qc.invalidateQueries({ queryKey: ["stats"] })
       close()
@@ -190,6 +205,43 @@ export function EmailComposer() {
             <span>·</span>
             <span>Renders Markdown → HTML on send · Simulated SMTP delivery</span>
           </div>
+
+          {/* Scheduling */}
+          <div className="rounded-md border border-border p-3 space-y-2 bg-muted/30">
+            <label className="flex items-center gap-2 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={scheduleEnabled}
+                onChange={(e) => setScheduleEnabled(e.target.checked)}
+                className="rounded"
+              />
+              <span className="text-xs font-medium flex items-center gap-1.5">
+                <Clock className="h-3.5 w-3.5" />
+                Schedule for later
+              </span>
+            </label>
+            {scheduleEnabled && (
+              <div className="flex items-center gap-2 pl-6">
+                <Input
+                  type="datetime-local"
+                  value={scheduledFor}
+                  onChange={(e) => setScheduledFor(e.target.value)}
+                  className="text-xs h-8 flex-1"
+                />
+                <span className="text-[10px] text-muted-foreground shrink-0">
+                  {scheduledFor
+                    ? new Date(scheduledFor).toLocaleString()
+                    : "Pick a time"}
+                </span>
+              </div>
+            )}
+            {scheduleEnabled && (
+              <p className="text-[10px] text-muted-foreground pl-6">
+                Scheduled emails are stored with status &quot;scheduled&quot; and
+                delivered when the digest scheduler runs past the chosen time.
+              </p>
+            )}
+          </div>
         </div>
 
         <DialogFooter className="p-4 border-t border-border flex-row justify-between items-center">
@@ -204,12 +256,21 @@ export function EmailComposer() {
               {sending ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                  Sending…
+                  {scheduleEnabled ? "Scheduling…" : "Sending…"}
                 </>
               ) : (
                 <>
-                  <Send className="h-4 w-4 mr-1" />
-                  Send email
+                  {scheduleEnabled ? (
+                    <>
+                      <Clock className="h-4 w-4 mr-1" />
+                      Schedule email
+                    </>
+                  ) : (
+                    <>
+                      <Send className="h-4 w-4 mr-1" />
+                      Send email
+                    </>
+                  )}
                 </>
               )}
             </Button>

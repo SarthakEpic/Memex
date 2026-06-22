@@ -34,7 +34,7 @@ import { toast } from "sonner"
 import { useMemex } from "./store"
 import type { EmailData } from "./types"
 
-type Tab = "all" | "delivered" | "queued" | "digest"
+type Tab = "all" | "delivered" | "scheduled" | "queued" | "digest"
 
 const SOURCE_ICON: Record<string, React.ElementType> = {
   manual: Mail,
@@ -52,6 +52,7 @@ export function Email() {
 
   const params = new URLSearchParams()
   if (tab === "delivered") params.set("status", "delivered")
+  if (tab === "scheduled") params.set("status", "scheduled")
   if (tab === "queued") params.set("status", "queued")
   if (tab === "digest") params.set("sourceType", "digest")
 
@@ -120,7 +121,7 @@ export function Email() {
           </div>
           {/* Tabs */}
           <div className="flex gap-1 text-xs">
-            {(["all", "delivered", "queued", "digest"] as Tab[]).map((t) => (
+            {(["all", "delivered", "scheduled", "queued", "digest"] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
@@ -282,6 +283,13 @@ function StatusBadge({ status }: { status: string }) {
       <Badge className="text-[9px] h-4 bg-teal-600 hover:bg-teal-600 gap-0.5">
         <Send className="h-2.5 w-2.5" />
         sent
+      </Badge>
+    )
+  if (status === "scheduled")
+    return (
+      <Badge className="text-[9px] h-4 bg-amber-600 hover:bg-amber-600 gap-0.5">
+        <Clock className="h-2.5 w-2.5" />
+        scheduled
       </Badge>
     )
   if (status === "queued")

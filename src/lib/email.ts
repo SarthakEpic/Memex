@@ -13,6 +13,7 @@ export interface SendEmailInput {
   sourceType?: "manual" | "chat" | "decision" | "note" | "digest"
   sourceId?: string
   fromName?: string
+  scheduledFor?: Date | null // null = immediate; future Date = scheduled
 }
 
 export interface SendEmailResult {
@@ -23,8 +24,12 @@ export interface SendEmailResult {
 
 // Simulate SMTP delivery: render HTML, mark as sent + delivered.
 // In production this would call nodemailer / SES / etc.
+// If scheduledFor is a future date, the email is stored with status
+// "scheduled" and delivered later by the digest/scheduler tick.
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
   const bodyHtml = await markdownToHtml(input.bodyMarkdown)
+  const isScheduled = input.scheduledFor && new Date(input.scheduledFor).getTime() > Date.now()
+
   const email = await db.email.create({
     data: {
       toAddress: input.toAddress,
@@ -32,12 +37,18 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       subject: input.subject,
       bodyMarkdown: input.bodyMarkdown,
       bodyHtml,
-      status: "queued",
+      status: isScheduled ? "scheduled" : "queued",
       sourceType: input.sourceType ?? "manual",
       sourceId: input.sourceId ?? "",
+      scheduledFor: isScheduled ? new Date(input.scheduledFor!) : null,
     },
   })
 
+  if (isScheduled) {
+    return { id: email.id, status: "scheduled", delivered: false }
+  }
+
+  // Immediate delivery — simulate SMTP.
   // Simulate network delivery latency + occasional success.
   // We always succeed in this sandbox, but the pipeline is real.
   const now = new Date()
@@ -47,6 +58,26 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
   })
 
   return { id: email.id, status: "delivered", delivered: true }
+}
+
+// Process scheduled emails that are due — called by the digest endpoint
+// or any scheduler tick. Returns the count of emails delivered.
+export async function processScheduledEmails(): Promise<number> {
+  const now = new Date()
+  const due = await db.email.findMany({
+    where: {
+      status: "scheduled",
+      scheduledFor: { lte: now },
+    },
+    take: 50,
+  })
+  for (const email of due) {
+    await db.email.update({
+      where: { id: email.id },
+      data: { status: "delivered", sentAt: now, deliveredAt: now },
+    })
+  }
+  return due.length
 }
 
 // Build a daily digest email body from recent decisions + unanswered questions.

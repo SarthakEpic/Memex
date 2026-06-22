@@ -41,6 +41,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
+import { MarkdownPreview } from "./markdown-preview"
 import type { NoteSummary, NoteDetail } from "./types"
 
 export function Notes() {
@@ -215,6 +216,7 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
   const qc = useQueryClient()
   const openEmail = useMemex((s) => s.openEmailComposer)
   const [openEdit, setOpenEdit] = useState(false)
+  const [viewMode, setViewMode] = useState<"preview" | "source">("preview")
   const { data, isLoading } = useQuery<{ note: NoteDetail }>({
     queryKey: ["note", noteId],
     queryFn: async () => {
@@ -337,14 +339,42 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
         {/* Content */}
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">
-              Full content
-            </CardTitle>
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">
+                Full content
+              </CardTitle>
+              <div className="flex items-center rounded-md border border-border p-0.5 text-[10px]">
+                <button
+                  onClick={() => setViewMode("preview")}
+                  className={`px-2 py-0.5 rounded transition-colors ${
+                    viewMode === "preview"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Preview
+                </button>
+                <button
+                  onClick={() => setViewMode("source")}
+                  className={`px-2 py-0.5 rounded transition-colors ${
+                    viewMode === "source"
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Source
+                </button>
+              </div>
+            </div>
           </CardHeader>
           <CardContent>
-            <pre className="text-sm font-mono whitespace-pre-wrap leading-relaxed text-foreground/90">
-              {note.content}
-            </pre>
+            {viewMode === "preview" ? (
+              <MarkdownPreview content={note.content} />
+            ) : (
+              <pre className="text-sm font-mono whitespace-pre-wrap leading-relaxed text-foreground/90">
+                {note.content}
+              </pre>
+            )}
           </CardContent>
         </Card>
 

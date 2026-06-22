@@ -112,17 +112,19 @@ model Email {
   subject    String
   bodyMarkdown String // markdown body
   bodyHtml   String   @default("") // rendered html (computed on send)
-  status     String   @default("queued") // queued | sent | delivered | failed
+  status     String   @default("queued") // queued | scheduled | sent | delivered | failed
   sourceType String   @default("manual") // manual | chat | decision | note | digest
   sourceId   String   @default("") // related entity id
   errorMessage String @default("")
   queuedAt   DateTime @default(now())
+  scheduledFor DateTime? // null = immediate; future = scheduled
   sentAt     DateTime?
   deliveredAt DateTime?
 
   @@index([status])
   @@index([sourceType])
   @@index([queuedAt])
+  @@index([scheduledFor])
 }
 
 model EmailTemplate {

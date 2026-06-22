@@ -261,3 +261,11 @@
   border-top: 1px solid var(--border);
   margin: 0.75rem 0;
 }
+
+/* ── Prose-memex: rich text rendering for note content ──────────────── */
+.prose-memex :first-child {
+  margin-top: 0;
+}
+.prose-memex :last-child {
+  margin-bottom: 0;
+}

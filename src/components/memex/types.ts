@@ -99,6 +99,7 @@ export interface EmailData {
   sourceId: string
   errorMessage: string
   queuedAt: string
+  scheduledFor: string | null
   sentAt: string | null
   deliveredAt: string | null
 }

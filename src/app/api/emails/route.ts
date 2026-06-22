@@ -23,16 +23,17 @@ export async function GET(req: NextRequest) {
 }
 
 // POST /api/emails — send (queue + deliver) an email
-// Body: { toAddress, subject, bodyMarkdown, sourceType?, sourceId?, fromName? }
+// Body: { toAddress, subject, bodyMarkdown, sourceType?, sourceId?, fromName?, scheduledFor? }
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
-  const { toAddress, subject, bodyMarkdown, sourceType, sourceId, fromName } = body as {
+  const { toAddress, subject, bodyMarkdown, sourceType, sourceId, fromName, scheduledFor } = body as {
     toAddress?: string
     subject?: string
     bodyMarkdown?: string
     sourceType?: string
     sourceId?: string
     fromName?: string
+    scheduledFor?: string | null
   }
 
   if (!toAddress || !subject || !bodyMarkdown) {
@@ -56,6 +57,7 @@ export async function POST(req: NextRequest) {
     sourceType: (sourceType as any) || "manual",
     sourceId: sourceId || "",
     fromName: fromName || "Memex",
+    scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
   })
 
   return NextResponse.json(result)

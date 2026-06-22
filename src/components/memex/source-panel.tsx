@@ -13,7 +13,8 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
-import { Mail, FileText, Hash, Loader2 } from "lucide-react"
+import { Mail, FileText, Hash, Loader2, Copy, Check, Link2 } from "lucide-react"
+import { toast } from "sonner"
 import { useMemex } from "./store"
 import type { ChunkDetail } from "./types"
 
@@ -79,16 +80,43 @@ function SourcePanelBody({
         {/* Note header */}
         <div className="space-y-2">
           <div className="flex items-start justify-between gap-2">
-            <div>
+            <div className="min-w-0">
               <h3 className="font-semibold text-sm leading-tight">{chunk.note.title}</h3>
-              <p className="text-xs text-muted-foreground font-mono mt-0.5">
+              <p className="text-xs text-muted-foreground font-mono mt-0.5 truncate">
                 {chunk.note.sourcePath}
               </p>
             </div>
-            <Button size="sm" variant="outline" onClick={onEmail} className="shrink-0">
-              <Mail className="h-3.5 w-3.5 mr-1" />
-              Email
-            </Button>
+            <div className="flex gap-1.5 shrink-0">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={() => {
+                  const citation = `[^${chunk.id}]`
+                  navigator.clipboard.writeText(citation)
+                  toast.success("Citation copied", { description: citation })
+                }}
+                title="Copy citation marker"
+              >
+                <Link2 className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={() => {
+                  navigator.clipboard.writeText(chunk.text)
+                  toast.success("Chunk text copied")
+                }}
+                title="Copy full chunk text"
+              >
+                <Copy className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="outline" onClick={onEmail} className="h-7">
+                <Mail className="h-3.5 w-3.5 mr-1" />
+                Email
+              </Button>
+            </div>
           </div>
           <div className="flex flex-wrap gap-1">
             <Badge variant="secondary" className="text-[10px]">
