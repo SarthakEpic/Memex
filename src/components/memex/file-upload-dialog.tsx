@@ -58,6 +58,14 @@ export function FileUploadDialog({ open, onOpenChange }: FileUploadDialogProps) 
       })
       return
     }
+    // Size check (50MB)
+    const sizeMB = file.size / (1024 * 1024)
+    if (sizeMB > 50) {
+      toast.error(`File too large: ${sizeMB.toFixed(1)}MB`, {
+        description: "Maximum file size is 50MB.",
+      })
+      return
+    }
     setSelectedFile(file)
   }
 
@@ -206,7 +214,7 @@ export function FileUploadDialog({ open, onOpenChange }: FileUploadDialogProps) 
             {uploading ? (
               <>
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                Importing...
+                Extracting text & importing...
               </>
             ) : (
               <>

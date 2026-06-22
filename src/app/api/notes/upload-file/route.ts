@@ -9,12 +9,24 @@ import {
 import { invalidateCorpusCache } from "@/lib/retrieval"
 import { extractDecisions } from "@/lib/llm"
 
+// Allow large file uploads (PPTX/PDF can be 10-50MB)
+export const maxDuration = 60 // 60 second timeout
+export const runtime = "nodejs"
+
 // POST /api/notes/upload-file
 // Body: { fileName, fileType, fileBase64, project?, tags?, extractDecisions? }
 // Supports: PDF, Word (.docx), PowerPoint (.pptx), plain text, Markdown
-// Extracts text → converts to Markdown → ingests as note
+// Extracts text → converts to Markdown → ingests as a note
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => ({}))
+  // Read the body as text first to handle large payloads
+  const bodyText = await req.text()
+  let body: any
+  try {
+    body = JSON.parse(bodyText)
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
+  }
+
   const {
     fileName,
     fileType,
@@ -42,16 +54,35 @@ export async function POST(req: NextRequest) {
   const buffer = Buffer.from(fileBase64, "base64")
   const ext = fileName.split(".").pop()?.toLowerCase() ?? ""
 
+  // File size check (50MB max)
+  const fileSizeMB = buffer.length / (1024 * 1024)
+  if (fileSizeMB > 50) {
+    return NextResponse.json(
+      { error: `File too large: ${fileSizeMB.toFixed(1)}MB. Maximum is 50MB.` },
+      { status: 413 }
+    )
+  }
+
   let extractedText = ""
   let detectedTitle = fileName.replace(/\.[^.]+$/, "")
 
+  // Timeout wrapper — if extraction takes > 30s, fail gracefully
+  const withTimeout = <T>(promise: Promise<T>, ms: number): Promise<T> => {
+    return Promise.race([
+      promise,
+      new Promise<T>((_, reject) =>
+        setTimeout(() => reject(new Error(`Extraction timed out after ${ms / 1000}s`)), ms)
+      ),
+    ])
+  }
+
   try {
     if (ext === "pdf") {
-      extractedText = await extractFromPdf(buffer)
+      extractedText = await withTimeout(extractFromPdf(buffer), 30000)
     } else if (ext === "docx") {
-      extractedText = await extractFromDocx(buffer)
+      extractedText = await withTimeout(extractFromDocx(buffer), 30000)
     } else if (ext === "pptx") {
-      extractedText = await extractFromPptx(buffer)
+      extractedText = await withTimeout(extractFromPptx(buffer), 30000)
     } else if (ext === "txt" || ext === "md" || ext === "markdown") {
       extractedText = buffer.toString("utf-8")
     } else {
@@ -61,8 +92,15 @@ export async function POST(req: NextRequest) {
       )
     }
   } catch (err: any) {
+    const msg = err?.message || "Unknown error"
     return NextResponse.json(
-      { error: `Failed to extract text from ${ext.toUpperCase()}: ${err.message}` },
+      {
+        error: `Failed to extract text from ${ext.toUpperCase()}: ${msg}. ${
+          msg.includes("timed out")
+            ? "The file may be too complex or large. Try a smaller file."
+            : ""
+        }`,
+      },
       { status: 500 }
     )
   }
@@ -193,27 +231,100 @@ async function extractFromDocx(buffer: Buffer): Promise<string> {
 
 async function extractFromPptx(buffer: Buffer): Promise<string> {
   // PPTX is a ZIP file containing XML. We parse slide XML to extract text.
-  // Using a lightweight approach: unzip → parse slide XMLs → extract text runs.
   const JSZip = (await import("jszip")).default
-  const zip = await JSZip.loadAsync(buffer)
-  const slideFiles = Object.keys(zip.files)
-    .filter((name) => name.match(/ppt\/slides\/slide\d+\.xml/))
+  const zip = await JSZip.loadAsync(buffer, { createFolders: false })
+
+  // Find all slide XML files (handles both ppt/slides/ patterns)
+  const allFiles = Object.keys(zip.files)
+  const slideFiles = allFiles
+    .filter((name) => /ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((a, b) => {
+      const numA = parseInt(a.match(/slide(\d+)/)?.[1] || "0")
+      const numB = parseInt(b.match(/slide(\d+)/)?.[1] || "0")
+      return numA - numB
+    })
+
+  if (slideFiles.length === 0) {
+    const hasXml = allFiles.some((f) => f.endsWith(".xml"))
+    if (!hasXml) {
+      throw new Error(
+        "This doesn't appear to be a valid PowerPoint file. It may be an older .ppt format (only .pptx is supported)."
+      )
+    }
+    throw new Error("No slides found in the PowerPoint file.")
+  }
+
+  // Also try to extract speaker notes
+  const notesFiles = allFiles
+    .filter((name) => /ppt\/notesSlides\/notesSlide\d+\.xml$/i.test(name))
     .sort()
 
   const texts: string[] = []
-  for (const slideFile of slideFiles) {
-    const xml = await zip.files[slideFile].async("string")
-    // Extract text from <a:t> tags
-    const matches = xml.match(/<a:t>([^<]*)<\/a:t>/g) || []
-    const slideText = matches
-      .map((m) => m.replace(/<\/?a:t>/g, ""))
-      .join(" ")
-      .trim()
-    if (slideText) {
-      const slideNum = slideFile.match(/slide(\d+)/)?.[1] ?? "?"
-      texts.push(`## Slide ${slideNum}\n\n${slideText}`)
+  for (let i = 0; i < slideFiles.length; i++) {
+    const slideFile = slideFiles[i]
+    try {
+      const xml = await zip.files[slideFile].async("string")
+      // Extract text from <a:t> tags
+      const matches = xml.match(/<a:t>([^<]*)<\/a:t>/g) || []
+      const slideText = matches
+        .map((m) => m.replace(/<\/a:t>/g, "").replace(/<a:t>/g, ""))
+        .join(" ")
+        .trim()
+
+      // Also extract paragraphs for better structure
+      const paraMatches = xml.match(/<a:p>[\s\S]*?<\/a:p>/g) || []
+      const paragraphs = paraMatches
+        .map((p) => {
+          const textMatches = p.match(/<a:t>([^<]*)<\/a:t>/g) || []
+          return textMatches.map((m) => m.replace(/<\/a:t>/g, "").replace(/<a:t>/g, "")).join("")
+        })
+        .filter((p) => p.trim())
+
+      const slideNum = slideFile.match(/slide(\d+)/i)?.[1] ?? String(i + 1)
+      let slideContent = `## Slide ${slideNum}\n\n`
+
+      if (paragraphs.length > 0) {
+        slideContent += paragraphs.join("\n\n")
+      } else if (slideText) {
+        slideContent += slideText
+      }
+
+      // Try to get speaker notes
+      const notesFile = notesFiles.find((n) => {
+        const notesNum = n.match(/notesSlide(\d+)/i)?.[1]
+        return notesNum === slideNum
+      })
+      if (notesFile) {
+        try {
+          const notesXml = await zip.files[notesFile].async("string")
+          const notesMatches = notesXml.match(/<a:t>([^<]*)<\/a:t>/g) || []
+          const notesText = notesMatches
+            .map((m) => m.replace(/<\/a:t>/g, "").replace(/<a:t>/g, ""))
+            .join(" ")
+            .trim()
+          if (notesText) {
+            slideContent += `\n\n> **Speaker notes:** ${notesText}`
+          }
+        } catch {
+          // skip notes if they fail
+        }
+      }
+
+      if (slideText || paragraphs.length > 0) {
+        texts.push(slideContent)
+      }
+    } catch (err) {
+      // Skip individual slides that fail to parse
+      console.error(`Failed to parse ${slideFile}:`, err)
     }
   }
+
+  if (texts.length === 0) {
+    throw new Error(
+      "No text content found in any slides. The slides may contain only images."
+    )
+  }
+
   return texts.join("\n\n")
 }
 
