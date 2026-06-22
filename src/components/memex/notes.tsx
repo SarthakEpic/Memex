@@ -42,6 +42,7 @@ import {
   Pin,
   PinOff,
   Download,
+  Clock3,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -57,6 +58,7 @@ export function Notes() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [activeTag, setActiveTag] = useState<string | null>(null)
+  const [pinnedOnly, setPinnedOnly] = useState(false)
   const { recent, addSearch, clearSearches } = useRecentSearches("memex-note-searches")
 
   const { data: notesData, isLoading } = useQuery<{ notes: NoteSummary[] }>({
@@ -86,7 +88,8 @@ export function Notes() {
         n.title.toLowerCase().includes(search.toLowerCase()) ||
         n.tags.some((t) => t.toLowerCase().includes(search.toLowerCase())) ||
         n.project.toLowerCase().includes(search.toLowerCase())) &&
-      (!activeTag || n.tags.includes(activeTag))
+      (!activeTag || n.tags.includes(activeTag)) &&
+      (!pinnedOnly || n.pinned)
   )
 
   return (
@@ -95,7 +98,21 @@ export function Notes() {
       <div className="w-full lg:w-80 shrink-0 flex flex-col border-r border-border">
         <div className="p-3 border-b border-border space-y-2.5">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold">Notes</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold">Notes</h2>
+              <button
+                onClick={() => setPinnedOnly((p) => !p)}
+                className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${
+                  pinnedOnly
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                }`}
+                title="Show only pinned notes"
+              >
+                <Pin className="h-2.5 w-2.5" />
+                Pinned
+              </button>
+            </div>
             <div className="flex gap-1">
               <Button
                 size="sm"
@@ -498,6 +515,23 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
               <Calendar className="h-3 w-3" />
               {new Date(note.createdAt).toLocaleDateString()}
             </span>
+            {(() => {
+              const words = note.content.trim().split(/\s+/).filter(Boolean).length
+              const readingTime = Math.max(1, Math.round(words / 200))
+              return (
+                <>
+                  <Separator orientation="vertical" className="h-3 mx-1" />
+                  <span className="flex items-center gap-1">
+                    <FileText className="h-3 w-3" />
+                    {words.toLocaleString()} words
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Clock3 className="h-3 w-3" />
+                    {readingTime} min read
+                  </span>
+                </>
+              )
+            })()}
           </div>
         </div>
 

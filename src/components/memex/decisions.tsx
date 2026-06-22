@@ -43,6 +43,8 @@ export function Decisions() {
   const [project, setProject] = useState<string>("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
+  const [pinnedOnly, setPinnedOnly] = useState(false)
+  const [minConfidence, setMinConfidence] = useState(0)
   const { recent, addSearch, clearSearches } = useRecentSearches("memex-decision-searches")
 
   // Listen for "open decision" events from related-decision clicks
@@ -67,18 +69,46 @@ export function Decisions() {
     },
   })
 
-  const decisions = data?.decisions ?? []
-  const projects = Array.from(new Set(decisions.map((d) => d.project)))
+  const allDecisions = data?.decisions ?? []
+  const decisions = allDecisions.filter(
+    (d) =>
+      (!pinnedOnly || d.pinned) &&
+      d.confidence * 100 >= minConfidence
+  )
+  const projects = Array.from(new Set(allDecisions.map((d) => d.project)))
 
   return (
     <div className="flex flex-col h-full">
       {/* Toolbar */}
       <div className="border-b border-border p-3 space-y-2.5">
         <div className="flex items-center justify-between gap-2">
-          <h2 className="text-sm font-semibold flex items-center gap-2">
-            <Brain className="h-4 w-4 text-amber-500" />
-            Decisions ({decisions.length})
-          </h2>
+          <div className="flex items-center gap-2">
+            <h2 className="text-sm font-semibold flex items-center gap-2">
+              <Brain className="h-4 w-4 text-amber-500" />
+              Decisions ({decisions.length})
+            </h2>
+            <button
+              onClick={() => setPinnedOnly((p) => !p)}
+              className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${
+                pinnedOnly
+                  ? "bg-amber-500 text-white border-amber-500"
+                  : "border-border text-muted-foreground hover:border-amber-500/40 hover:text-foreground"
+              }`}
+              title="Show only pinned decisions"
+            >
+              <Pin className="h-2.5 w-2.5" />
+              Pinned
+            </button>
+          </div>
+          {minConfidence > 0 && (
+            <button
+              onClick={() => setMinConfidence(0)}
+              className="text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+              title="Reset confidence filter"
+            >
+              ✕ filters
+            </button>
+          )}
         </div>
         <div className="flex gap-2">
           <div className="relative flex-1">
@@ -142,6 +172,24 @@ export function Decisions() {
               ))}
             </select>
           )}
+        </div>
+        {/* Confidence filter slider */}
+        <div className="flex items-center gap-2.5">
+          <span className="text-[10px] text-muted-foreground font-medium shrink-0">
+            Min confidence
+          </span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={10}
+            value={minConfidence}
+            onChange={(e) => setMinConfidence(Number(e.target.value))}
+            className="flex-1 h-1 accent-amber-500 cursor-pointer"
+          />
+          <span className="text-[10px] font-mono font-semibold tabular-nums w-10 text-right">
+            {minConfidence}%
+          </span>
         </div>
       </div>
 

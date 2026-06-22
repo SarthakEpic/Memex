@@ -27,10 +27,12 @@ import {
   Download,
   Pencil,
   X,
+  GitCompare,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
 import { AnswerRenderer } from "./answer-renderer"
+import { CompareDialog } from "./compare-dialog"
 import type { ChatMessageData, ChatSessionSummary, Citation } from "./types"
 
 const SUGGESTED = [
@@ -44,6 +46,7 @@ const SUGGESTED = [
 export function Chat() {
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
+  const [compareOpen, setCompareOpen] = useState(false)
   const [streamingAnswer, setStreamingAnswer] = useState<{
     answer: string
     citations: Citation[]
@@ -312,6 +315,16 @@ export function Chat() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-xs"
+              onClick={() => setCompareOpen(true)}
+              title="Compare two chat sessions side by side"
+            >
+              <GitCompare className="h-3.5 w-3.5 mr-1" />
+              Compare
+            </Button>
             {sessionData?.session && messages.length > 0 && (
               <Button
                 size="sm"
@@ -411,6 +424,9 @@ export function Chat() {
           </div>
         </div>
       </div>
+
+      {/* A/B Compare dialog */}
+      <CompareDialog open={compareOpen} onOpenChange={setCompareOpen} />
     </div>
   )
 }
