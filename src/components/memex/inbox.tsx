@@ -63,6 +63,7 @@ export function Inbox_() {
   const [syncing, setSyncing] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [manageOpen, setManageOpen] = useState(false)
+  const [briefingOpen, setBriefingOpen] = useState(false)
   const qc = useQueryClient()
 
   const params = new URLSearchParams()
@@ -158,6 +159,15 @@ export function Inbox_() {
               </Button>
               <Button
                 size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                onClick={() => setBriefingOpen(true)}
+                title="Daily AI email briefing"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+              </Button>
+              <Button
+                size="sm"
                 variant="outline"
                 className="h-7 text-xs"
                 onClick={handleSync}
@@ -207,7 +217,8 @@ export function Inbox_() {
         </div>
 
         {/* Email list */}
-        <ScrollArea className="flex-1 thin-scroll">
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ScrollArea className="h-full thin-scroll">
           <div className="p-2 space-y-1">
             {isLoading && (
               <div className="flex items-center justify-center py-10">
@@ -234,7 +245,8 @@ export function Inbox_() {
               />
             ))}
           </div>
-        </ScrollArea>
+          </ScrollArea>
+        </div>
       </div>
 
       {/* Detail */}
@@ -643,6 +655,7 @@ function ReplyGenerator({
 
       <ConnectAccountDialog open={connectOpen} onOpenChange={setConnectOpen} />
       <ManageAccountsDialog open={manageOpen} onOpenChange={setManageOpen} />
+      <BriefingDialog open={briefingOpen} onOpenChange={setBriefingOpen} />
     </div>
   )
 }
@@ -849,5 +862,136 @@ function ConnectAccountDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  )
+}
+
+function BriefingDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+}) {
+  const { data, isLoading } = useQuery<{
+    briefing: string
+    stats: { total: number; urgent: number; important: number; needReply: number; newsletters: number }
+  }>({
+    queryKey: ["inbox-briefing"],
+    queryFn: async () => {
+      const r = await fetch("/api/inbox/briefing")
+      return r.json()
+    },
+    enabled: open,
+  })
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="text-base flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-primary" />
+            Daily Email Briefing
+          </DialogTitle>
+          <DialogDescription>
+            AI-generated summary of your last 24 hours of emails.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="py-2">
+          {isLoading && (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 animate-spin text-primary" />
+            </div>
+          )}
+          {!isLoading && data && (
+            <div className="space-y-3">
+              {/* Quick stats */}
+              <div className="flex flex-wrap gap-2">
+                <Badge variant="outline" className="text-[10px]">
+                  {data.stats.total} total
+                </Badge>
+                {data.stats.urgent > 0 && (
+                  <Badge className="text-[10px] bg-red-600 hover:bg-red-600 gap-0.5">
+                    <Zap className="h-2.5 w-2.5" />
+                    {data.stats.urgent} urgent
+                  </Badge>
+                )}
+                {data.stats.needReply > 0 && (
+                  <Badge className="text-[10px] bg-amber-600 hover:bg-amber-600 gap-0.5">
+                    <Reply className="h-2.5 w-2.5" />
+                    {data.stats.needReply} need reply
+                  </Badge>
+                )}
+                {data.stats.important > 0 && (
+                  <Badge className="text-[10px] bg-blue-600 hover:bg-blue-600 gap-0.5">
+                    {data.stats.important} important
+                  </Badge>
+                )}
+                {data.stats.newsletters > 0 && (
+                  <Badge variant="outline" className="text-[10px]">
+                    {data.stats.newsletters} newsletters
+                  </Badge>
+                )}
+              </div>
+
+              {/* Briefing content */}
+              <div className="rounded-md border border-border bg-muted/20 p-3 text-sm leading-relaxed">
+                <MarkdownPreviewContent content={data.briefing} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <Button onClick={() => onOpenChange(false)}>Close</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+// Simple markdown content renderer for the briefing
+function MarkdownPreviewContent({ content }: { content: string }) {
+  return (
+    <div className="prose-sm">
+      {content.split("\n").map((line, i) => {
+        if (line.startsWith("## ")) {
+          return (
+            <h2 key={i} className="text-base font-semibold mt-2 mb-1">
+              {line.replace("## ", "")}
+            </h2>
+          )
+        }
+        if (line.startsWith("### ")) {
+          return (
+            <h3 key={i} className="text-sm font-semibold mt-2 mb-1">
+              {line.replace("### ", "")}
+            </h3>
+          )
+        }
+        if (line.startsWith("- ")) {
+          return (
+            <li key={i} className="text-xs ml-4 list-disc">
+              <span dangerouslySetInnerHTML={{ __html: line.replace(/- /, "").replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") }} />
+            </li>
+          )
+        }
+        if (line.startsWith("**")) {
+          return (
+            <p key={i} className="text-xs font-semibold mt-1">
+              <span dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") }} />
+            </p>
+          )
+        }
+        if (line.trim()) {
+          return (
+            <p key={i} className="text-xs my-1">
+              <span dangerouslySetInnerHTML={{ __html: line.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>") }} />
+            </p>
+          )
+        }
+        return null
+      })}
+    </div>
   )
 }

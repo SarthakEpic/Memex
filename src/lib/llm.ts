@@ -306,15 +306,24 @@ const EMAIL_ANALYSIS_PROMPT = `You are Memex's email intelligence assistant. Ana
 {
   "category": "urgent" | "important" | "normal" | "newsletter" | "spam",
   "action": "reply_needed" | "review" | "archive" | "unsubscribe",
-  "summary": "One-sentence summary of what this email is about",
-  "keyPoints": ["key point 1", "key point 2", ...],
+  "summary": "A SHORT, CLEAR summary in this format: '[Sender] wants you to [do X] by [deadline]. [Key detail].' Keep it under 15 words. Be specific about what action is needed — don't just restate the subject line. If no action is needed, say what the email is informing you about.",
+  "keyPoints": ["3-5 bullet points, each starting with an action verb or clear topic. Be specific — include dates, amounts, or names."],
   "suggestedReply": "A draft reply if action is reply_needed, otherwise null"
 }
 
+SUMMARY RULES (very important):
+- DON'T just restate the subject — extract the ACTION or KEY INFORMATION
+- DO say what the sender wants from you (reply, approve, review, pay, etc.)
+- DO include deadlines or dates if mentioned
+- DO include amounts if it's a bill or payment
+- Keep it under 15 words — shorter is better
+- Bad summary: "A pull request has been opened to add a scheduling feature"
+- Good summary: "GitHub wants you to review PR #142 by checking 2 changed files"
+
 Category guidelines:
-- urgent: time-sensitive, requires immediate action (deadlines, outages, legal)
-- important: needs a response or review but not time-critical (project updates, requests)
-- normal: routine communication (confirmations, updates)
+- urgent: time-sensitive, requires immediate action (deadlines today/tomorrow, outages, legal)
+- important: needs a response or review but not time-critical (project updates, requests this week)
+- normal: routine communication (confirmations, updates, standup summaries)
 - newsletter: marketing, digests, automated content
 - spam: unwanted, phishing, irrelevant
 

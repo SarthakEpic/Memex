@@ -194,7 +194,8 @@ export function Decisions() {
       </div>
 
       {/* List */}
-      <ScrollArea className="flex-1 thin-scroll">
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <ScrollArea className="h-full thin-scroll">
         <div className="p-3 space-y-2 max-w-4xl mx-auto">
           {isLoading && (
             <div className="flex items-center justify-center py-10">
@@ -220,7 +221,8 @@ export function Decisions() {
             />
           ))}
         </div>
-      </ScrollArea>
+        </ScrollArea>
+      </div>
 
       <DecisionDetailDialog id={selectedId} onClose={() => setSelectedId(null)} />
     </div>

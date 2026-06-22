@@ -138,7 +138,8 @@ export function Email() {
         </div>
 
         {/* Email list */}
-        <ScrollArea className="flex-1 thin-scroll">
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ScrollArea className="h-full thin-scroll">
           <div className="p-2 space-y-1">
             {isLoading && (
               <div className="flex items-center justify-center py-10">
@@ -170,7 +171,8 @@ export function Email() {
               />
             ))}
           </div>
-        </ScrollArea>
+          </ScrollArea>
+        </div>
       </div>
 
       {/* Detail */}

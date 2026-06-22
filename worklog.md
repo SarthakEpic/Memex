@@ -691,3 +691,52 @@ Stage Summary:
 - File imports support PDF, Word, PowerPoint, TXT, and Markdown with automatic text extraction + Markdown structuring.
 - Audio-to-Note records voice in the browser, transcribes via ASR, and structures into clean Markdown with Hindi→Hinglish support.
 - 31 API routes, 23 UI components, 11 lib modules.
+
+---
+Task ID: 16 (current cron round)
+Agent: main (cron webDevReview)
+Task: Fix scroll bug, improve AI email summary, add daily briefing
+
+Work Log:
+- QA sweep via agent-browser: all 9 sections verified. Found scroll bug in Timeline + Decisions (content overflow but can't scroll).
+
+- Fix: Scroll bug in Timeline, Decisions, Inbox, Email, Notes, Chat.
+  - Root cause: Radix ScrollArea with `flex-1` in a flex column doesn't constrain its height — the viewport expands to fit all content instead of being constrained to the available space.
+  - Fix: Wrapped each ScrollArea in `<div className="flex-1 min-h-0 overflow-hidden">` and changed ScrollArea to `className="h-full"`. The `min-h-0` is critical — it allows the flex item to shrink below its content height.
+  - Applied to: timeline.tsx, decisions.tsx, inbox.tsx, email.tsx, notes.tsx, chat.tsx (all components using `<ScrollArea className="flex-1">`).
+  - Also wrapped Timeline, Decisions, Inbox, Email, Chat, Notes in page.tsx with `<div className="h-full overflow-hidden">` to ensure the height chain propagates from `<main className="overflow-hidden">`.
+  - Verified: Timeline viewport height = 817px, scrollHeight = 1966px → can scroll. Decisions viewport = 787px, scrollHeight = 1071px → can scroll.
+
+- Feature: Improved AI email summary.
+  - Rewrote the EMAIL_ANALYSIS_PROMPT with specific rules:
+    - Summary must be under 15 words, action-oriented ("[Sender] wants you to [do X] by [deadline]")
+    - DON'T restate the subject line — extract the ACTION
+    - DO include deadlines, dates, amounts
+    - Bad vs Good examples in the prompt
+    - Key points must start with action verbs, be specific (dates, amounts, names)
+  - This addresses the user's feedback that the summary was "confusing" and "easier to just read the email directly."
+
+- Feature: Daily Email Briefing.
+  - New API: `GET /api/inbox/briefing` — fetches last 24h of emails, generates a structured AI briefing with:
+    - Quick stats (X urgent, Y need replies, Z newsletters)
+    - 🔴 Needs Immediate Attention (urgent + reply_needed)
+    - 🟡 Important (review when you have time)
+    - 📰 FYI / Newsletter
+    - ✅ You can skip
+  - Uses LLM to write a natural language summary under 200 words.
+  - Fallback: if LLM fails, generates a basic structured briefing without AI.
+  - New UI: BriefingDialog component with quick stats badges + rendered briefing content.
+  - Sparkles button in inbox header opens the briefing.
+  - Verified: API returns well-structured briefing ("3 urgent, 2 need replies, 2 newsletters" + specific action items).
+
+Verification:
+- agent-browser tested: Timeline can scroll (viewport 817px, content 1966px), Decisions can scroll (787px, 1071px).
+- Briefing API returns correct structured data.
+- Lint clean. Dev log: all API routes 200.
+- No console errors.
+
+Stage Summary:
+- Scroll bug fixed: all sections with ScrollArea now properly constrain height and allow scrolling. The fix uses `min-h-0` + `overflow-hidden` wrapper pattern.
+- AI email summary improved: shorter, action-oriented, with specific details (deadlines, amounts) instead of restating the subject.
+- Daily email briefing: one-click AI summary of the day's emails with urgency categorization.
+- 32 API routes, 24 UI components, 11 lib modules.

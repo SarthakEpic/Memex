@@ -48,17 +48,41 @@ export default function Home() {
               <Dashboard />
             </div>
           )}
-          {section === "chat" && <Chat />}
-          {section === "notes" && <Notes />}
-          {section === "decisions" && <Decisions />}
-          {section === "timeline" && <Timeline />}
+          {section === "chat" && (
+            <div className="h-full overflow-hidden">
+              <Chat />
+            </div>
+          )}
+          {section === "notes" && (
+            <div className="h-full overflow-hidden">
+              <Notes />
+            </div>
+          )}
+          {section === "decisions" && (
+            <div className="h-full overflow-hidden">
+              <Decisions />
+            </div>
+          )}
+          {section === "timeline" && (
+            <div className="h-full overflow-hidden">
+              <Timeline />
+            </div>
+          )}
           {section === "analytics" && (
             <div className="h-full overflow-y-auto thin-scroll">
               <Analytics />
             </div>
           )}
-          {section === "email" && <Email />}
-          {section === "inbox" && <Inbox_ />}
+          {section === "email" && (
+            <div className="h-full overflow-hidden">
+              <Email />
+            </div>
+          )}
+          {section === "inbox" && (
+            <div className="h-full overflow-hidden">
+              <Inbox_ />
+            </div>
+          )}
           {section === "settings" && (
             <div className="h-full overflow-y-auto thin-scroll">
               <Settings />

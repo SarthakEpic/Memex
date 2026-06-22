@@ -128,7 +128,8 @@ export function Timeline() {
       </div>
 
       {/* Timeline */}
-      <ScrollArea className="flex-1 thin-scroll">
+      <div className="flex-1 min-h-0 overflow-hidden">
+        <ScrollArea className="h-full thin-scroll">
         <div className="p-4 max-w-3xl mx-auto">
           {isLoading && (
             <div className="flex items-center justify-center py-12">
@@ -169,7 +170,8 @@ export function Timeline() {
             ))}
           </div>
         </div>
-      </ScrollArea>
+        </ScrollArea>
+      </div>
     </div>
   )
 }

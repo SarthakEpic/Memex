@@ -228,7 +228,8 @@ export function Chat() {
             New chat
           </Button>
         </div>
-        <ScrollArea className="flex-1">
+        <div className="flex-1 min-h-0 overflow-hidden">
+          <ScrollArea className="h-full">
           <div className="p-2 space-y-0.5">
             {sessionsData?.sessions.length === 0 && (
               <p className="text-xs text-muted-foreground p-3 text-center">
@@ -305,7 +306,8 @@ export function Chat() {
               </div>
             ))}
           </div>
-        </ScrollArea>
+          </ScrollArea>
+        </div>
       </div>
 
       {/* Chat area */}
