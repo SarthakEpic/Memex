@@ -13,6 +13,8 @@ import {
   Command,
   Search,
   BarChart3,
+  Inbox,
+  Shield,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -23,13 +25,14 @@ import type { Section, StatsData } from "./types"
 
 const NAV: { id: Section; label: string; icon: React.ElementType; desc: string }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, desc: "Retrieval health" },
-  { id: "chat", label: "Chat", icon: MessageSquare, desc: "Citation-first Q&A" },
+  { id: "chat", label: "Chat", icon: MessageSquare, desc: "Smart assistant" },
   { id: "notes", label: "Notes", icon: FileText, desc: "Markdown ingestion" },
   { id: "decisions", label: "Decisions", icon: Brain, desc: "Extracted rationale" },
   { id: "timeline", label: "Timeline", icon: ScrollText, desc: "Chronological view" },
   { id: "analytics", label: "Analytics", icon: BarChart3, desc: "Citation insights" },
+  { id: "inbox", label: "Smart Inbox", icon: Inbox, desc: "AI email management" },
   { id: "email", label: "Email", icon: Mail, desc: "Outbox & digests" },
-  { id: "settings", label: "Settings", icon: Settings, desc: "Profile & SMTP" },
+  { id: "settings", label: "Settings", icon: Settings, desc: "Profile & security" },
 ]
 
 export function Sidebar() {
@@ -144,13 +147,16 @@ export function Sidebar() {
           ) : (
             <span>Loading…</span>
           )}
-          <button
-            onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "?" }))}
-            className="shrink-0 ml-2 inline-flex items-center justify-center h-5 w-5 rounded border border-border bg-muted hover:bg-accent transition-colors font-mono font-medium"
-            title="Keyboard shortcuts (?)"
-          >
-            ?
-          </button>
+          <div className="flex items-center gap-1 shrink-0">
+            <Shield className="h-3 w-3 text-emerald-500" title="Data encrypted locally" />
+            <button
+              onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "?" }))}
+              className="inline-flex items-center justify-center h-5 w-5 rounded border border-border bg-muted hover:bg-accent transition-colors font-mono font-medium"
+              title="Keyboard shortcuts (?)"
+            >
+              ?
+            </button>
+          </div>
         </div>
       </div>
     </aside>

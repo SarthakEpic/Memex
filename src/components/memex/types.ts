@@ -7,8 +7,11 @@ export type Section =
   | "decisions"
   | "timeline"
   | "email"
+  | "inbox"
   | "analytics"
   | "settings"
+
+export type ChatMode = "note_qa" | "app_help" | "general" | "email"
 
 export interface NoteSummary {
   id: string
@@ -162,6 +165,9 @@ export interface ProfileData {
   smtpUser: string
   dailyDigest: boolean
   digestHour: number
+  dataEncryption: boolean
+  llmPrivacyMode: boolean
+  autoDeleteDays: number
 }
 
 export interface ChunkDetail {
@@ -215,4 +221,40 @@ export interface AnalyticsData {
     avgCitationsPerAnswer: number
     uniqueCitedChunks: number
   }
+}
+
+export interface InboxEmailData {
+  id: string
+  accountId: string
+  fromAddress: string
+  fromName: string
+  toAddress: string
+  subject: string
+  body: string
+  bodyHtml: string
+  category: string // urgent | important | normal | newsletter | spam
+  action: string // reply_needed | review | archive | unsubscribe
+  summary: string
+  keyPoints: string[]
+  suggestedReply: string
+  analyzed: boolean
+  threadId: string
+  inReplyTo: string
+  isRead: boolean
+  isStarred: boolean
+  isArchived: boolean
+  receivedAt: string
+  createdAt: string
+}
+
+export interface EmailAccountData {
+  id: string
+  emailAddress: string
+  displayName: string
+  imapHost: string
+  imapPort: number
+  smtpHost: string
+  smtpPort: number
+  connected: boolean
+  lastSyncAt: string | null
 }

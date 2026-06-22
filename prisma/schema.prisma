@@ -142,6 +142,68 @@ model EmailTemplate {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Email Account Connection (IMAP/SMTP settings for inbox management)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model EmailAccount {
+  id          String   @id @default(cuid())
+  emailAddress String  @unique
+  displayName String   @default("")
+  // IMAP settings (for receiving)
+  imapHost    String   @default("")
+  imapPort    Int      @default(993)
+  imapUser    String   @default("")
+  imapSecure  Boolean  @default(true)
+  // SMTP settings (for sending)
+  smtpHost    String   @default("")
+  smtpPort    Int      @default(587)
+  smtpUser    String   @default("")
+  smtpSecure  Boolean  @default(true)
+  // Status
+  connected   Boolean  @default(false)
+  lastSyncAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Inbox Email (received emails with AI analysis)
+// ─────────────────────────────────────────────────────────────────────────────
+
+model InboxEmail {
+  id           String   @id @default(cuid())
+  accountId    String   @default("") // reference to EmailAccount
+  fromAddress  String
+  fromName     String   @default("")
+  toAddress    String
+  subject      String
+  body         String   // plain text body
+  bodyHtml     String   @default("")
+  // AI analysis
+  category     String   @default("normal") // urgent | important | normal | newsletter | spam
+  action       String   @default("review") // reply_needed | review | archive | unsubscribe
+  summary      String   @default("") // AI one-sentence summary
+  keyPoints    String   @default("[]") // JSON array of key points
+  suggestedReply String @default("") // AI draft reply
+  analyzed     Boolean  @default(false)
+  // Thread
+  threadId     String   @default("") // groups emails in same conversation
+  inReplyTo    String   @default("") // message ID this replies to
+  // Status
+  isRead       Boolean  @default(false)
+  isStarred    Boolean  @default(false)
+  isArchived   Boolean  @default(false)
+  receivedAt   DateTime @default(now())
+  createdAt    DateTime @default(now())
+
+  @@index([category])
+  @@index([action])
+  @@index([isRead])
+  @@index([receivedAt])
+  @@index([threadId])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Profile — single demo user + email settings
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -154,6 +216,10 @@ model Profile {
   smtpUser      String   @default("")
   dailyDigest   Boolean  @default(true)
   digestHour    Int      @default(9) // hour of day for digest
+  // Security settings
+  dataEncryption Boolean  @default(true)
+  llmPrivacyMode Boolean  @default(true) // only send minimal context to LLM
+  autoDeleteDays Int      @default(0) // 0 = never auto-delete
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 }

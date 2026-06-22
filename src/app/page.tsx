@@ -9,6 +9,7 @@ import { Notes } from "@/components/memex/notes"
 import { Decisions } from "@/components/memex/decisions"
 import { Timeline } from "@/components/memex/timeline"
 import { Email } from "@/components/memex/email"
+import { Inbox_ } from "@/components/memex/inbox"
 import { Settings } from "@/components/memex/settings"
 import { Analytics } from "@/components/memex/analytics"
 import { SourcePanel } from "@/components/memex/source-panel"
@@ -57,6 +58,7 @@ export default function Home() {
             </div>
           )}
           {section === "email" && <Email />}
+          {section === "inbox" && <Inbox_ />}
           {section === "settings" && (
             <div className="h-full overflow-y-auto thin-scroll">
               <Settings />

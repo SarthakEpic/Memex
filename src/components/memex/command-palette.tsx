@@ -24,6 +24,7 @@ import {
   Clock,
   CornerDownLeft,
   BarChart3,
+  Inbox,
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { useQuery } from "@tanstack/react-query"
@@ -85,13 +86,14 @@ export function CommandPalette() {
 
   const navItems: CommandItemDef[] = [
     { id: "nav-dash", label: "Dashboard", hint: "Retrieval health", icon: LayoutDashboard, group: "navigation", action: () => navTo("dashboard"), keywords: "home overview stats" },
-    { id: "nav-chat", label: "Chat", hint: "Citation-first Q&A", icon: MessageSquare, group: "navigation", action: () => { setActiveSession(null); navTo("chat") }, keywords: "ask question answer" },
+    { id: "nav-chat", label: "Chat", hint: "Smart assistant", icon: MessageSquare, group: "navigation", action: () => { setActiveSession(null); navTo("chat") }, keywords: "ask question answer" },
     { id: "nav-notes", label: "Notes", hint: "Markdown ingestion", icon: FileText, group: "navigation", action: () => navTo("notes"), keywords: "documents markdown" },
     { id: "nav-decisions", label: "Decisions", hint: "Extracted rationale", icon: Brain, group: "navigation", action: () => navTo("decisions"), keywords: "why rationale alternatives" },
     { id: "nav-timeline", label: "Timeline", hint: "Chronological view", icon: ScrollText, group: "navigation", action: () => navTo("timeline"), keywords: "history chronological" },
     { id: "nav-analytics", label: "Analytics", hint: "Citation insights", icon: BarChart3, group: "navigation", action: () => navTo("analytics"), keywords: "charts stats insights citations" },
-    { id: "nav-email", label: "Email", hint: "Outbox & digests", icon: Mail, group: "navigation", action: () => navTo("email"), keywords: "inbox outbox smtp" },
-    { id: "nav-settings", label: "Settings", hint: "Profile & SMTP", icon: Settings, group: "navigation", action: () => navTo("settings"), keywords: "profile smtp config" },
+    { id: "nav-inbox", label: "Smart Inbox", hint: "AI email management", icon: Inbox, group: "navigation", action: () => navTo("inbox"), keywords: "email inbox urgent important categorize" },
+    { id: "nav-email", label: "Email", hint: "Outbox & digests", icon: Mail, group: "navigation", action: () => navTo("email"), keywords: "outbox smtp send" },
+    { id: "nav-settings", label: "Settings", hint: "Profile & security", icon: Settings, group: "navigation", action: () => navTo("settings"), keywords: "profile smtp config security" },
   ]
 
   const actionItems: CommandItemDef[] = [

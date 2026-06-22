@@ -58,7 +58,130 @@ export interface CitedAnswer {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Citation-first prompt (the critical differentiator)
+// Smart multi-mode chat — intent detection + appropriate response.
+// The chat can operate in 4 modes:
+//   1. NOTE_QA  — citation-first Q&A from notes (the original differentiator)
+//   2. APP_HELP — questions about how to use Memex itself
+//   3. GENERAL  — normal conversation, greetings, general knowledge
+//   4. EMAIL    — questions about the user's inbox/emails
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ChatMode = "note_qa" | "app_help" | "general" | "email"
+
+export interface SmartAnswer {
+  answer: string
+  mode: ChatMode
+  citedChunkIds: string[]
+  refused: boolean
+  serviceError: boolean
+}
+
+const SMART_SYSTEM_PROMPT = `You are Memex, a friendly and intelligent knowledge assistant. You have FOUR capabilities and you automatically detect which one the user needs:
+
+## 1. Note Q&A (citation-first)
+When the user asks about something that might be in their notes (technical decisions, project rationale, past choices), you answer using ONLY the provided context chunks. Every factual claim MUST be cited with [^chunk_id]. If the context doesn't contain the answer, say "I don't have a source for this in your notes." Never speculate about note content.
+
+## 2. App Help
+When the user asks about how to use Memex itself ("how do I add a note?", "what can you do?", "how does email work?"), answer helpfully. Memex can: ingest Markdown notes, import web pages by URL, answer questions with citations, extract decisions, send/schedule emails, manage an inbox with AI categorization, analytics, dark mode, command palette (Cmd+K), keyboard shortcuts. Be concise and friendly.
+
+## 3. General Conversation
+When the user says "hi", "hello", "thanks", asks general questions not related to their notes or the app, or just wants to chat — respond warmly and naturally. You CAN use your general knowledge for general conversation. Be conversational, not robotic. If they greet you, greet back and briefly mention what you can help with.
+
+## 4. Email Awareness
+When the user asks about emails, their inbox, or email management, help them. If email context is provided, use it. Otherwise explain what Memex's email features can do.
+
+## Rules
+- For note questions: ALWAYS cite with [^chunk_id]. If no relevant context is provided, say "I don't have a source for this in your notes."
+- For general conversation and app help: be warm, concise, and helpful. No citations needed.
+- Use Markdown formatting for readability.
+- Keep answers focused — don't ramble.
+- If the user's intent is ambiguous, lean toward being helpful and conversational.`
+
+export async function generateSmartAnswer(
+  question: string,
+  chunks: ContextChunk[],
+  history: { role: "user" | "assistant"; content: string }[] = [],
+  emailContext?: string
+): Promise<SmartAnswer> {
+  const contextBlock = chunks.length > 0 ? buildContextBlock(chunks) : ""
+
+  const userPrompt = `${contextBlock ? `AVAILABLE NOTE CONTEXT (use ONLY for note Q&A, cite with [^chunk_id]):
+${contextBlock}
+
+` : ""}${emailContext ? `EMAIL CONTEXT:
+${emailContext}
+
+` : ""}USER MESSAGE: ${question}
+
+Respond appropriately based on the user's intent. If they're asking about their notes, use the note context and cite it. If they're saying hi or asking about the app, just be helpful and conversational.`
+
+  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: SMART_SYSTEM_PROMPT },
+    ...history.slice(-6).map((h) => ({ role: h.role, content: h.content })),
+    { role: "user", content: userPrompt },
+  ]
+
+  const zai = await getClient()
+  let raw = ""
+  const result = await withRetry(() =>
+    zai.chat.completions.create({
+      messages,
+      temperature: 0.4,
+      max_tokens: 800,
+    })
+  )
+  if (!result.ok) {
+    return {
+      answer:
+        "⚠️ I'm having trouble connecting right now (rate limited). Please try again in a moment — your message has been saved.",
+      mode: "general",
+      citedChunkIds: [],
+      refused: false,
+      serviceError: true,
+    }
+  }
+  const completion = result.value
+  if (typeof completion === "string") {
+    raw = completion
+  } else if (completion?.choices?.[0]?.message?.content) {
+    raw = completion.choices[0].message.content
+  } else if (completion?.content) {
+    raw = completion.content
+  } else {
+    raw = String(completion ?? "")
+  }
+
+  // Post-process: extract + verify citations
+  const validIds = new Set(chunks.map((c) => c.id))
+  const cited = new Set<string>()
+  const markerRe = /\[\^([a-z0-9]+)\]/gi
+  let m: RegExpExecArray | null
+  while ((m = markerRe.exec(raw)) !== null) {
+    const id = m[1]
+    if (validIds.has(id)) cited.add(id)
+  }
+
+  // Detect mode from the answer
+  const lower = raw.toLowerCase()
+  let mode: ChatMode = "general"
+  if (cited.size > 0) mode = "note_qa"
+  else if (lower.includes("i don't have a source") || lower.includes("in your notes")) mode = "note_qa"
+  else if (lower.includes("memex can") || lower.includes("you can") || lower.includes("to add a note") || lower.includes("keyboard shortcut") || lower.includes("command palette")) mode = "app_help"
+  else if (lower.includes("email") || lower.includes("inbox")) mode = "email"
+
+  const refused = mode === "note_qa" && cited.size === 0
+
+  return {
+    answer: raw.trim(),
+    mode,
+    citedChunkIds: Array.from(cited),
+    refused,
+    serviceError: false,
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Original citation-first prompt (the critical differentiator)
 // ─────────────────────────────────────────────────────────────────────────────
 
 const SYSTEM_PROMPT = `You are Memex, a citation-first knowledge assistant. You answer questions using ONLY the provided context chunks. You must cite the source of every claim using inline markers [^chunk_id].
@@ -161,6 +284,110 @@ ANSWER (with [^chunk_id] citations):`
     refused,
     serviceError: false,
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Email intelligence — categorization, summarization, draft replies.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type EmailCategory = "urgent" | "important" | "normal" | "newsletter" | "spam"
+export type EmailAction = "reply_needed" | "review" | "archive" | "unsubscribe"
+
+export interface EmailAnalysis {
+  category: EmailCategory
+  action: EmailAction
+  summary: string
+  keyPoints: string[]
+  suggestedReply?: string
+}
+
+const EMAIL_ANALYSIS_PROMPT = `You are Memex's email intelligence assistant. Analyze the given email and return a JSON object with:
+
+{
+  "category": "urgent" | "important" | "normal" | "newsletter" | "spam",
+  "action": "reply_needed" | "review" | "archive" | "unsubscribe",
+  "summary": "One-sentence summary of what this email is about",
+  "keyPoints": ["key point 1", "key point 2", ...],
+  "suggestedReply": "A draft reply if action is reply_needed, otherwise null"
+}
+
+Category guidelines:
+- urgent: time-sensitive, requires immediate action (deadlines, outages, legal)
+- important: needs a response or review but not time-critical (project updates, requests)
+- normal: routine communication (confirmations, updates)
+- newsletter: marketing, digests, automated content
+- spam: unwanted, phishing, irrelevant
+
+Respond with JSON only, no prose.`
+
+export async function analyzeEmail(
+  from: string,
+  subject: string,
+  body: string
+): Promise<EmailAnalysis | null> {
+  const zai = await getClient()
+  const result = await withRetry(() =>
+    zai.chat.completions.create({
+      messages: [
+        { role: "system", content: EMAIL_ANALYSIS_PROMPT },
+        {
+          role: "user",
+          content: `FROM: ${from}\nSUBJECT: ${subject}\n\nBODY:\n${body.slice(0, 2000)}\n\nJSON:`,
+        },
+      ],
+      temperature: 0.2,
+      max_tokens: 500,
+    })
+  )
+  if (!result.ok) return null
+  try {
+    const completion = result.value
+    let raw = ""
+    if (typeof completion === "string") raw = completion
+    else if (completion?.choices?.[0]?.message?.content)
+      raw = completion.choices[0].message.content
+    else raw = String(completion ?? "")
+    const match = raw.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    return JSON.parse(match[0]) as EmailAnalysis
+  } catch {
+    return null
+  }
+}
+
+// Generate a reply draft for an email
+export async function draftEmailReply(
+  from: string,
+  subject: string,
+  body: string,
+  instruction: string
+): Promise<string> {
+  const zai = await getClient()
+  const result = await withRetry(() =>
+    zai.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are a helpful email assistant. Draft a professional, concise reply based on the user's instruction. Write only the reply body, no subject line.",
+        },
+        {
+          role: "user",
+          content: `ORIGINAL EMAIL FROM: ${from}\nSUBJECT: ${subject}\nBODY: ${body.slice(0, 1500)}\n\nUSER'S INSTRUCTION: ${instruction}\n\nDRAFT REPLY:`,
+        },
+      ],
+      temperature: 0.5,
+      max_tokens: 400,
+    })
+  )
+  if (!result.ok) return "Unable to generate a draft at this time."
+  const completion = result.value
+  let raw = ""
+  if (typeof completion === "string") raw = completion
+  else if (completion?.choices?.[0]?.message?.content)
+    raw = completion.choices[0].message.content
+  else raw = String(completion ?? "")
+  return raw.trim()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -55,6 +55,7 @@ export function Chat() {
     citations: Citation[]
     refused: boolean
     serviceError: boolean
+    mode?: string
   } | null>(null)
   const sessionId = useMemex((s) => s.activeSessionId)
   const setSessionId = useMemex((s) => s.setActiveSession)
@@ -117,6 +118,7 @@ export function Chat() {
       citations: [],
       refused: false,
       serviceError: false,
+      mode: undefined,
     })
 
     try {
@@ -139,6 +141,7 @@ export function Chat() {
           citations: data.citations,
           refused: data.refused,
           serviceError: data.serviceError,
+          mode: data.mode,
         })
         if (i < words.length) {
           setTimeout(tick, 20)

@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { retrieve } from "@/lib/retrieval"
-import { generateCitedAnswer, type ContextChunk } from "@/lib/llm"
+import { generateSmartAnswer, type ContextChunk } from "@/lib/llm"
 
 // POST /api/chat
 // Body: { message: string, sessionId?: string, rerank?: boolean }
-// Returns: { sessionId, answer, citations, refused }
+// Returns: { sessionId, answer, citations, mode, refused, serviceError }
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const { message, sessionId, rerank = true } = body as {
@@ -34,24 +34,67 @@ export async function POST(req: NextRequest) {
   })
 
   // Retrieve context chunks (BM25 + optional LLM rerank)
-  const chunks: ContextChunk[] = await retrieve(message, { topK: 6, rerank })
+  // Only retrieve if the message looks like it might be about notes
+  const lowerMsg = message.toLowerCase()
+  const mightBeAboutNotes =
+    lowerMsg.includes("why") ||
+    lowerMsg.includes("how") ||
+    lowerMsg.includes("what") ||
+    lowerMsg.includes("decide") ||
+    lowerMsg.includes("decision") ||
+    lowerMsg.includes("pick") ||
+    lowerMsg.includes("choose") ||
+    lowerMsg.includes("note") ||
+    lowerMsg.includes("postgres") ||
+    lowerMsg.includes("redis") ||
+    lowerMsg.includes("keycloak") ||
+    lowerMsg.includes("cache") ||
+    lowerMsg.includes("llm") ||
+    lowerMsg.includes("auth") ||
+    lowerMsg.includes("vector") ||
+    lowerMsg.includes("embedding") ||
+    lowerMsg.includes("rerank") ||
+    lowerMsg.includes("observ") ||
+    lowerMsg.includes("frontend") ||
+    lowerMsg.includes("database") ||
+    lowerMsg.includes("?")
+
+  const chunks: ContextChunk[] = mightBeAboutNotes
+    ? await retrieve(message, { topK: 6, rerank })
+    : []
 
   // Build conversation history
   const history = await db.chatMessage.findMany({
     where: { sessionId: session.id, role: { in: ["user", "assistant"] } },
     orderBy: { createdAt: "asc" },
-    take: 8,
+    take: 12,
   })
   const historyClean = history
     .slice(0, -1) // exclude the just-stored user message (we pass it separately)
     .map((h) => ({ role: h.role as "user" | "assistant", content: h.content }))
 
-  // Generate cited answer
-  const { answer, citedChunkIds, refused, serviceError } = await generateCitedAnswer(
-    message,
-    chunks,
-    historyClean
-  )
+  // Build email context from recent inbox emails (if any)
+  let emailContext = ""
+  try {
+    const recentEmails = await db.inboxEmail.findMany({
+      orderBy: { receivedAt: "desc" },
+      take: 5,
+    })
+    if (recentEmails.length > 0) {
+      emailContext = recentEmails
+        .map(
+          (e) =>
+            `[${e.category}] FROM: ${e.fromAddress} | SUBJECT: ${e.subject}\n${e.body.slice(0, 300)}`
+        )
+        .join("\n\n")
+    }
+  } catch {
+    // inboxEmail table might not exist yet
+  }
+
+  // Generate smart answer (multi-mode)
+  const { answer, mode, citedChunkIds, refused, serviceError } =
+    await generateSmartAnswer(message, chunks, historyClean, emailContext || undefined)
 
   // Build citation metadata for the UI
   const citations = chunks
@@ -90,6 +133,7 @@ export async function POST(req: NextRequest) {
     answer,
     citations,
     context,
+    mode,
     refused,
     serviceError,
     retrievalCount: chunks.length,

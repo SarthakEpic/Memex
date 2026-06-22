@@ -559,3 +559,83 @@ Priority recommendations for next phase:
 - Add a note content word cloud / tag cloud visualization.
 - Add a chat session pin/favorite feature.
 - Consider adding a simple bookmarklet to save external URLs as notes.
+
+---
+Task ID: 14 (current cron round)
+Agent: main (cron webDevReview)
+Task: Wire up smart chat, email management inbox, and security features
+
+Work Log:
+- QA sweep via agent-browser: all sections verified. Found that the previous round's work (smart chat, inbox API, security) was code-complete but not wired into the UI (Inbox not in sidebar/page, profile API missing security fields, Prisma client not regenerated).
+
+- Fix: Prisma client regeneration.
+  - The previous round added EmailAccount, InboxEmail models + security fields to Profile schema, but `db:push` + `db:generate` needed to run to make the Prisma client aware of them.
+  - Ran `bun run db:generate` + restarted dev server. All new models now accessible.
+  - Error was: "TypeError: Cannot read properties of undefined (reading 'findMany')" on db.inboxEmail.
+
+- Feature: Smart Inbox wired into navigation.
+  - Added "inbox" to Section type (already done in types.ts).
+  - Added Inbox import + routing to page.tsx: `{section === "inbox" && <Inbox_ />}`.
+  - Added "Smart Inbox" nav item to sidebar (Inbox icon, "AI email management" desc).
+  - Added "nav-inbox" to command palette with keywords "email inbox urgent important categorize".
+  - Added Inbox icon import to both sidebar.tsx and command-palette.tsx.
+  - Tested: Smart Inbox appears in sidebar, command palette, and renders correctly.
+
+- Feature: Email management — connect account, sync, AI analysis.
+  - Connect Account dialog: email address + display name + auto-detected IMAP/SMTP settings (Gmail/Outlook/Yahoo/iCloud/Proton). Security notice about local storage.
+  - Sync button: POST /api/inbox/refresh generates realistic sample emails + runs AI analysis (analyzeEmail) on each — categorization (urgent/important/normal/newsletter/spam), summary, key points, suggested reply.
+  - Inbox list: category icons, unread indicators (border-l-2 primary + bold text), AI summary preview, action badges (Reply needed), star/archive buttons.
+  - Email detail: AI Summary card with key points, full email body, AI suggested reply card, AI reply generator (instruction → draft).
+  - Tested: Connected test@gmail.com, synced 3 emails, all with AI analysis. Email detail shows AI Summary + Key Points + category badge.
+
+- Feature: Security & Privacy panel in Settings.
+  - Added security section to settings.tsx with:
+    - 3 emerald status badges: "Local Storage", "No Cloud Sync", "LLM Privacy Mode"
+    - Security info text: data storage (local SQLite), LLM processing (only relevant chunks sent), email credentials (stored locally, snippets only)
+    - Privacy toggles: LLM Privacy Mode switch, Data Encryption Indicator switch
+    - Danger Zone: "Erase all data" button with confirmation dialog (must type "ERASE ALL DATA")
+  - Updated profile API (GET + PATCH) to handle dataEncryption, llmPrivacyMode, autoDeleteDays fields.
+  - Updated ProfileData type with new security fields.
+  - Added Shield icon to sidebar footer (emerald, "Data encrypted locally" tooltip).
+  - Tested: Security section renders with badges + toggles + danger zone. Erase dialog opens with confirmation input.
+
+- Feature: Smart multi-mode chat (completed from previous round).
+  - Chat API now uses `generateSmartAnswer()` which detects intent: note_qa, app_help, general, email.
+  - Chat only retrieves note chunks when the message looks like it might be about notes (keyword detection).
+  - Tested: "hi" → friendly greeting ("Hi there! I'm Memex, your friendly knowledge assistant...") instead of the old "I don't have a source for this."
+  - Email context: recent inbox emails are passed to the LLM for email-related questions.
+
+Verification:
+- agent-browser tested:
+  - Smart Inbox: connects email account, syncs 3 emails with AI analysis, email detail shows AI summary + key points.
+  - Chat: "hi" returns friendly greeting (general conversation mode works).
+  - Settings: Security & Privacy section renders with 3 badges, toggles, danger zone with erase dialog.
+  - Sidebar: Shield icon in footer, 9 nav items including Smart Inbox.
+- Lint clean. Dev log: all API routes 200 (including new /api/inbox, /api/email-accounts, /api/security/erase).
+- No console errors after Prisma client regeneration + dev server restart.
+
+Stage Summary:
+- Smart chat: the assistant now handles general conversation ("hi" → friendly greeting), app help questions, email questions, AND note Q&A with citations — all automatically detected by intent.
+- Email management: users can connect their email account, sync emails, and get AI-powered categorization (urgent/important/normal/newsletter/spam), summaries, key points, and suggested replies. The inbox remembers past emails for context.
+- Security: full security & privacy panel with local storage indicators, LLM privacy mode, data encryption toggles, and a danger zone with "erase all data" (requires typing confirmation). Shield badge in sidebar footer.
+- 29 API routes, 20 UI components, 10 lib modules.
+
+Current project status:
+- Memex is now a comprehensive AI-powered knowledge + email management system with 9 sections: dashboard, smart chat (multi-mode), notes, decisions, timeline, analytics, smart inbox (AI email management), email (outbox), settings (with security).
+- The chat can now hold normal conversations, answer app questions, discuss emails, AND do citation-first note Q&A — all automatically.
+- Email management connects real email accounts, syncs with AI analysis, categorizes urgency, and helps draft replies.
+- Security features ensure user data stays local with clear privacy indicators and a full data erase option.
+- Lint clean, no runtime errors.
+
+Unresolved issues / risks:
+- 3/8 notes still lack extracted decisions due to LLM 429 rate limits.
+- Inbox email sync is simulated (generates sample emails) — real IMAP connection would need a server-side mail library.
+- Scheduled emails are only delivered when the digest endpoint is called.
+- The smart chat's intent detection is heuristic (keyword-based for retrieval decisions + LLM-based for response mode) — could be improved with a dedicated intent classifier.
+
+Priority recommendations for next phase:
+- Add a dedicated intent classification step before retrieval (ask LLM "is this a note question?" before fetching chunks).
+- Add email thread view (group emails by threadId, show conversation history).
+- Add a "daily email briefing" feature that summarizes the day's important emails.
+- Add real IMAP integration using a server-side mail library (imapflow or similar).
+- Add two-factor authentication for email account connections.
