@@ -30,8 +30,10 @@ import {
   Quote,
   Loader2,
   Copy,
+  Pin,
 } from "lucide-react"
 import { toast } from "sonner"
+import { useQueryClient } from "@tanstack/react-query"
 import { useMemex } from "./store"
 import { useRecentSearches } from "./use-recent-searches"
 import type { DecisionSummary } from "./types"
@@ -184,10 +186,27 @@ function DecisionCard({
   decision: DecisionSummary
   onClick: () => void
 }) {
+  const qc = useQueryClient()
   const confPct = Math.round(decision.confidence * 100)
+
+  const handlePin = async (e: React.MouseEvent) => {
+    e.stopPropagation()
+    const r = await fetch("/api/pin", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type: "decision", id: decision.id }),
+    })
+    const d = await r.json()
+    if (d.pinned) toast.success("Decision pinned to top")
+    else toast.success("Decision unpinned")
+    qc.invalidateQueries({ queryKey: ["decisions"] })
+  }
+
   return (
     <Card
-      className="cursor-pointer hover:border-amber-500/40 transition-colors memex-fade-up"
+      className={`cursor-pointer hover:border-amber-500/40 transition-colors memex-fade-up relative ${
+        decision.pinned ? "border-l-2 border-l-amber-500" : ""
+      }`}
       onClick={onClick}
     >
       <CardContent className="p-3.5">
@@ -239,6 +258,20 @@ function DecisionCard({
           <FileText className="h-2.5 w-2.5" />
           <span className="truncate font-mono flex-1">{decision.note.sourcePath}</span>
           <span>· chunk #{decision.chunk.chunkIndex}</span>
+          {decision.pinned && (
+            <Pin className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />
+          )}
+          <button
+            onClick={handlePin}
+            className={`shrink-0 p-0.5 rounded hover:bg-accent transition-colors ${
+              decision.pinned
+                ? "text-amber-500"
+                : "text-muted-foreground hover:text-amber-500"
+            }`}
+            title={decision.pinned ? "Unpin" : "Pin to top"}
+          >
+            <Pin className="h-3 w-3" />
+          </button>
           <button
             onClick={(e) => {
               e.stopPropagation()

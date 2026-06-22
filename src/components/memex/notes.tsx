@@ -39,6 +39,9 @@ import {
   Globe,
   Pencil,
   Copy,
+  Pin,
+  PinOff,
+  Download,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -53,6 +56,7 @@ export function Notes() {
   const [openImport, setOpenImport] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
+  const [activeTag, setActiveTag] = useState<string | null>(null)
   const { recent, addSearch, clearSearches } = useRecentSearches("memex-note-searches")
 
   const { data: notesData, isLoading } = useQuery<{ notes: NoteSummary[] }>({
@@ -63,12 +67,26 @@ export function Notes() {
     },
   })
 
+  // Compute available tags from all notes (sorted by frequency)
+  const allTags = (() => {
+    const counts = new Map<string, number>()
+    for (const n of notesData?.notes ?? []) {
+      for (const t of n.tags) {
+        counts.set(t, (counts.get(t) ?? 0) + 1)
+      }
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1])
+      .map(([tag]) => tag)
+  })()
+
   const filtered = (notesData?.notes ?? []).filter(
     (n) =>
-      !search ||
-      n.title.toLowerCase().includes(search.toLowerCase()) ||
-      n.tags.some((t) => t.toLowerCase().includes(search.toLowerCase())) ||
-      n.project.toLowerCase().includes(search.toLowerCase())
+      (!search ||
+        n.title.toLowerCase().includes(search.toLowerCase()) ||
+        n.tags.some((t) => t.toLowerCase().includes(search.toLowerCase())) ||
+        n.project.toLowerCase().includes(search.toLowerCase())) &&
+      (!activeTag || n.tags.includes(activeTag))
   )
 
   return (
@@ -79,6 +97,18 @@ export function Notes() {
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold">Notes</h2>
             <div className="flex gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={() => {
+                  window.open("/api/notes/export-all", "_blank")
+                  toast.success("Exporting all notes…")
+                }}
+                title="Export all notes as Markdown"
+              >
+                <Download className="h-3.5 w-3.5" />
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
@@ -141,6 +171,32 @@ export function Notes() {
               </div>
             )}
           </div>
+          {/* Tag filter chips */}
+          {allTags.length > 0 && (
+            <div className="flex flex-wrap gap-1 pt-1">
+              {allTags.slice(0, 12).map((tag) => (
+                <button
+                  key={tag}
+                  onClick={() => setActiveTag(activeTag === tag ? null : tag)}
+                  className={`text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${
+                    activeTag === tag
+                      ? "bg-primary text-primary-foreground border-primary"
+                      : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                  }`}
+                >
+                  {tag}
+                </button>
+              ))}
+              {activeTag && (
+                <button
+                  onClick={() => setActiveTag(null)}
+                  className="text-[10px] px-1.5 py-0.5 rounded-full text-muted-foreground hover:text-destructive transition-colors"
+                >
+                  ✕ clear
+                </button>
+              )}
+            </div>
+          )}
         </div>
         <ScrollArea className="flex-1">
           <div className="p-2 space-y-1">
@@ -166,6 +222,17 @@ export function Notes() {
                   if (selectedId === n.id) setSelectedId(null)
                   qc.invalidateQueries({ queryKey: ["notes"] })
                   qc.invalidateQueries({ queryKey: ["stats"] })
+                }}
+                onTogglePin={async () => {
+                  const r = await fetch("/api/pin", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ type: "note", id: n.id }),
+                  })
+                  const d = await r.json()
+                  if (d.pinned) toast.success("Note pinned to top")
+                  else toast.success("Note unpinned")
+                  qc.invalidateQueries({ queryKey: ["notes"] })
                 }}
               />
             ))}
@@ -200,35 +267,59 @@ function NoteListItem({
   active,
   onClick,
   onDelete,
+  onTogglePin,
 }: {
   note: NoteSummary
   active: boolean
   onClick: () => void
   onDelete: () => void
+  onTogglePin: () => void
 }) {
   return (
     <div
-      className={`group rounded-md p-2.5 cursor-pointer transition-colors ${
+      className={`group rounded-md p-2.5 cursor-pointer transition-colors relative ${
         active ? "bg-accent" : "hover:bg-accent/50"
-      }`}
+      } ${note.pinned ? "border-l-2 border-l-primary" : ""}`}
       onClick={onClick}
     >
+      {note.pinned && (
+        <Pin className="absolute top-2 right-2 h-3 w-3 text-primary fill-primary" />
+      )}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium truncate">{note.title}</div>
+          <div className="text-sm font-medium truncate flex items-center gap-1">
+            {note.pinned && <Pin className="h-3 w-3 text-primary shrink-0 fill-primary" />}
+            {note.title}
+          </div>
           <div className="text-[10px] text-muted-foreground font-mono truncate mt-0.5">
             {note.sourcePath}
           </div>
         </div>
-        <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
-          className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-0.5 shrink-0">
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onTogglePin()
+            }}
+            className={`transition-opacity hover:text-primary ${
+              note.pinned
+                ? "opacity-100 text-primary"
+                : "opacity-0 group-hover:opacity-100 text-muted-foreground"
+            }`}
+            title={note.pinned ? "Unpin" : "Pin to top"}
+          >
+            <Pin className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              onDelete()
+            }}
+            className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
         <Badge variant="secondary" className="text-[9px] h-4">

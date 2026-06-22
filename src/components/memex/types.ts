@@ -18,6 +18,7 @@ export interface NoteSummary {
   tags: string[]
   chunkCount: number
   decisionCount: number
+  pinned: boolean
   createdAt: string
   updatedAt: string
 }
@@ -50,6 +51,7 @@ export interface DecisionSummary {
   participants: string[]
   project: string
   confidence: number
+  pinned: boolean
   createdAt: string
   note: { id: string; title: string; sourcePath: string }
   chunk: {

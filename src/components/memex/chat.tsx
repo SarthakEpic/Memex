@@ -55,6 +55,24 @@ export function Chat() {
   const openEmail = useMemex((s) => s.openEmailComposer)
   const qc = useQueryClient()
   const scrollRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+  const section = useMemex((s) => s.section)
+
+  // "/" focuses the chat input when on the chat section (unless already typing)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "/" && section === "chat") {
+        const target = e.target as Element
+        const tag = target?.tagName?.toLowerCase()
+        if (tag !== "input" && tag !== "textarea" && !target?.isContentEditable) {
+          e.preventDefault()
+          inputRef.current?.focus()
+        }
+      }
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [section])
 
   // Load messages for active session
   const { data: sessionData } = useQuery<{
@@ -357,6 +375,7 @@ export function Chat() {
           <div className="max-w-3xl mx-auto">
             <div className="relative">
               <Textarea
+                ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {

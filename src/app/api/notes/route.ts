@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
   const where = project ? { project } : {}
   const notes = await db.note.findMany({
     where,
-    orderBy: { updatedAt: "desc" },
+    orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
     include: {
       _count: { select: { chunks: true, decisions: true } },
     },
@@ -29,6 +29,7 @@ export async function GET(req: NextRequest) {
       tags: n.tags ? n.tags.split(",") : [],
       chunkCount: n._count.chunks,
       decisionCount: n._count.decisions,
+      pinned: n.pinned,
       createdAt: n.createdAt,
       updatedAt: n.updatedAt,
     })),

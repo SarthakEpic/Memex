@@ -20,7 +20,7 @@ export async function GET(req: NextRequest) {
 
   const decisions = await db.decision.findMany({
     where,
-    orderBy: { createdAt: "desc" },
+    orderBy: [{ pinned: "desc" }, { createdAt: "desc" }],
     include: { note: true, chunk: true },
     take: 200,
   })
@@ -36,6 +36,7 @@ export async function GET(req: NextRequest) {
       participants: d.participants ? d.participants.split("|") : [],
       project: d.project,
       confidence: d.confidence,
+      pinned: d.pinned,
       createdAt: d.createdAt,
       note: {
         id: d.note.id,

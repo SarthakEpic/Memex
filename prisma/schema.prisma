@@ -23,6 +23,7 @@ model Note {
   tags        String   @default("") // comma-separated
   contentHash String   // sha256, used for change detection
   chunkCount  Int      @default(0)
+  pinned      Boolean  @default(false) // user-pinned notes sort to top
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -31,6 +32,7 @@ model Note {
 
   @@index([project])
   @@index([createdAt])
+  @@index([pinned])
 }
 
 model Chunk {
@@ -69,10 +71,12 @@ model Decision {
   participants String   @default("") // pipe-separated
   project      String   @default("general")
   confidence   Float    @default(0.8) // 0..1 LLM self-reported
+  pinned       Boolean  @default(false) // user-pinned decisions sort to top
   createdAt    DateTime @default(now())
 
   @@index([project])
   @@index([decisionDate])
+  @@index([pinned])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

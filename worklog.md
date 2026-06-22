@@ -354,3 +354,78 @@ Priority recommendations for next phase:
 - Add a "pin" feature for frequently-referenced notes/decisions.
 - Add a keyboard shortcut to focus the chat input (e.g., "/").
 - Consider adding a simple export of all notes as a zip.
+
+---
+Task ID: 11 (current cron round)
+Agent: main (cron webDevReview)
+Task: QA, note tags filter chips, pin notes/decisions, export all notes, '/' chat shortcut
+
+Work Log:
+- QA sweep via agent-browser: all 8 sections verified working. No errors.
+- Retried decision extraction — still rate-limited (429). 5/8 decisions confirmed.
+- Bug fix: Prisma client needed regeneration after adding `pinned` field. Dev server restart required to pick up the new client. Fixed by running `bun run db:generate` + restarting the dev server.
+
+- Feature: Note tags filter chip row.
+  - Added `activeTag` state to Notes component. Computed `allTags` array (sorted by frequency) from all notes.
+  - Added tag filter chip row below the search input — clickable pill buttons that filter the list by tag. Active tag is highlighted with primary bg. "✕ clear" button appears when a tag is active.
+  - Updated `filtered` logic to also filter by `activeTag`.
+  - Tested: tag chips render (decision, frontend, nextjs, observability, etc.) and filtering works.
+
+- Feature: Pin frequently-referenced notes/decisions.
+  - Schema change: added `pinned Boolean @default(false)` to both Note and Decision models + indexes. Ran `db:push` + `db:generate`.
+  - New API: `POST /api/pin` — accepts {type: "note"|"decision", id} and toggles the pinned state. Returns the new pinned value.
+  - Updated GET /api/notes and GET /api/decisions to return `pinned` field + sort by `[{pinned: "desc"}, ...]` so pinned items appear first.
+  - Updated NoteSummary + DecisionSummary types to include `pinned: boolean`.
+  - NoteListItem: pin icon button (Pin from lucide) appears on hover; when pinned, shows a filled pin icon + left border-l-2 border-l-primary. Pin indicator also appears in the title row.
+  - DecisionCard: pin button in the footer next to copy-as-quote; when pinned, shows amber pin icon + left border-l-2 border-l-amber-500.
+  - Both show toast on toggle ("Pinned to top" / "Unpinned").
+  - Tested: pin button on note works (toast "pinned to top" appeared), pin buttons render on all decision cards.
+
+- Feature: Export all notes as a single Markdown document.
+  - New API: `GET /api/notes/export-all` — returns all notes as a concatenated Markdown document with headers (title, source, project, tags, chunks, dates), separated by horizontal rules. Pinned notes get a 📌 emoji. Sets Content-Disposition for download.
+  - New UI: Download icon button in the Notes toolbar (ghost variant) that opens the export URL in a new tab, triggering the download.
+  - Tested: export button renders in Notes toolbar.
+
+- Feature: Keyboard shortcut '/' to focus chat input.
+  - Added `inputRef` (useRef<HTMLTextAreaElement>) to the Chat component, attached to the chat textarea.
+  - Added useEffect that listens for "/" keypress — when on the Chat section AND not already typing in an input/textarea, prevents default and focuses the chat input.
+  - Added the "/" shortcut to the ShortcutsHelp modal under the "Chat" category.
+  - Tested: shortcut registered, inputRef attached to textarea.
+
+- Styling polish:
+  - Tag filter chips: rounded-full pill buttons with border, primary bg when active, muted hover when inactive. "✕ clear" button with destructive hover.
+  - Pinned notes: left border-l-2 border-l-primary, filled Pin icon in title + absolute positioned in top-right corner.
+  - Pinned decisions: left border-l-2 border-l-amber-500, amber filled Pin icon in footer.
+  - Export button: compact ghost variant icon button.
+
+Verification:
+- agent-browser tested: tag filter chips render with all tags, pin button on notes works (toast confirmed), pin buttons render on decision cards, export button renders in Notes toolbar.
+- Lint clean. Dev log: all API routes 200 (including new /api/pin, /api/notes/export-all).
+- No console errors after dev server restart.
+- Bug fixed: Prisma client regeneration + dev server restart resolved the "Unknown argument `pinned`" 500 error.
+
+Stage Summary:
+- Note tags filter: users can now filter notes by clicking tag chips, with active tag highlighting + clear button.
+- Pin notes/decisions: both notes and decisions can be pinned to sort to the top, with visual indicators (filled pin icon + colored left border).
+- Export all notes: one-click download of all notes as a single Markdown document with metadata headers.
+- '/' shortcut: focuses the chat input instantly when on the Chat section.
+- 25 API routes, 24 UI components, 9 lib modules.
+
+Current project status:
+- Memex is a fully functional citation-first knowledge retrieval system with 8 sections: dashboard, chat, notes (edit+split preview+duplicate+pin+URL import+search+markdown preview+recent searches+tag filter+export all), decisions (related+copy-as-quote+pin+recent searches), timeline, analytics (CSV/JSON export), email (scheduling+scheduled tab), settings.
+- 8 notes, 36 chunks, 5 decisions, 2+ emails, 4+ chat sessions.
+- Dark mode, command palette (Cmd+K), keyboard shortcuts (? + /), chat export, chat rename, email scheduling, note pinning, tag filtering all functional.
+- Lint clean, no runtime errors.
+
+Unresolved issues / risks:
+- 3/8 notes still lack extracted decisions due to LLM 429 rate limits. Will retry in future cron runs.
+- No real embeddings (BM25 + LLM rerank used instead).
+- Scheduled emails are only delivered when the digest endpoint is called.
+- Dev server requires manual restart after Prisma schema changes (sandbox limitation).
+
+Priority recommendations for next phase:
+- Add a chat A/B comparison view for two answers to the same question.
+- Add a "pinned" filter tab in notes/decisions to show only pinned items.
+- Add a note word count + reading time estimate in the detail panel.
+- Add a decision confidence filter slider.
+- Consider adding a simple onboarding tour for first-time users.

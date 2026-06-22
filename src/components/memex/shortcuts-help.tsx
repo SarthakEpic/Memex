@@ -24,6 +24,7 @@ const SHORTCUTS: Shortcut[] = [
   // Navigation (via command palette)
   { keys: ["⌘", "K"], description: "→ then type section name to navigate", category: "Navigation" },
   // Chat
+  { keys: ["/"], description: "Focus chat input (when on Chat section)", category: "Chat" },
   { keys: ["Enter"], description: "Send chat message", category: "Chat" },
   { keys: ["⇧", "Enter"], description: "New line in chat input", category: "Chat" },
   // Theme
