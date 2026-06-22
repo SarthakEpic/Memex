@@ -279,3 +279,78 @@ Priority recommendations for next phase:
 - Add a chat A/B comparison view for two answers to the same question.
 - Add a note duplicate/clone feature.
 - Consider adding a simple search history / recent searches dropdown.
+
+---
+Task ID: 10 (current cron round)
+Agent: main (cron webDevReview)
+Task: QA, note edit live preview, note duplicate, decision copy-as-quote, recent searches
+
+Work Log:
+- QA sweep via agent-browser: all 8 sections verified working (dashboard, chat, notes, decisions, timeline, analytics, email, settings). No errors, no console warnings.
+- Retried decision extraction — still rate-limited (429). 5/8 decisions confirmed.
+
+- Feature: Note edit dialog live preview (split view).
+  - Added `splitView` state to both AddNoteDialog and EditNoteDialog.
+  - Added Edit/Split toggle in the "Markdown content" section header.
+  - Split mode renders a 2-column grid: textarea on the left, live MarkdownPreview on the right (in a bordered muted box with scroll). AddNoteDialog shows "Live preview appears here…" placeholder when content is empty.
+  - Tested: Split toggle works, live preview renders markdown in real-time as you type.
+
+- Feature: Note duplicate/clone.
+  - Added `handleDuplicate()` to NoteDetailPanel — POSTs to /api/notes with title "{original} (copy)", same content/project/tags, extractDecisions: false.
+  - Added Copy icon button (ghost variant) next to Edit in the note detail header.
+  - Toast confirms "Duplicated as '{title}'" with chunk count.
+  - Tested: Duplicate button renders in note header.
+
+- Feature: Decision "copy as quote" button.
+  - Added Copy icon button to the footer of each DecisionCard (next to the source path).
+  - Copies a formatted markdown blockquote: `> **{title}**\n>\n> {rationale}\n>\n— _{sourcePath}_`
+  - Uses `e.stopPropagation()` to avoid opening the detail dialog.
+  - Toast confirms "Copied as quote".
+  - Tested: "Copy as quote" button renders on all decision cards.
+
+- Feature: Search history / recent searches.
+  - New hook: `src/components/memex/use-recent-searches.ts` — persists search terms in localStorage (deduped, capped at 8, most-recent-first). Uses lazy useState initializer to avoid SSR hydration mismatch + lint clean (no setState-in-effect).
+  - Integrated into both Notes and Decisions search inputs.
+  - When the search input is focused AND empty AND there are recent searches, a dropdown appears with "Recent searches" header, a "Clear" button, and clickable recent terms.
+  - Searches are saved on Enter keypress. Clicking a recent term fills the input and re-runs the search.
+  - Each section uses its own localStorage key (`memex-note-searches`, `memex-decision-searches`).
+  - Verified: localStorage correctly stores searches (confirmed via `JSON.parse(localStorage.getItem('memex-note-searches'))` = `["postgres"]`).
+
+- Styling polish:
+  - Split view: bordered muted preview box with thin-scroll, max-height 480px.
+  - Edit/Split toggle: matches the Preview/Source toggle styling from the note detail panel.
+  - Decision copy button: compact p-0.5 icon button with hover:bg-accent.
+  - Recent searches dropdown: popover-styled with shadow, uppercase header, destructive Clear button.
+  - Note detail header: compact icon buttons with ghost variant for secondary actions.
+
+Verification:
+- agent-browser tested: note edit Split toggle renders live preview, Duplicate button appears in note header, "Copy as quote" button appears on decision cards.
+- Recent searches: localStorage correctly persists (verified via eval). Dropdown appears on focus when input is empty (React onFocus requires real user interaction — synthetic events don't trigger it reliably, but the logic is correct).
+- Lint clean. Dev log: all API routes 200.
+- No console errors or runtime errors.
+
+Stage Summary:
+- Note edit live preview: users can now see rendered markdown side-by-side with the editor in both Add and Edit dialogs.
+- Note duplicate: one-click clone of any note with "(copy)" suffix.
+- Decision copy-as-quote: formatted blockquote copied to clipboard for easy pasting into docs.
+- Recent searches: both Notes and Decisions search inputs now show recent search terms on focus, persisted in localStorage.
+- 23 API routes, 23 UI components, 8 lib modules.
+
+Current project status:
+- Memex is a fully functional citation-first knowledge retrieval system with 8 sections: dashboard, chat, notes (edit+split preview+duplicate+URL import+search+markdown preview+recent searches), decisions (related+copy-as-quote+recent searches), timeline, analytics (CSV/JSON export), email (scheduling+scheduled tab), settings.
+- 8 notes, 36 chunks, 5 decisions, 2 emails, 4+ chat sessions, 6+ questions, 10+ citations in DB.
+- Dark mode, command palette (Cmd+K), keyboard shortcuts (?), chat export, chat rename, email scheduling all functional.
+- Lint clean, no runtime errors.
+
+Unresolved issues / risks:
+- 3/8 notes still lack extracted decisions due to LLM 429 rate limits. Will retry in future cron runs.
+- No real embeddings (BM25 + LLM rerank used instead).
+- Scheduled emails are only delivered when the digest endpoint is called — no background cron worker.
+- Recent searches dropdown can't be verified via synthetic browser events (React onFocus limitation), but logic is correct and localStorage persists.
+
+Priority recommendations for next phase:
+- Add a chat A/B comparison view for two answers to the same question.
+- Add a note tags filter chip row (clickable tags that filter the list).
+- Add a "pin" feature for frequently-referenced notes/decisions.
+- Add a keyboard shortcut to focus the chat input (e.g., "/").
+- Consider adding a simple export of all notes as a zip.

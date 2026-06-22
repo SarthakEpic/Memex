@@ -38,10 +38,12 @@ import {
   Link2,
   Globe,
   Pencil,
+  Copy,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
 import { MarkdownPreview } from "./markdown-preview"
+import { useRecentSearches } from "./use-recent-searches"
 import type { NoteSummary, NoteDetail } from "./types"
 
 export function Notes() {
@@ -50,6 +52,8 @@ export function Notes() {
   const [openAdd, setOpenAdd] = useState(false)
   const [openImport, setOpenImport] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [searchFocused, setSearchFocused] = useState(false)
+  const { recent, addSearch, clearSearches } = useRecentSearches("memex-note-searches")
 
   const { data: notesData, isLoading } = useQuery<{ notes: NoteSummary[] }>({
     queryKey: ["notes"],
@@ -95,9 +99,47 @@ export function Notes() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && search.trim()) {
+                  addSearch(search.trim())
+                  setSearchFocused(false)
+                }
+              }}
               placeholder="Search notes…"
               className="text-xs pl-8 h-8"
             />
+            {/* Recent searches dropdown */}
+            {searchFocused && !search && recent.length > 0 && (
+              <div className="absolute z-20 top-9 left-0 right-0 rounded-md border border-border bg-popover shadow-md p-1.5 space-y-0.5">
+                <div className="flex items-center justify-between px-1.5 py-0.5">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                    Recent searches
+                  </span>
+                  <button
+                    onClick={clearSearches}
+                    className="text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
+                {recent.map((term) => (
+                  <button
+                    key={term}
+                    onClick={() => {
+                      setSearch(term)
+                      addSearch(term)
+                      setSearchFocused(false)
+                    }}
+                    className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-xs text-left hover:bg-accent transition-colors"
+                  >
+                    <Search className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <span className="truncate">{term}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
         <ScrollArea className="flex-1">
@@ -257,6 +299,31 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
     }
   }
 
+  const handleDuplicate = async () => {
+    try {
+      const r = await fetch("/api/notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: `${note.title} (copy)`,
+          content: note.content,
+          project: note.project,
+          tags: note.tags,
+          extractDecisions: false,
+        }),
+      })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error)
+      toast.success(`Duplicated as "${d.title}"`, {
+        description: `${d.chunkCount} chunks ingested`,
+      })
+      qc.invalidateQueries({ queryKey: ["notes"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+    } catch (e: any) {
+      toast.error(e.message || "Duplicate failed")
+    }
+  }
+
   return (
     <>
     <ScrollArea className="h-full thin-scroll">
@@ -278,6 +345,15 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
               >
                 <Pencil className="h-3.5 w-3.5 mr-1" />
                 Edit
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={handleDuplicate}
+                title="Duplicate note"
+              >
+                <Copy className="h-3.5 w-3.5" />
               </Button>
               <Button
                 size="sm"
@@ -465,6 +541,7 @@ function AddNoteDialog({
   const [tags, setTags] = useState("")
   const [extract, setExtract] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [splitView, setSplitView] = useState(false)
 
   const reset = () => {
     setTitle("")
@@ -555,13 +632,57 @@ function AddNoteDialog({
             </div>
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">Markdown content</Label>
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder={"# My note\n\n## A section\n\nSome decision here…"}
-              className="text-sm font-mono min-h-[300px] resize-y"
-            />
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">Markdown content</Label>
+              <div className="flex items-center rounded-md border border-border p-0.5 text-[10px]">
+                <button
+                  onClick={() => setSplitView(false)}
+                  className={`px-2 py-0.5 rounded transition-colors ${
+                    !splitView
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => setSplitView(true)}
+                  className={`px-2 py-0.5 rounded transition-colors ${
+                    splitView
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Split
+                </button>
+              </div>
+            </div>
+            {splitView ? (
+              <div className="grid grid-cols-2 gap-2 min-h-[300px]">
+                <Textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  placeholder={"# My note\n\n## A section\n\nSome decision here…"}
+                  className="text-sm font-mono min-h-[300px] resize-none"
+                />
+                <div className="rounded-md border border-border bg-muted/20 p-3 overflow-y-auto thin-scroll min-h-[300px] max-h-[480px]">
+                  {content ? (
+                    <MarkdownPreview content={content} />
+                  ) : (
+                    <p className="text-xs text-muted-foreground italic">
+                      Live preview appears here…
+                    </p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                placeholder={"# My note\n\n## A section\n\nSome decision here…"}
+                className="text-sm font-mono min-h-[300px] resize-y"
+              />
+            )}
           </div>
           <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
             <input
@@ -752,6 +873,7 @@ function EditNoteDialog({
   const [tags, setTags] = useState(note.tags.join(", "))
   const [extract, setExtract] = useState(true)
   const [saving, setSaving] = useState(false)
+  const [splitView, setSplitView] = useState(false)
 
   // Reset form when the note changes or dialog opens
   useEffect(() => {
@@ -843,12 +965,50 @@ function EditNoteDialog({
             </div>
           </div>
           <div className="space-y-1">
-            <Label className="text-xs">Markdown content</Label>
-            <Textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              className="text-sm font-mono min-h-[320px] resize-y"
-            />
+            <div className="flex items-center justify-between">
+              <Label className="text-xs">Markdown content</Label>
+              <div className="flex items-center rounded-md border border-border p-0.5 text-[10px]">
+                <button
+                  onClick={() => setSplitView(false)}
+                  className={`px-2 py-0.5 rounded transition-colors ${
+                    !splitView
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => setSplitView(true)}
+                  className={`px-2 py-0.5 rounded transition-colors ${
+                    splitView
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Split
+                </button>
+              </div>
+            </div>
+            {splitView ? (
+              <div className="grid grid-cols-2 gap-2 min-h-[320px]">
+                <Textarea
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  className="text-sm font-mono min-h-[320px] resize-none"
+                  placeholder="# Heading…"
+                />
+                <div className="rounded-md border border-border bg-muted/20 p-3 overflow-y-auto thin-scroll min-h-[320px] max-h-[480px]">
+                  <MarkdownPreview content={content} />
+                </div>
+              </div>
+            ) : (
+              <Textarea
+                value={content}
+                onChange={(e) => setContent(e.target.value)}
+                className="text-sm font-mono min-h-[320px] resize-y"
+              />
+            )}
           </div>
           <label className="flex items-center gap-2 text-xs text-muted-foreground cursor-pointer">
             <input

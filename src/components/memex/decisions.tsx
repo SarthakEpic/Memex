@@ -29,14 +29,19 @@ import {
   FileText,
   Quote,
   Loader2,
+  Copy,
 } from "lucide-react"
+import { toast } from "sonner"
 import { useMemex } from "./store"
+import { useRecentSearches } from "./use-recent-searches"
 import type { DecisionSummary } from "./types"
 
 export function Decisions() {
   const [search, setSearch] = useState("")
   const [project, setProject] = useState<string>("")
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [searchFocused, setSearchFocused] = useState(false)
+  const { recent, addSearch, clearSearches } = useRecentSearches("memex-decision-searches")
 
   // Listen for "open decision" events from related-decision clicks
   useEffect(() => {
@@ -79,9 +84,47 @@ export function Decisions() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && search.trim()) {
+                  addSearch(search.trim())
+                  setSearchFocused(false)
+                }
+              }}
               placeholder='Search "why did I pick…"'
               className="text-xs pl-8 h-8"
             />
+            {/* Recent searches dropdown */}
+            {searchFocused && !search && recent.length > 0 && (
+              <div className="absolute z-20 top-9 left-0 right-0 rounded-md border border-border bg-popover shadow-md p-1.5 space-y-0.5">
+                <div className="flex items-center justify-between px-1.5 py-0.5">
+                  <span className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                    Recent searches
+                  </span>
+                  <button
+                    onClick={clearSearches}
+                    className="text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+                  >
+                    Clear
+                  </button>
+                </div>
+                {recent.map((term) => (
+                  <button
+                    key={term}
+                    onClick={() => {
+                      setSearch(term)
+                      addSearch(term)
+                      setSearchFocused(false)
+                    }}
+                    className="w-full flex items-center gap-1.5 px-1.5 py-1 rounded text-xs text-left hover:bg-accent transition-colors"
+                  >
+                    <Search className="h-3 w-3 text-muted-foreground shrink-0" />
+                    <span className="truncate">{term}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           {projects.length > 0 && (
             <select
@@ -194,8 +237,20 @@ function DecisionCard({
 
         <div className="mt-2 flex items-center gap-1.5 text-[10px] text-muted-foreground">
           <FileText className="h-2.5 w-2.5" />
-          <span className="truncate font-mono">{decision.note.sourcePath}</span>
+          <span className="truncate font-mono flex-1">{decision.note.sourcePath}</span>
           <span>· chunk #{decision.chunk.chunkIndex}</span>
+          <button
+            onClick={(e) => {
+              e.stopPropagation()
+              const quote = `> **${decision.title}**\n>\n> ${decision.rationale}\n>\n— _${decision.note.sourcePath}_`
+              navigator.clipboard.writeText(quote)
+              toast.success("Copied as quote")
+            }}
+            className="shrink-0 ml-1 p-0.5 rounded hover:bg-accent hover:text-foreground transition-colors"
+            title="Copy as quote"
+          >
+            <Copy className="h-3 w-3" />
+          </button>
         </div>
       </CardContent>
     </Card>
