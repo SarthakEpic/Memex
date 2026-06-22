@@ -62,6 +62,7 @@ export function Inbox_() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [syncing, setSyncing] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
+  const [manageOpen, setManageOpen] = useState(false)
   const qc = useQueryClient()
 
   const params = new URLSearchParams()
@@ -124,11 +125,28 @@ export function Inbox_() {
         {/* Header */}
         <div className="p-3 border-b border-border space-y-2.5">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold flex items-center gap-2">
-              <Inbox className="h-4 w-4 text-primary" />
-              Smart Inbox
-            </h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-sm font-semibold flex items-center gap-2">
+                <Inbox className="h-4 w-4 text-primary" />
+                Smart Inbox
+              </h2>
+              <Badge className="text-[9px] gap-0.5 bg-amber-500 hover:bg-amber-500" title="Inbox uses simulated sample emails for demo. Real IMAP connection coming soon.">
+                <Sparkles className="h-2.5 w-2.5" />
+                Demo
+              </Badge>
+            </div>
             <div className="flex gap-1">
+              {connectedAccounts.length > 0 && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={() => setManageOpen(true)}
+                  title="Manage connected accounts"
+                >
+                  <Wifi className="h-3.5 w-3.5" />
+                </Button>
+              )}
               <Button
                 size="sm"
                 variant="ghost"
@@ -622,7 +640,106 @@ function ReplyGenerator({
           </Button>
         </div>
       )}
+
+      <ConnectAccountDialog open={connectOpen} onOpenChange={setConnectOpen} />
+      <ManageAccountsDialog open={manageOpen} onOpenChange={setManageOpen} />
     </div>
+  )
+}
+
+function ManageAccountsDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean
+  onOpenChange: (o: boolean) => void
+}) {
+  const qc = useQueryClient()
+  const { data, isLoading } = useQuery<{ accounts: EmailAccountData[] }>({
+    queryKey: ["email-accounts"],
+    queryFn: async () => {
+      const r = await fetch("/api/email-accounts")
+      return r.json()
+    },
+    enabled: open,
+  })
+
+  const accounts = (data?.accounts ?? []).filter((a) => a.connected)
+
+  const handleDisconnect = async (emailAddress: string) => {
+    await fetch("/api/email-accounts", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ emailAddress }),
+    })
+    toast.success(`Disconnected ${emailAddress}`)
+    qc.invalidateQueries({ queryKey: ["email-accounts"] })
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="text-base flex items-center gap-2">
+            <Wifi className="h-4 w-4 text-primary" />
+            Connected Email Accounts
+          </DialogTitle>
+          <DialogDescription>
+            Accounts you&apos;ve connected for inbox management.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-2 py-2">
+          {isLoading && (
+            <div className="flex justify-center py-4">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+            </div>
+          )}
+          {!isLoading && accounts.length === 0 && (
+            <p className="text-sm text-muted-foreground text-center py-4">
+              No accounts connected yet.
+            </p>
+          )}
+          {accounts.map((a) => (
+            <div
+              key={a.id}
+              className="flex items-center justify-between rounded-md border border-border p-2.5"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium truncate">{a.displayName}</div>
+                <div className="text-[10px] text-muted-foreground font-mono truncate">
+                  {a.emailAddress}
+                </div>
+                <div className="text-[10px] text-muted-foreground mt-0.5">
+                  IMAP: {a.imapHost}:{a.imapPort} · SMTP: {a.smtpHost}:{a.smtpPort}
+                </div>
+                {a.lastSyncAt && (
+                  <div className="text-[10px] text-muted-foreground">
+                    Last sync: {new Date(a.lastSyncAt).toLocaleString()}
+                  </div>
+                )}
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs text-destructive hover:text-destructive shrink-0"
+                onClick={() => handleDisconnect(a.emailAddress)}
+              >
+                <WifiOff className="h-3.5 w-3.5 mr-1" />
+                Disconnect
+              </Button>
+            </div>
+          ))}
+        </div>
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 flex items-start gap-2">
+          <Sparkles className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+          <p className="text-[11px] text-muted-foreground leading-relaxed">
+            <strong className="text-foreground">Demo Mode:</strong> Inbox sync generates
+            simulated sample emails to showcase the AI categorization features.
+            Real IMAP connection will be added in a future update.
+          </p>
+        </div>
+      </DialogContent>
+    </Dialog>
   )
 }
 
