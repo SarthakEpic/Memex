@@ -47,6 +47,7 @@ import {
 import { toast } from "sonner"
 import { useMemex } from "./store"
 import { MarkdownPreview } from "./markdown-preview"
+import { NoteToc } from "./note-toc"
 import { useRecentSearches } from "./use-recent-searches"
 import type { NoteSummary, NoteDetail } from "./types"
 
@@ -537,47 +538,57 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
 
         <Separator />
 
-        {/* Content */}
-        <Card>
-          <CardHeader className="pb-2">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">
-                Full content
-              </CardTitle>
-              <div className="flex items-center rounded-md border border-border p-0.5 text-[10px]">
-                <button
-                  onClick={() => setViewMode("preview")}
-                  className={`px-2 py-0.5 rounded transition-colors ${
-                    viewMode === "preview"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Preview
-                </button>
-                <button
-                  onClick={() => setViewMode("source")}
-                  className={`px-2 py-0.5 rounded transition-colors ${
-                    viewMode === "source"
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  Source
-                </button>
+        {/* Content + TOC */}
+        <div className="grid gap-4 lg:grid-cols-[1fr_200px]">
+          <Card>
+            <CardHeader className="pb-2">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-xs uppercase tracking-wide text-muted-foreground">
+                  Full content
+                </CardTitle>
+                <div className="flex items-center rounded-md border border-border p-0.5 text-[10px]">
+                  <button
+                    onClick={() => setViewMode("preview")}
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      viewMode === "preview"
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Preview
+                  </button>
+                  <button
+                    onClick={() => setViewMode("source")}
+                    className={`px-2 py-0.5 rounded transition-colors ${
+                      viewMode === "source"
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    Source
+                  </button>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {viewMode === "preview" ? (
+                <MarkdownPreview content={note.content} />
+              ) : (
+                <pre className="text-sm font-mono whitespace-pre-wrap leading-relaxed text-foreground/90">
+                  {note.content}
+                </pre>
+              )}
+            </CardContent>
+          </Card>
+          {/* Table of contents — only in preview mode */}
+          {viewMode === "preview" && (
+            <div className="hidden lg:block">
+              <div className="sticky top-4">
+                <NoteToc content={note.content} />
               </div>
             </div>
-          </CardHeader>
-          <CardContent>
-            {viewMode === "preview" ? (
-              <MarkdownPreview content={note.content} />
-            ) : (
-              <pre className="text-sm font-mono whitespace-pre-wrap leading-relaxed text-foreground/90">
-                {note.content}
-              </pre>
-            )}
-          </CardContent>
-        </Card>
+          )}
+        </div>
 
         {/* Chunks */}
         <Card>

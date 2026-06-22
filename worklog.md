@@ -496,3 +496,66 @@ Priority recommendations for next phase:
 - Add a decision timeline filter by date range.
 - Add a chat message search (search within a session's messages).
 - Consider adding bulk note operations (select multiple + delete/export).
+
+---
+Task ID: 13 (current cron round)
+Agent: main (cron webDevReview)
+Task: QA, note TOC, chat message search, timeline date filter
+
+Work Log:
+- QA sweep via agent-browser: all 8 sections verified working. No errors.
+- Retried decision extraction — still rate-limited (429). 5/8 decisions confirmed.
+
+- Feature: Note content table of contents (TOC).
+  - New component: `src/components/memex/note-toc.tsx` — auto-generates a TOC from markdown headings (#, ##, ###, ####). Uses `useMemo` to parse headings, skipping code blocks. Each TOC item is a clickable button that scrolls to the corresponding heading in the rendered content and adds a `toc-highlight` flash animation (2s primary bg flash via `@keyframes toc-flash`).
+  - Added TOC as a sticky sidebar (hidden on mobile, 200px column on lg+) next to the note content card. Only visible in Preview mode (not Source).
+  - Heading levels get progressive indentation (h1 bold, h2 normal, h3 ml-3, h4 ml-6) + chevron icons for nested headings.
+  - Tested: TOC renders with headings from Database Selection note ("Database Selection, Postgres vs Mongo, Why not SQLite, Connection pooling, Backups"). "CONTENTS" header visible.
+
+- Feature: Chat message search (search within a session's messages).
+  - Added `messageSearch` + `searchOpen` state to Chat component.
+  - "Find" button (Search icon) in chat header — toggles a search bar above the messages area.
+  - Search bar: compact input with live match count ("2 matches"), X button to close. Filters non-matching messages (hides them when searching).
+  - MessageBubble now accepts `searchTerm` prop. User messages get search highlights via `highlightSearch()` — wraps matches in `<mark>` with amber bg.
+  - Tested: searching "postgres" shows "2 matches", 1 `<mark>` element rendered in the user message.
+
+- Feature: Decision timeline filter by date range.
+  - Added `dateFrom`, `dateTo`, `showDateFilter` state to Timeline component.
+  - "Date" button in timeline header toggles a date filter row with From/To date inputs + "✕ clear" button + live event count ("13 of 13 events").
+  - Client-side filtering: events filtered by `new Date(e.timestamp)` against the selected date range. To date includes the full day (+86400000ms).
+  - Tested: date filter renders with From/To inputs, event count shows "13 of 13 events".
+
+- Styling polish:
+  - TOC: sticky sidebar with progressive indentation, chevron icons for nested items, toc-flash animation on heading scroll.
+  - Chat search: compact search bar in muted/30 bg, amber `<mark>` highlights with rounded corners.
+  - Timeline date filter: flex-wrap row with labeled date inputs, event count badge.
+  - All new features use consistent design tokens (border-border, text-muted-foreground, bg-muted/30).
+
+Verification:
+- agent-browser tested: TOC "CONTENTS" renders with 5 headings, chat Find button opens search bar with "2 matches" for "postgres", timeline Date button opens filter with "13 of 13 events".
+- Lint clean. Dev log: all API routes 200.
+- No console errors.
+
+Stage Summary:
+- Note TOC: auto-generated table of contents from markdown headings with click-to-scroll + flash highlight. Sticky sidebar in preview mode.
+- Chat message search: in-session search with live match count + amber text highlighting. Non-matching messages hidden during search.
+- Timeline date filter: From/To date range filter with live event count + clear button.
+- 25 API routes, 26 UI components, 9 lib modules.
+
+Current project status:
+- Memex is a fully functional citation-first knowledge retrieval system with 8 sections: dashboard, chat (export+rename+compare A/B+in-session search), notes (edit+split preview+duplicate+pin+pinned filter+URL import+search+markdown preview+recent searches+tag filter+export all+word count+reading time+TOC), decisions (related+copy-as-quote+pin+pinned filter+confidence slider+recent searches), timeline (date range filter), analytics (CSV/JSON export), email (scheduling+scheduled tab), settings.
+- 8 notes, 36 chunks, 5 decisions, 2+ emails, 5+ chat sessions.
+- Dark mode, command palette (Cmd+K), keyboard shortcuts (? + /), chat export/rename/compare/search, email scheduling, note pinning/filtering/TOC, tag filtering, confidence filtering, timeline date filtering all functional.
+- Lint clean, no runtime errors.
+
+Unresolved issues / risks:
+- 3/8 notes still lack extracted decisions due to LLM 429 rate limits. Will retry in future cron runs.
+- No real embeddings (BM25 + LLM rerank used instead).
+- Scheduled emails are only delivered when the digest endpoint is called.
+
+Priority recommendations for next phase:
+- Add an onboarding tour for first-time users.
+- Add bulk note operations (select multiple + delete/export).
+- Add a note content word cloud / tag cloud visualization.
+- Add a chat session pin/favorite feature.
+- Consider adding a simple bookmarklet to save external URLs as notes.

@@ -269,3 +269,10 @@
 .prose-memex :last-child {
   margin-bottom: 0;
 }
+.prose-memex .toc-highlight {
+  animation: toc-flash 2s ease-out;
+}
+@keyframes toc-flash {
+  0%, 30% { background: var(--primary); color: var(--primary-foreground); border-radius: 0.25rem; }
+  100% { background: transparent; color: inherit; }
+}

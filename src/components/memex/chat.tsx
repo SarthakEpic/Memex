@@ -28,6 +28,7 @@ import {
   Pencil,
   X,
   GitCompare,
+  Search,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -47,6 +48,8 @@ export function Chat() {
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   const [compareOpen, setCompareOpen] = useState(false)
+  const [messageSearch, setMessageSearch] = useState("")
+  const [searchOpen, setSearchOpen] = useState(false)
   const [streamingAnswer, setStreamingAnswer] = useState<{
     answer: string
     citations: Citation[]
@@ -315,6 +318,18 @@ export function Chat() {
             </p>
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            {messages.length > 0 && (
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-xs"
+                onClick={() => setSearchOpen((s) => !s)}
+                title="Search within this chat"
+              >
+                <Search className="h-3.5 w-3.5 mr-1" />
+                Find
+              </Button>
+            )}
             <Button
               size="sm"
               variant="ghost"
@@ -345,6 +360,34 @@ export function Chat() {
           </div>
         </div>
 
+        {/* In-session search bar */}
+        {searchOpen && messages.length > 0 && (
+          <div className="border-b border-border px-4 py-2 bg-muted/30">
+            <div className="max-w-3xl mx-auto flex items-center gap-2">
+              <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+              <input
+                value={messageSearch}
+                onChange={(e) => setMessageSearch(e.target.value)}
+                placeholder="Search in this chat…"
+                className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+                autoFocus
+              />
+              {messageSearch && (
+                <span className="text-[10px] text-muted-foreground tabular-nums">
+                  {messages.filter((m) => m.content.toLowerCase().includes(messageSearch.toLowerCase())).length} match
+                  {messages.filter((m) => m.content.toLowerCase().includes(messageSearch.toLowerCase())).length !== 1 ? "es" : ""}
+                </span>
+              )}
+              <button
+                onClick={() => { setSearchOpen(false); setMessageSearch("") }}
+                className="text-muted-foreground hover:text-foreground transition-colors"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Messages */}
         <div ref={scrollRef} className="flex-1 overflow-y-auto thin-scroll">
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
@@ -352,13 +395,20 @@ export function Chat() {
               <EmptyState onPick={handleSend} />
             )}
 
-            {messages.map((m) => (
-              <MessageBubble
-                key={m.id}
-                message={m}
-                onEmail={() => handleEmailAnswer(m.content, m.citations)}
-              />
-            ))}
+            {messages.map((m) => {
+              // Filter out non-matching messages when searching
+              const isMatch = !messageSearch ||
+                m.content.toLowerCase().includes(messageSearch.toLowerCase())
+              if (!isMatch && messageSearch) return null
+              return (
+                <MessageBubble
+                  key={m.id}
+                  message={m}
+                  onEmail={() => handleEmailAnswer(m.content, m.citations)}
+                  searchTerm={messageSearch}
+                />
+              )
+            })}
 
             {streamingAnswer && (
               <div className="flex gap-3 memex-fade-up">
@@ -463,9 +513,11 @@ function EmptyState({ onPick }: { onPick: (q: string) => void }) {
 function MessageBubble({
   message,
   onEmail,
+  searchTerm = "",
 }: {
   message: ChatMessageData
   onEmail: () => void
+  searchTerm?: string
 }) {
   const [copied, setCopied] = useState(false)
   const isUser = message.role === "user"
@@ -475,6 +527,29 @@ function MessageBubble({
     message.citations.length === 0 &&
     !isServiceError &&
     message.content.trim().toLowerCase().startsWith("i don't have a source for this")
+
+  // Highlight search term in text (for user messages rendered as plain text)
+  const highlightSearch = (text: string) => {
+    if (!searchTerm) return text
+    const lower = text.toLowerCase()
+    const term = searchTerm.toLowerCase()
+    const parts: React.ReactNode[] = []
+    let lastIdx = 0
+    let idx = lower.indexOf(term)
+    let key = 0
+    while (idx !== -1) {
+      if (idx > lastIdx) parts.push(text.slice(lastIdx, idx))
+      parts.push(
+        <mark key={key++} className="bg-amber-300/60 dark:bg-amber-500/40 rounded px-0.5 text-foreground">
+          {text.slice(idx, idx + searchTerm.length)}
+        </mark>
+      )
+      lastIdx = idx + searchTerm.length
+      idx = lower.indexOf(term, lastIdx)
+    }
+    if (lastIdx < text.length) parts.push(text.slice(lastIdx))
+    return parts
+  }
 
   return (
     <div className="flex gap-3 memex-fade-up">
@@ -497,7 +572,7 @@ function MessageBubble({
       </div>
       <div className="flex-1 min-w-0 space-y-2">
         {isUser ? (
-          <p className="text-sm whitespace-pre-wrap leading-relaxed">{message.content}</p>
+          <p className="text-sm whitespace-pre-wrap leading-relaxed">{highlightSearch(message.content)}</p>
         ) : (
           <>
             <AnswerRenderer answer={message.content} />

@@ -20,6 +20,9 @@ import type { TimelineEvent } from "./types"
 
 export function Timeline() {
   const [project, setProject] = useState<string>("")
+  const [dateFrom, setDateFrom] = useState<string>("")
+  const [dateTo, setDateTo] = useState<string>("")
+  const [showDateFilter, setShowDateFilter] = useState(false)
   const setSection = useMemex((s) => s.setSection)
   const openSource = useMemex((s) => s.openSource)
 
@@ -34,8 +37,17 @@ export function Timeline() {
     },
   })
 
-  const events = data?.events ?? []
-  const projects = Array.from(new Set(events.map((e) => e.project)))
+  const allEvents = data?.events ?? []
+  const projects = Array.from(new Set(allEvents.map((e) => e.project)))
+
+  // Filter by date range
+  const events = allEvents.filter((e) => {
+    if (!dateFrom && !dateTo) return true
+    const eventDate = new Date(e.timestamp).getTime()
+    if (dateFrom && eventDate < new Date(dateFrom).getTime()) return false
+    if (dateTo && eventDate > new Date(dateTo).getTime() + 86400000) return false // include full day
+    return true
+  })
 
   // Group by day
   const grouped = groupByDay(events)
@@ -49,21 +61,66 @@ export function Timeline() {
             <Calendar className="h-4 w-4 text-primary" />
             Decision timeline
           </h2>
-          {projects.length > 0 && (
-            <select
-              value={project}
-              onChange={(e) => setProject(e.target.value)}
-              className="text-xs h-8 rounded-md border border-border bg-background px-2"
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="ghost"
+              className="h-7 text-xs"
+              onClick={() => setShowDateFilter((s) => !s)}
+              title="Filter by date range"
             >
-              <option value="">All projects</option>
-              {projects.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          )}
+              <Calendar className="h-3.5 w-3.5 mr-1" />
+              Date
+            </Button>
+            {projects.length > 0 && (
+              <select
+                value={project}
+                onChange={(e) => setProject(e.target.value)}
+                className="text-xs h-8 rounded-md border border-border bg-background px-2"
+              >
+                <option value="">All projects</option>
+                {projects.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
         </div>
+        {showDateFilter && (
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-muted-foreground">From</span>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => setDateFrom(e.target.value)}
+                className="text-xs h-8 rounded-md border border-border bg-background px-2"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] text-muted-foreground">To</span>
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => setDateTo(e.target.value)}
+                className="text-xs h-8 rounded-md border border-border bg-background px-2"
+              />
+            </div>
+            {(dateFrom || dateTo) && (
+              <button
+                onClick={() => { setDateFrom(""); setDateTo("") }}
+                className="text-[10px] text-muted-foreground hover:text-destructive transition-colors"
+              >
+                ✕ clear
+              </button>
+            )}
+            <span className="text-[10px] text-muted-foreground ml-auto">
+              {events.length} of {allEvents.length} events
+            </span>
+          </div>
+        )}
         <p className="text-[11px] text-muted-foreground">
           Notes and extracted decisions interleaved chronologically — trace why
           past technical choices were made.
