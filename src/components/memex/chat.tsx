@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, useCallback } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Card,
@@ -218,10 +218,42 @@ export function Chat() {
     })
   }
 
+  // Resizable sidebar width
+  const [sidebarWidth, setSidebarWidth] = useState(224) // 14rem default
+  const [isDragging, setIsDragging] = useState(false)
+  const dragStartX = useRef(0)
+  const dragStartWidth = useRef(0)
+
+  const handleDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setIsDragging(true)
+    dragStartX.current = e.clientX
+    dragStartWidth.current = sidebarWidth
+  }, [sidebarWidth])
+
+  useEffect(() => {
+    if (!isDragging) return
+    const handleMouseMove = (e: MouseEvent) => {
+      const delta = e.clientX - dragStartX.current
+      const newWidth = Math.max(180, Math.min(400, dragStartWidth.current + delta))
+      setSidebarWidth(newWidth)
+    }
+    const handleMouseUp = () => setIsDragging(false)
+    document.addEventListener("mousemove", handleMouseMove)
+    document.addEventListener("mouseup", handleMouseUp)
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove)
+      document.removeEventListener("mouseup", handleMouseUp)
+    }
+  }, [isDragging])
+
   return (
     <div className="flex h-full">
-      {/* Sessions sidebar */}
-      <div className="hidden lg:flex w-56 shrink-0 flex-col border-r border-border bg-sidebar/30">
+      {/* Sessions sidebar — resizable */}
+      <div
+        className="hidden lg:flex shrink-0 flex-col border-r border-border bg-sidebar/30 relative"
+        style={{ width: sidebarWidth }}
+      >
         <div className="p-3 border-b border-border">
           <Button size="sm" variant="outline" className="w-full" onClick={handleNewChat}>
             <Plus className="h-3.5 w-3.5 mr-1.5" />
@@ -309,6 +341,14 @@ export function Chat() {
           </ScrollArea>
         </div>
       </div>
+      {/* Drag handle for resizing */}
+      <div
+        onMouseDown={handleDragStart}
+        className={`hidden lg:block w-1 shrink-0 cursor-col-resize transition-colors ${
+          isDragging ? "bg-primary" : "bg-border hover:bg-primary/40"
+        }`}
+        title="Drag to resize"
+      />
 
       {/* Chat area */}
       <div className="flex-1 flex flex-col min-w-0">

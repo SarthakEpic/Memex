@@ -16,6 +16,7 @@ import { SourcePanel } from "@/components/memex/source-panel"
 import { EmailComposer } from "@/components/memex/email-composer"
 import { CommandPalette } from "@/components/memex/command-palette"
 import { ShortcutsHelp } from "@/components/memex/shortcuts-help"
+import { OnboardingTour } from "@/components/memex/onboarding-tour"
 import { useMemex } from "@/components/memex/store"
 
 export default function Home() {
@@ -35,6 +36,22 @@ export default function Home() {
     }
     window.addEventListener("memex-toast", handler)
     return () => window.removeEventListener("memex-toast", handler)
+  }, [])
+
+  // Background scheduled check — runs every 5 minutes to deliver scheduled emails
+  useEffect(() => {
+    const checkScheduled = async () => {
+      try {
+        await fetch("/api/scheduled-check")
+      } catch {
+        // silent fail — background task
+      }
+    }
+    // Run once on mount
+    checkScheduled()
+    // Then every 5 minutes
+    const interval = setInterval(checkScheduled, 5 * 60 * 1000)
+    return () => clearInterval(interval)
   }, [])
 
   return (
@@ -96,6 +113,7 @@ export default function Home() {
       <EmailComposer />
       <CommandPalette />
       <ShortcutsHelp />
+      <OnboardingTour />
     </div>
   )
 }

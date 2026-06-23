@@ -33,30 +33,41 @@ export async function POST(req: NextRequest) {
   })
 
   // Retrieve context chunks (BM25 + optional LLM rerank)
-  // Only retrieve if the message looks like it might be about notes
-  const lowerMsg = message.toLowerCase()
-  const mightBeAboutNotes =
-    lowerMsg.includes("why") ||
-    lowerMsg.includes("how") ||
-    lowerMsg.includes("what") ||
-    lowerMsg.includes("decide") ||
-    lowerMsg.includes("decision") ||
-    lowerMsg.includes("pick") ||
-    lowerMsg.includes("choose") ||
-    lowerMsg.includes("note") ||
-    lowerMsg.includes("postgres") ||
-    lowerMsg.includes("redis") ||
-    lowerMsg.includes("keycloak") ||
-    lowerMsg.includes("cache") ||
-    lowerMsg.includes("llm") ||
-    lowerMsg.includes("auth") ||
-    lowerMsg.includes("vector") ||
-    lowerMsg.includes("embedding") ||
-    lowerMsg.includes("rerank") ||
-    lowerMsg.includes("observ") ||
-    lowerMsg.includes("frontend") ||
-    lowerMsg.includes("database") ||
-    lowerMsg.includes("?")
+  // Smarter intent detection — distinguish note questions from general chat
+  const lowerMsg = message.toLowerCase().trim()
+
+  // Phrases that are clearly NOT about notes (general conversation)
+  const generalPhrases = [
+    "hi", "hello", "hey", "thanks", "thank you", "bye", "good morning",
+    "good afternoon", "good evening", "how are you", "what's up", "sup",
+    "what can you do", "who are you", "what are you", "help me",
+    "what is memex", "about this app", "how does this work",
+  ]
+
+  // Check if this is a general conversational phrase (exact or close match)
+  const isGeneral = generalPhrases.some(
+    (phrase) =>
+      lowerMsg === phrase ||
+      lowerMsg.startsWith(phrase + " ") ||
+      lowerMsg.startsWith(phrase + "?") ||
+      lowerMsg.startsWith(phrase + "!")
+  )
+
+  // Keywords that suggest the user is asking about their notes
+  const noteKeywords = [
+    "why", "how did", "what did", "decide", "decision", "pick", "choose",
+    "postgres", "redis", "keycloak", "cache", "llm", "auth", "vector",
+    "embedding", "rerank", "observ", "frontend", "database", "os module",
+    "system call", "notes", "document", "architecture", "strategy",
+    "stack", "framework", "library", "technology", "approach", "rationale",
+    "alternative", "tradeoff", "comparison", "benchmark",
+  ]
+
+  // Trigger note search if: contains a question mark OR contains note keywords
+  // AND is NOT a general conversational phrase
+  const hasQuestionMark = lowerMsg.includes("?")
+  const hasNoteKeyword = noteKeywords.some((kw) => lowerMsg.includes(kw))
+  const mightBeAboutNotes = !isGeneral && (hasQuestionMark || hasNoteKeyword)
 
   // Retrieve context chunks — SKIP reranking to avoid an extra LLM call
   // that could hit rate limits. BM25-only retrieval is fast and reliable.

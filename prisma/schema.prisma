@@ -154,14 +154,17 @@ model EmailAccount {
   imapPort    Int      @default(993)
   imapUser    String   @default("")
   imapSecure  Boolean  @default(true)
+  imapPassword String  @default("") // app-specific password (encrypted in production)
   // SMTP settings (for sending)
   smtpHost    String   @default("")
   smtpPort    Int      @default(587)
   smtpUser    String   @default("")
   smtpSecure  Boolean  @default(true)
+  smtpPassword String  @default("")
   // Status
   connected   Boolean  @default(false)
   lastSyncAt  DateTime?
+  syncMode    String   @default("demo") // "demo" = simulated, "real" = real IMAP
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

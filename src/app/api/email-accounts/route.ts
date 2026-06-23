@@ -15,12 +15,14 @@ export async function GET() {
 }
 
 // POST /api/email-accounts — connect a new email account
-// Body: { emailAddress, displayName?, imapHost?, imapPort?, smtpHost?, smtpPort? }
+// Body: { emailAddress, displayName?, imapPassword?, smtpPassword?, imapHost?, imapPort?, smtpHost?, smtpPort? }
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const {
     emailAddress,
     displayName,
+    imapPassword,
+    smtpPassword,
     imapHost,
     imapPort,
     smtpHost,
@@ -28,6 +30,8 @@ export async function POST(req: NextRequest) {
   } = body as {
     emailAddress?: string
     displayName?: string
+    imapPassword?: string
+    smtpPassword?: string
     imapHost?: string
     imapPort?: number
     smtpHost?: string
@@ -42,6 +46,9 @@ export async function POST(req: NextRequest) {
   const domain = emailAddress.split("@")[1]?.toLowerCase() ?? ""
   const defaults = detectProvider(domain)
 
+  // If IMAP password provided → real mode; otherwise → demo mode
+  const syncMode = imapPassword ? "real" : "demo"
+
   const account = await db.emailAccount.upsert({
     where: { emailAddress },
     create: {
@@ -53,7 +60,10 @@ export async function POST(req: NextRequest) {
       smtpPort: smtpPort || defaults.smtpPort,
       imapUser: emailAddress,
       smtpUser: emailAddress,
+      imapPassword: imapPassword || "",
+      smtpPassword: smtpPassword || imapPassword || "",
       connected: true,
+      syncMode,
     },
     update: {
       displayName: displayName || emailAddress.split("@")[0],
@@ -62,12 +72,20 @@ export async function POST(req: NextRequest) {
       smtpHost: smtpHost || defaults.smtpHost,
       smtpPort: smtpPort || defaults.smtpPort,
       connected: true,
+      ...(imapPassword ? { imapPassword, syncMode: "real" } : {}),
+      ...(smtpPassword ? { smtpPassword } : {}),
     },
   })
 
   return NextResponse.json({
-    account,
-    message: `Connected ${emailAddress}. Inbox sync is ready.`,
+    account: {
+      ...account,
+      imapPassword: undefined, // Don't return password
+      smtpPassword: undefined,
+    },
+    message: syncMode === "real"
+      ? `Connected ${emailAddress} with real IMAP. Inbox sync will fetch real emails.`
+      : `Connected ${emailAddress} in demo mode. Add an IMAP app password for real email sync.`,
   })
 }
 

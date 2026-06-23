@@ -39,6 +39,7 @@ import {
   WifiOff,
   Shield,
   Zap,
+  FileText,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -476,6 +477,25 @@ function InboxDetailPanel({ id }: { id: string }) {
               >
                 <Mail className="h-3.5 w-3.5" />
               </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 px-2"
+                onClick={async () => {
+                  try {
+                    const r = await fetch(`/api/inbox/${id}/to-note`, { method: "POST" })
+                    const d = await r.json()
+                    if (!r.ok) throw new Error(d.error)
+                    toast.success(d.message || "Email converted to note")
+                    window.dispatchEvent(new CustomEvent("memex-notes-updated"))
+                  } catch (e: any) {
+                    toast.error(e.message || "Conversion failed")
+                  }
+                }}
+                title="Convert email to note"
+              >
+                <FileText className="h-3.5 w-3.5" />
+              </Button>
               <Button size="sm" variant="ghost" className="h-7 px-2" onClick={handleDelete}>
                 <Trash2 className="h-3.5 w-3.5" />
               </Button>
@@ -766,6 +786,8 @@ function ConnectAccountDialog({
   const qc = useQueryClient()
   const [emailAddress, setEmailAddress] = useState("")
   const [displayName, setDisplayName] = useState("")
+  const [imapPassword, setImapPassword] = useState("")
+  const [showPassword, setShowPassword] = useState(false)
   const [connecting, setConnecting] = useState(false)
 
   const handleConnect = async () => {
@@ -781,6 +803,7 @@ function ConnectAccountDialog({
         body: JSON.stringify({
           emailAddress: emailAddress.trim(),
           displayName: displayName.trim() || undefined,
+          imapPassword: imapPassword.trim() || undefined,
         }),
       })
       const d = await r.json()
@@ -788,6 +811,7 @@ function ConnectAccountDialog({
       toast.success(d.message || "Account connected")
       setEmailAddress("")
       setDisplayName("")
+      setImapPassword("")
       onOpenChange(false)
       qc.invalidateQueries({ queryKey: ["email-accounts"] })
     } catch (e: any) {
@@ -831,6 +855,39 @@ function ConnectAccountDialog({
               placeholder="John Doe"
               className="text-sm"
             />
+          </div>
+          <div className="space-y-1">
+            <Label className="text-xs">
+              IMAP app password{" "}
+              <span className="text-muted-foreground">
+                (for real inbox sync — leave empty for demo mode)
+              </span>
+            </Label>
+            <Input
+              type={showPassword ? "text" : "password"}
+              value={imapPassword}
+              onChange={(e) => setImapPassword(e.target.value)}
+              placeholder="App-specific password"
+              className="text-sm"
+            />
+            <button
+              onClick={() => setShowPassword(!showPassword)}
+              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+            >
+              {showPassword ? "Hide" : "Show"} password
+            </button>
+            <p className="text-[10px] text-muted-foreground leading-relaxed mt-1">
+              For Gmail: use an{" "}
+              <a
+                href="https://myaccount.google.com/apppasswords"
+                target="_blank"
+                rel="noreferrer"
+                className="text-primary underline"
+              >
+                App Password
+              </a>
+              , not your regular password. Without a password, sync runs in demo mode with sample emails.
+            </p>
           </div>
           <div className="rounded-md border border-border bg-muted/30 p-2.5 flex items-start gap-2">
             <Shield className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
