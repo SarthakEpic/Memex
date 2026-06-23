@@ -98,6 +98,9 @@ export function Inbox_() {
   const accounts = accountsData?.accounts ?? []
   const connectedAccounts = accounts.filter((a) => a.connected)
   const emails = inboxData?.emails ?? []
+  // Check if any account is in real mode (not demo)
+  const hasRealAccount = connectedAccounts.some((a) => (a as any).syncMode === "real")
+  const isDemoMode = connectedAccounts.length > 0 && !hasRealAccount
 
   const handleSync = async () => {
     if (connectedAccounts.length === 0) {
@@ -137,10 +140,18 @@ export function Inbox_() {
                 <Inbox className="h-4 w-4 text-primary" />
                 Smart Inbox
               </h2>
-              <Badge className="text-[9px] gap-0.5 bg-amber-500 hover:bg-amber-500" title="Inbox uses simulated sample emails for demo. Real IMAP connection coming soon.">
-                <Sparkles className="h-2.5 w-2.5" />
-                Demo
-              </Badge>
+              {isDemoMode && (
+                <Badge className="text-[9px] gap-0.5 bg-amber-500 hover:bg-amber-500" title="Inbox uses simulated sample emails for demo. Add an IMAP password for real email sync.">
+                  <Sparkles className="h-2.5 w-2.5" />
+                  Demo
+                </Badge>
+              )}
+              {hasRealAccount && (
+                <Badge className="text-[9px] gap-0.5 bg-emerald-600 hover:bg-emerald-600" title="Connected via real IMAP — syncing real emails">
+                  <Wifi className="h-2.5 w-2.5" />
+                  Live
+                </Badge>
+              )}
             </div>
             <div className="flex gap-1">
               {connectedAccounts.length > 0 && (

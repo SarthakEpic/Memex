@@ -97,8 +97,10 @@ export function EmailComposer() {
           description: `For ${new Date(scheduledFor).toLocaleString()}`,
         })
       } else {
-        toast.success("Email delivered", {
-          description: `To: ${toAddress === "me" ? "your inbox" : toAddress}`,
+        toast.success(data.realSend ? "Email sent via SMTP ✓" : "Email saved locally", {
+          description: data.realSend
+            ? `Delivered to ${toAddress === "me" ? "your inbox" : toAddress} via real SMTP`
+            : `To: ${toAddress === "me" ? "your inbox" : toAddress}${data.error ? ` (${data.error})` : " (simulated — connect email for real sending)"}`,
         })
       }
       qc.invalidateQueries({ queryKey: ["emails"] })

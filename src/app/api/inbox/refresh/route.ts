@@ -72,62 +72,80 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
 
   await client.connect()
 
-  const lock = await client.getMailboxLock("INBOX")
   let added = 0
 
   try {
-    const searchResult = await client.search({ seen: false })
-    const recentIds = searchResult.slice(-maxCount)
+    // Sync BOTH INBOX (received) and Sent (sent by user)
+    const mailboxes = ["INBOX", "Sent", "[Gmail]/Sent Mail", "Sent Items"]
 
-    for (const msgId of recentIds) {
-      const msg = await client.fetchOne(msgId, {
-        envelope: true,
-        source: true,
-        bodyStructure: true,
-      })
+    for (const mailboxName of mailboxes) {
+      try {
+        const lock = await client.getMailboxLock(mailboxName)
+        try {
+          // Search for today's emails
+          const today = new Date()
+          today.setHours(0, 0, 0, 0)
+          const searchResult = await client.search({ since: today })
+          const recentIds = searchResult.slice(-maxCount) // Last N from today
 
-      if (!msg || !msg.envelope) continue
+          for (const msgId of recentIds) {
+            const msg = await client.fetchOne(msgId, {
+              envelope: true,
+              source: true,
+              bodyStructure: true,
+            })
 
-      const from = msg.envelope.from?.[0]
-      const fromAddress = from ? `${from.address}` : "unknown@unknown.com"
-      const fromName = from ? `${from.name || from.address}` : "Unknown"
-      const subject = msg.envelope.subject || "(no subject)"
-      const receivedAt = msg.envelope.date ? new Date(msg.envelope.date) : new Date()
+            if (!msg || !msg.envelope) continue
 
-      const rawSource = msg.source?.toString("utf-8") || ""
-      const body = extractPlainText(rawSource)
+            const from = msg.envelope.from?.[0]
+            const fromAddress = from ? `${from.address}` : "unknown@unknown.com"
+            const fromName = from ? `${from.name || from.address}` : "Unknown"
+            const subject = msg.envelope.subject || "(no subject)"
+            const receivedAt = msg.envelope.date ? new Date(msg.envelope.date) : new Date()
+            const isSent = mailboxName !== "INBOX"
 
-      if (!body.trim() || body.trim().length < 10) continue
+            const rawSource = msg.source?.toString("utf-8") || ""
+            const body = extractPlainText(rawSource)
 
-      const existing = await db.inboxEmail.findFirst({
-        where: { fromAddress, subject, receivedAt },
-      })
-      if (existing) continue
+            if (!body.trim() || body.trim().length < 10) continue
 
-      const analysis = await analyzeEmail(fromAddress, subject, body)
+            // Check if we already have this email
+            const existing = await db.inboxEmail.findFirst({
+              where: { fromAddress, subject, receivedAt },
+            })
+            if (existing) continue
 
-      await db.inboxEmail.create({
-        data: {
-          accountId: account.id,
-          fromAddress,
-          fromName,
-          toAddress: account.emailAddress,
-          subject,
-          body,
-          category: analysis?.category ?? "normal",
-          action: analysis?.action ?? "review",
-          summary: analysis?.summary ?? "",
-          keyPoints: JSON.stringify(analysis?.keyPoints ?? []),
-          suggestedReply: analysis?.suggestedReply ?? "",
-          analyzed: !!analysis,
-          threadId: subject.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 40),
-          receivedAt,
-        },
-      })
-      added++
+            const analysis = await analyzeEmail(fromAddress, subject, body)
+
+            await db.inboxEmail.create({
+              data: {
+                accountId: account.id,
+                fromAddress: isSent ? account.emailAddress : fromAddress,
+                fromName: isSent ? "You (sent)" : fromName,
+                toAddress: isSent ? fromAddress : account.emailAddress,
+                subject,
+                body,
+                category: isSent ? "normal" : (analysis?.category ?? "normal"),
+                action: isSent ? "archive" : (analysis?.action ?? "review"),
+                summary: isSent ? `You sent this email to ${fromName}` : (analysis?.summary ?? ""),
+                keyPoints: JSON.stringify(analysis?.keyPoints ?? []),
+                suggestedReply: isSent ? "" : (analysis?.suggestedReply ?? ""),
+                analyzed: isSent ? false : !!analysis,
+                threadId: subject.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 40),
+                receivedAt,
+              },
+            })
+            added++
+          }
+        } finally {
+          lock.release()
+        }
+      } catch (err) {
+        // Mailbox might not exist for this provider — skip silently
+        console.log(`Mailbox ${mailboxName} not available:`, (err as any)?.message)
+      }
     }
   } finally {
-    lock.release()
     await client.logout()
   }
 

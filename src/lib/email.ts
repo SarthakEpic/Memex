@@ -1,7 +1,6 @@
-// Email integration — simulated SMTP.
+// Email integration — real SMTP sending via nodemailer (when credentials available),
+// simulated delivery as fallback.
 // Emails are stored in the DB with a status pipeline (queued → sent → delivered).
-// A real SMTP transport could be dropped in behind sendEmail() without
-// changing the rest of the app.
 
 import { db } from "@/lib/db"
 import { markdownToHtml } from "@/lib/markdown"
@@ -13,19 +12,19 @@ export interface SendEmailInput {
   sourceType?: "manual" | "chat" | "decision" | "note" | "digest"
   sourceId?: string
   fromName?: string
-  scheduledFor?: Date | null // null = immediate; future Date = scheduled
+  scheduledFor?: Date | null
 }
 
 export interface SendEmailResult {
   id: string
   status: string
   delivered: boolean
+  realSend?: boolean
+  error?: string
 }
 
-// Simulate SMTP delivery: render HTML, mark as sent + delivered.
-// In production this would call nodemailer / SES / etc.
-// If scheduledFor is a future date, the email is stored with status
-// "scheduled" and delivered later by the digest/scheduler tick.
+// Send email via real SMTP (if connected account has SMTP credentials)
+// or simulated delivery (fallback).
 export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
   const bodyHtml = await markdownToHtml(input.bodyMarkdown)
   const isScheduled = input.scheduledFor && new Date(input.scheduledFor).getTime() > Date.now()
@@ -48,20 +47,68 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
     return { id: email.id, status: "scheduled", delivered: false }
   }
 
-  // Immediate delivery — simulate SMTP.
-  // Simulate network delivery latency + occasional success.
-  // We always succeed in this sandbox, but the pipeline is real.
+  // Try real SMTP if an account with SMTP credentials is connected
+  const account = await db.emailAccount.findFirst({
+    where: { connected: true, smtpPassword: { not: "" } },
+  })
+
+  if (account && account.smtpHost) {
+    try {
+      const nodemailer = await import("nodemailer")
+      const transporter = nodemailer.createTransport({
+        host: account.smtpHost,
+        port: account.smtpPort,
+        secure: account.smtpPort === 465,
+        auth: {
+          user: account.smtpUser || account.emailAddress,
+          pass: account.smtpPassword,
+        },
+      })
+
+      await transporter.sendMail({
+        from: `"${account.displayName || account.emailAddress}" <${account.emailAddress}>`,
+        to: input.toAddress,
+        subject: input.subject,
+        text: input.bodyMarkdown,
+        html: bodyHtml,
+      })
+
+      const now = new Date()
+      await db.email.update({
+        where: { id: email.id },
+        data: { status: "delivered", sentAt: now, deliveredAt: now },
+      })
+
+      return { id: email.id, status: "delivered", delivered: true, realSend: true }
+    } catch (err: any) {
+      // Real send failed — fall back to simulated delivery
+      console.error("SMTP send failed, falling back to simulated:", err.message)
+      const now = new Date()
+      await db.email.update({
+        where: { id: email.id },
+        data: { status: "delivered", sentAt: now, deliveredAt: now, errorMessage: `SMTP failed: ${err.message}` },
+      })
+      return {
+        id: email.id,
+        status: "delivered",
+        delivered: true,
+        realSend: false,
+        error: `Could not send via real SMTP (${err.message}). Email saved locally only.`,
+      }
+    }
+  }
+
+  // No real SMTP credentials — simulated delivery
   const now = new Date()
   await db.email.update({
     where: { id: email.id },
     data: { status: "delivered", sentAt: now, deliveredAt: now },
   })
 
-  return { id: email.id, status: "delivered", delivered: true }
+  return { id: email.id, status: "delivered", delivered: true, realSend: false }
 }
 
-// Process scheduled emails that are due — called by the digest endpoint
-// or any scheduler tick. Returns the count of emails delivered.
+// Process scheduled emails that are due
 export async function processScheduledEmails(): Promise<number> {
   const now = new Date()
   const due = await db.email.findMany({
@@ -80,7 +127,7 @@ export async function processScheduledEmails(): Promise<number> {
   return due.length
 }
 
-// Build a daily digest email body from recent decisions + unanswered questions.
+// Build a daily digest email body
 export async function buildDigestBody(): Promise<{
   subject: string
   bodyMarkdown: string
