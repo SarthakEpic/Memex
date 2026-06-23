@@ -50,8 +50,27 @@ export function Dashboard() {
   }
 
   const counts = stats.counts
+
+  // Health score — comprehensive 5-factor calculation
+  // Designed to reflect ACTUAL system health, not punish for having conversations
+  //
+  // 1. Knowledge base depth (30%) — notes + chunks + decisions = how rich is your KB
+  // 2. Engagement (25%) — chat sessions + questions = are you using the system
+  // 3. Citation quality (20%) — of NOTE answers, what % cite a source (excludes greetings/chat)
+  // 4. Email activity (15%) — emails sent + delivered
+  // 5. Decision extraction (10%) — decisions extracted from notes
+  const knowledgeScore = Math.min(100, Math.round((counts.notes * 5 + stats.corpus.chunkCount * 1 + counts.decisions * 10) / 2))
+  const engagementScore = Math.min(100, Math.round(counts.sessions * 8 + counts.messages * 3))
+  const citationScore = stats.citationCoverage // 0-100, but now only counts note answers
+  const emailScore = Math.min(100, Math.round(counts.emails * 12 + Math.min(50, counts.emailsDelivered * 5)))
+  const decisionScore = Math.min(100, counts.decisions * 15)
+
   const healthScore = Math.round(
-    (stats.citationCoverage * 0.5 + (100 - stats.refusalRate) * 0.3 + Math.min(100, counts.emails * 10) * 0.2)
+    knowledgeScore * 0.30 +
+    engagementScore * 0.25 +
+    citationScore * 0.20 +
+    emailScore * 0.15 +
+    decisionScore * 0.10
   )
 
   return (

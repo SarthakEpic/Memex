@@ -30,11 +30,24 @@ export async function GET() {
   })
 
   // Citation coverage: % of assistant messages with at least one citation
+  // Only count messages that are NOTE Q&A (not greetings, app help, or general chat)
   const assistantMessages = await db.chatMessage.findMany({
     where: { role: "assistant" },
-    select: { citations: true },
+    select: { content: true, citations: true },
   })
-  const citedMessages = assistantMessages.filter((m) => {
+
+  // A message is a "note answer" if it contains citation markers [^...]
+  // or if it explicitly says "I don't have a source" (honest refusal)
+  const noteAnswers = assistantMessages.filter((m) => {
+    const content = m.content.toLowerCase()
+    return (
+      content.includes("[^") || // has citations
+      content.includes("i don't have a source") || // honest refusal
+      content.includes("i don't have a source for this in your notes") // note-specific refusal
+    )
+  })
+
+  const citedMessages = noteAnswers.filter((m) => {
     try {
       const c = JSON.parse(m.citations)
       return Array.isArray(c) && c.length > 0
@@ -42,23 +55,25 @@ export async function GET() {
       return false
     }
   }).length
-  const citationCoverage =
-    assistantMessages.length > 0
-      ? Math.round((citedMessages / assistantMessages.length) * 100)
-      : 0
 
-  // Refusal rate: % of assistant messages that refused
-  const refusals = assistantMessages.filter((m) => {
-    try {
-      const c = JSON.parse(m.citations)
-      return Array.isArray(c) && c.length === 0
-    } catch {
-      return true
-    }
+  // Citation coverage = cited note answers / total note answers
+  // If there are no note answers, coverage is 100% (nothing to cite = no problem)
+  const citationCoverage =
+    noteAnswers.length > 0
+      ? Math.round((citedMessages / noteAnswers.length) * 100)
+      : 100
+
+  // Refusal rate = refusals / note answers (how often the AI couldn't find a source)
+  const refusals = noteAnswers.filter((m) => {
+    const content = m.content.toLowerCase()
+    return (
+      content.includes("i don't have a source") &&
+      !content.includes("[^") // no citations = actual refusal
+    )
   }).length
   const refusalRate =
-    assistantMessages.length > 0
-      ? Math.round((refusals / assistantMessages.length) * 100)
+    noteAnswers.length > 0
+      ? Math.round((refusals / noteAnswers.length) * 100)
       : 0
 
   return NextResponse.json({
