@@ -132,26 +132,35 @@ export function Inbox_() {
     <div className="flex h-full">
       {/* List */}
       <div className={`${selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
-        {/* Header */}
-        <div className="p-3 border-b border-border space-y-2.5">
+        {/* Header — clean, well-spaced */}
+        <div className="p-4 border-b border-border space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <h2 className="text-sm font-semibold flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
                 <Inbox className="h-4 w-4 text-primary" />
-                Smart Inbox
-              </h2>
-              {isDemoMode && (
-                <Badge className="text-[9px] gap-0.5 bg-amber-500 hover:bg-amber-500" title="Inbox uses simulated sample emails for demo. Add an IMAP password for real email sync.">
-                  <Sparkles className="h-2.5 w-2.5" />
-                  Demo
-                </Badge>
-              )}
-              {hasRealAccount && (
-                <Badge className="text-[9px] gap-0.5 bg-emerald-600 hover:bg-emerald-600" title="Connected via real IMAP — syncing real emails">
-                  <Wifi className="h-2.5 w-2.5" />
-                  Live
-                </Badge>
-              )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-semibold">Smart Inbox</h2>
+                  {isDemoMode && (
+                    <Badge className="text-[9px] gap-0.5 bg-amber-500 hover:bg-amber-500" title="Demo mode — sample emails">
+                      <Sparkles className="h-2.5 w-2.5" />
+                      Demo
+                    </Badge>
+                  )}
+                  {hasRealAccount && (
+                    <Badge className="text-[9px] gap-0.5 bg-emerald-600 hover:bg-emerald-600" title="Real IMAP connected">
+                      <Wifi className="h-2.5 w-2.5" />
+                      Live
+                    </Badge>
+                  )}
+                </div>
+                <p className="text-[10px] text-muted-foreground">
+                  {connectedAccounts.length > 0
+                    ? `${connectedAccounts.length} account${connectedAccounts.length !== 1 ? "s" : ""} connected · AI-analyzed`
+                    : "No account connected"}
+                </p>
+              </div>
             </div>
             <div className="flex gap-1">
               {connectedAccounts.length > 0 && (
@@ -200,58 +209,46 @@ export function Inbox_() {
             </div>
           </div>
 
-          {/* Connected accounts */}
-          {connectedAccounts.length > 0 ? (
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <Wifi className="h-3 w-3 text-emerald-500" />
-              <span>{connectedAccounts.length} account{connectedAccounts.length !== 1 ? "s" : ""} connected</span>
-              <Shield className="h-3 w-3 text-primary ml-1" />
-              <span>AI-analyzed</span>
+          {/* Category tabs + search + threads — compact row */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="flex gap-1 text-[11px] flex-1 min-w-0 overflow-x-auto thin-scroll">
+              {(["all", "urgent", "important", "unread", "newsletter"] as InboxTab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`px-2.5 py-1 rounded-md font-medium capitalize shrink-0 transition-colors ${
+                    tab === t
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                  }`}
+                >
+                  {t}
+                </button>
+              ))}
             </div>
-          ) : (
-            <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-              <WifiOff className="h-3 w-3" />
-              <span>No account connected — click + to connect</span>
-            </div>
-          )}
-
-          {/* Tabs */}
-          <div className="flex gap-1 text-[10px] flex-wrap">
-            {(["all", "urgent", "important", "unread", "newsletter"] as InboxTab[]).map((t) => (
-              <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`px-2 py-0.5 rounded-md font-medium capitalize transition-colors ${
-                  tab === t
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-accent/50"
-                }`}
-              >
-                {t}
-              </button>
-            ))}
           </div>
+
           {/* Search + Thread toggle */}
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
-              <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+              <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
               <input
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Search inbox..."
-                className="w-full text-xs pl-7 pr-2 h-7 rounded-md border border-border bg-background outline-none focus:border-primary/40"
+                className="w-full text-xs pl-8 pr-3 h-8 rounded-md border border-border bg-muted/30 outline-none focus:border-primary/40 focus:bg-background transition-colors"
               />
             </div>
             <button
               onClick={() => setThreaded(!threaded)}
-              className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border transition-colors shrink-0 ${
+              className={`flex items-center gap-1 text-[10px] px-2.5 py-1.5 rounded-md border transition-colors shrink-0 ${
                 threaded
                   ? "bg-primary text-primary-foreground border-primary"
-                  : "border-border text-muted-foreground hover:text-foreground"
+                  : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
               }`}
               title="Group emails by conversation"
             >
-              <Mail className="h-2.5 w-2.5" />
+              <Mail className="h-3 w-3" />
               Threads
             </button>
           </div>
@@ -307,23 +304,22 @@ export function Inbox_() {
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
               <Sparkles className="h-7 w-7 text-primary" />
             </div>
-            <div className="space-y-1">
-              <h3 className="text-sm font-medium">AI-Powered Email Management</h3>
-              <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                Connect your email account and Memex will read, categorize, and
-                prioritize your emails. It tells you which are urgent, summarizes
-                each one, and remembers past conversations to help you respond.
+            <div className="space-y-2 max-w-md">
+              <h3 className="text-base font-semibold">Connect Your Email to Get Started</h3>
+              <p className="text-sm text-muted-foreground leading-relaxed">
+                Memex reads, categorizes, and prioritizes your emails with AI.
+                Get a daily briefing, AI summaries, and smart reply drafts.
               </p>
             </div>
             <div className="flex gap-2">
-              <Button size="sm" variant="outline" onClick={() => setConnectOpen(true)}>
+              <Button size="sm" onClick={() => setConnectOpen(true)}>
                 <Plus className="h-3.5 w-3.5 mr-1.5" />
-                Connect email
+                Connect Email
               </Button>
               {connectedAccounts.length > 0 && (
                 <Button size="sm" variant="outline" onClick={handleSync} disabled={syncing}>
                   <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                  Sync now
+                  Sync Now
                 </Button>
               )}
             </div>
