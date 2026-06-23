@@ -25,6 +25,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { useMemex } from "./store"
 import { ThemeToggle } from "./theme-toggle"
+import { useDevice } from "@/hooks/use-device"
 import type { Section, StatsData, EmailAccountData } from "./types"
 
 // Top-level nav (non-email sections)
@@ -48,7 +49,8 @@ export function Sidebar() {
   const setSection = useMemex((s) => s.setSection)
   const openEmail = useMemex((s) => s.openEmailComposer)
   const openCommandPalette = useMemex((s) => s.openCommandPalette)
-  const [emailExpanded, setEmailExpanded] = useState(true) // Email section expanded by default
+  const [emailExpanded, setEmailExpanded] = useState(true)
+  const { isMobile } = useDevice()
 
   const { data: stats } = useQuery<StatsData>({
     queryKey: ["stats"],
@@ -61,7 +63,7 @@ export function Sidebar() {
   const emailBadge = stats?.counts.emails ?? 0
 
   return (
-    <aside className="hidden md:flex w-60 shrink-0 flex-col border-r border-border bg-sidebar/50 backdrop-blur-sm">
+    <aside className={`${isMobile ? "hidden" : "flex"} w-60 shrink-0 flex-col border-r border-border bg-sidebar/50 backdrop-blur-sm`}>
       {/* Brand */}
       <div className="p-4 border-b border-border">
         <div className="flex items-center gap-2.5">
@@ -245,12 +247,14 @@ export function Sidebar() {
   )
 }
 
-// Mobile bottom nav — icon-based tab bar at the bottom of the screen
+// Mobile bottom nav — only shown on actual mobile devices (not desktop resized small)
 export function MobileNav() {
   const section = useMemex((s) => s.section)
   const setSection = useMemex((s) => s.setSection)
-  const openEmail = useMemex((s) => s.openEmailComposer)
-  const openCommandPalette = useMemex((s) => s.openCommandPalette)
+  const { isMobile } = useDevice()
+
+  // Don't render anything on desktop/tablet — they use the sidebar
+  if (!isMobile) return null
 
   // Primary nav items — "Email" label instead of "Inbox" on mobile
   const MOBILE_NAV = [
@@ -262,7 +266,7 @@ export function MobileNav() {
   ]
 
   return (
-    <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur-lg safe-area-pb">
+    <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur-lg safe-area-pb">
       <div className="flex items-center justify-around px-1 py-1.5">
         {MOBILE_NAV.map((item) => {
           const Icon = item.icon

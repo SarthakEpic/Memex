@@ -60,6 +60,7 @@ import { NoteToc } from "./note-toc"
 import { FileUploadDialog } from "./file-upload-dialog"
 import { AudioNoteDialog } from "./audio-note-dialog"
 import { useRecentSearches } from "./use-recent-searches"
+import { useDevice } from "@/hooks/use-device"
 import type { NoteSummary, NoteDetail } from "./types"
 
 export function Notes() {
@@ -75,6 +76,7 @@ export function Notes() {
   const [bulkMode, setBulkMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [pinnedOnly, setPinnedOnly] = useState(false)
+  const { isMobile } = useDevice()
   const { recent, addSearch, clearSearches } = useRecentSearches("memex-note-searches")
 
   // Listen for note updates from audio/file imports
@@ -123,7 +125,7 @@ export function Notes() {
   return (
     <div className="flex h-full">
       {/* List — full width on mobile, fixed on desktop */}
-      <div className={`${selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-80 shrink-0 flex-col border-r border-border`}>
+      <div className={`${selectedId && isMobile ? "hidden" : "flex"} w-full lg:w-80 shrink-0 flex-col border-r border-border`}>
         <div className="p-3 border-b border-border space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
@@ -387,13 +389,13 @@ export function Notes() {
       </div>
 
       {/* Detail — full width on mobile when selected, hidden on mobile when not */}
-      <div className={`${selectedId ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
+      <div className={`${selectedId ? "flex" : isMobile ? "hidden" : "flex"} flex-1 min-w-0`}>
         {selectedId ? (
           <div className="w-full">
             {/* Mobile back button */}
             <button
               onClick={() => setSelectedId(null)}
-              className="lg:hidden flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border"
+              className={`${isMobile ? "flex" : "hidden"} items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border`}
             >
               ← Back to notes
             </button>
@@ -734,7 +736,7 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
           </Card>
           {/* Table of contents — only in preview mode */}
           {viewMode === "preview" && (
-            <div className="hidden lg:block">
+            <div className={`${isMobile ? "hidden" : "block"}`}>
               <div className="sticky top-4">
                 <NoteToc content={note.content} />
               </div>

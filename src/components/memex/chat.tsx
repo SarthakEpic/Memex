@@ -34,6 +34,7 @@ import { toast } from "sonner"
 import { useMemex } from "./store"
 import { AnswerRenderer } from "./answer-renderer"
 import { CompareDialog } from "./compare-dialog"
+import { useDevice } from "@/hooks/use-device"
 import type { ChatMessageData, ChatSessionSummary, Citation } from "./types"
 
 const SUGGESTED = [
@@ -48,6 +49,7 @@ export function Chat() {
   const [input, setInput] = useState("")
   const [sending, setSending] = useState(false)
   const [compareOpen, setCompareOpen] = useState(false)
+  const { isMobile } = useDevice()
   const [messageSearch, setMessageSearch] = useState("")
   const [searchOpen, setSearchOpen] = useState(false)
   const [streamingAnswer, setStreamingAnswer] = useState<{
@@ -251,7 +253,7 @@ export function Chat() {
     <div className="flex h-full">
       {/* Sessions sidebar — resizable */}
       <div
-        className="hidden lg:flex shrink-0 flex-col border-r border-border bg-sidebar/30 relative"
+        className={`${isMobile ? "hidden" : "flex"} shrink-0 flex-col border-r border-border bg-sidebar/30 relative`}
         style={{ width: sidebarWidth }}
       >
         <div className="p-3 border-b border-border">
@@ -344,7 +346,7 @@ export function Chat() {
       {/* Drag handle for resizing */}
       <div
         onMouseDown={handleDragStart}
-        className={`hidden lg:block w-1 shrink-0 cursor-col-resize transition-colors ${
+        className={`${isMobile ? "hidden" : "block"} w-1 shrink-0 cursor-col-resize transition-colors ${
           isDragging ? "bg-primary" : "bg-border hover:bg-primary/40"
         }`}
         title="Drag to resize"

@@ -18,9 +18,11 @@ import { CommandPalette } from "@/components/memex/command-palette"
 import { ShortcutsHelp } from "@/components/memex/shortcuts-help"
 import { OnboardingTour } from "@/components/memex/onboarding-tour"
 import { useMemex } from "@/components/memex/store"
+import { useDevice } from "@/hooks/use-device"
 
 export default function Home() {
   const section = useMemex((s) => s.section)
+  const { isMobile } = useDevice()
 
   // Listen for cross-component toast events (e.g. from command palette actions)
   useEffect(() => {
@@ -106,7 +108,7 @@ export default function Home() {
       <Sidebar />
       <div className="flex-1 flex flex-col min-w-0">
         <MobileNav />
-        <main className="flex-1 overflow-hidden pb-14 md:pb-0">
+        <main className={`flex-1 overflow-hidden ${isMobile ? "pb-14" : ""}`}>
           {section === "dashboard" && (
             <div className="h-full overflow-y-auto thin-scroll">
               <Dashboard />

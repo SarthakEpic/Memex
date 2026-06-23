@@ -31,6 +31,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
+import { useDevice } from "@/hooks/use-device"
 import type { EmailData } from "./types"
 
 type Tab = "all" | "delivered" | "failed" | "pending_verification" | "scheduled" | "cancelled" | "ai"
@@ -60,6 +61,7 @@ export function Email() {
   const [tab, setTab] = useState<Tab>("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [search, setSearch] = useState("")
+  const { isMobile } = useDevice()
   const openEmail = useMemex((s) => s.openEmailComposer)
   const qc = useQueryClient()
 
@@ -112,7 +114,7 @@ export function Email() {
   return (
     <div className="flex h-full">
       {/* List — hidden when no emails at all (empty state takes full width) */}
-      <div className={`${allEmails.length === 0 && !selectedId ? "hidden" : selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-[380px] shrink-0 flex-col border-r border-border`}>
+      <div className={`${allEmails.length === 0 && !selectedId ? "hidden" : selectedId && isMobile ? "hidden" : "flex"} w-full lg:w-[380px] shrink-0 flex-col border-r border-border`}>
         {/* Toolbar */}
         <div className="p-4 border-b border-border space-y-3">
           <div className="flex items-center justify-between gap-2">
@@ -206,12 +208,12 @@ export function Email() {
       </div>
 
       {/* Detail / Empty state — full width when list is hidden */}
-      <div className={`${selectedId ? "flex" : (allEmails.length === 0 && !selectedId) ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
+      <div className={`${selectedId ? "flex" : (allEmails.length === 0 && !selectedId) ? "flex" : isMobile ? "hidden" : "flex"} flex-1 min-w-0`}>
         {selectedId ? (
           <div className="w-full">
             <button
               onClick={() => setSelectedId(null)}
-              className="lg:hidden flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border"
+              className={`${isMobile ? "flex" : "hidden"} items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border`}
             >
               ← Back to sent
             </button>

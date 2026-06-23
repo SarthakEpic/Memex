@@ -44,6 +44,7 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
+import { useDevice } from "@/hooks/use-device"
 import type { InboxEmailData, EmailAccountData } from "./types"
 
 const CATEGORY_CONFIG: Record<
@@ -62,6 +63,7 @@ type InboxTab = "all" | "urgent" | "important" | "normal" | "newsletter" | "unre
 export function Inbox_() {
   const [tab, setTab] = useState<InboxTab>("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const { isMobile } = useDevice()
   const [syncing, setSyncing] = useState(false)
   const [connectOpen, setConnectOpen] = useState(false)
   const [manageOpen, setManageOpen] = useState(false)
@@ -131,7 +133,7 @@ export function Inbox_() {
   return (
     <div className="flex h-full">
       {/* List — hidden entirely when no emails and no account (empty state takes full width) */}
-      <div className={`${(emails.length === 0 && connectedAccounts.length === 0) ? "hidden" : selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
+      <div className={`${(emails.length === 0 && connectedAccounts.length === 0) ? "hidden" : selectedId && isMobile ? "hidden" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
         {/* Header — clean, well-spaced */}
         <div className="p-4 border-b border-border space-y-3">
           <div className="flex items-center justify-between gap-2">
@@ -288,12 +290,12 @@ export function Inbox_() {
       </div>
 
       {/* Detail / Empty state — full width when list is hidden */}
-      <div className={`${selectedId ? "flex" : (emails.length === 0 && connectedAccounts.length === 0) ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
+      <div className={`${selectedId ? "flex" : (emails.length === 0 && connectedAccounts.length === 0) ? "flex" : isMobile ? "hidden" : "flex"} flex-1 min-w-0`}>
         {selectedId ? (
           <div className="w-full">
             <button
               onClick={() => setSelectedId(null)}
-              className="lg:hidden flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border"
+              className={`${isMobile ? "flex" : "hidden"} items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border`}
             >
               ← Back to inbox
             </button>
