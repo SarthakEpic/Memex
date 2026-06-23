@@ -22,19 +22,19 @@ export async function POST(req: NextRequest) {
   let syncMode = account.syncMode || "demo"
 
   // Try real IMAP if credentials are available
-  if (account.imapPassword && account.imapHost) {
+  if (account.imapPassword && account.imapHost && account.syncMode === "real") {
     try {
       added = await syncRealImap(account, count)
       syncMode = "real"
     } catch (err: any) {
       console.error("IMAP sync failed, falling back to demo:", err.message)
-      // Fall back to demo mode
       added = await syncDemoEmails(account, count)
       syncMode = "demo"
     }
   } else {
     // Demo mode — no real credentials
     added = await syncDemoEmails(account, count)
+    syncMode = "demo"
   }
 
   await db.emailAccount.update({
@@ -47,7 +47,9 @@ export async function POST(req: NextRequest) {
     syncMode,
     message: syncMode === "real"
       ? `Synced ${added} new email${added !== 1 ? "s" : ""} from your real inbox.`
-      : `Synced ${added} demo email${added !== 1 ? "s" : ""} (demo mode — add IMAP password for real sync).`,
+      : added > 0
+        ? `Synced ${added} demo email${added !== 1 ? "s" : ""} with AI analysis.`
+        : `All demo emails are already synced. Delete some from the inbox to get fresh ones, or connect with an IMAP password for real email sync.`,
   })
 }
 
@@ -70,14 +72,12 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
 
   await client.connect()
 
-  // Open INBOX
   const lock = await client.getMailboxLock("INBOX")
   let added = 0
 
   try {
-    // Get recent unread messages
     const searchResult = await client.search({ seen: false })
-    const recentIds = searchResult.slice(-maxCount) // Get last N unread
+    const recentIds = searchResult.slice(-maxCount)
 
     for (const msgId of recentIds) {
       const msg = await client.fetchOne(msgId, {
@@ -94,23 +94,16 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
       const subject = msg.envelope.subject || "(no subject)"
       const receivedAt = msg.envelope.date ? new Date(msg.envelope.date) : new Date()
 
-      // Extract plain text body from the email source
       const rawSource = msg.source?.toString("utf-8") || ""
       const body = extractPlainText(rawSource)
 
       if (!body.trim() || body.trim().length < 10) continue
 
-      // Check if we already have this email (by subject + from + date)
       const existing = await db.inboxEmail.findFirst({
-        where: {
-          fromAddress,
-          subject,
-          receivedAt,
-        },
+        where: { fromAddress, subject, receivedAt },
       })
       if (existing) continue
 
-      // Run AI analysis
       const analysis = await analyzeEmail(fromAddress, subject, body)
 
       await db.inboxEmail.create({
@@ -141,35 +134,30 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
   return added
 }
 
-// Extract plain text from raw email source
 function extractPlainText(raw: string): string {
-  // Try to find text/plain part
   const textPartMatch = raw.match(/Content-Type:\s*text\/plain[\s\S]*?\r?\n\r?\n([\s\S]*?)(?=\r?\n--|\r?\n\.\r?\n|$)/i)
   if (textPartMatch) {
     let text = textPartMatch[1]
-    // Remove quoted-printable encoding
     text = text.replace(/=\r?\n/g, "").replace(/=([0-9A-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
     return text.trim()
   }
 
-  // Fallback: strip HTML tags
   const htmlPartMatch = raw.match(/Content-Type:\s*text\/html[\s\S]*?\r?\n\r?\n([\s\S]*?)(?=\r?\n--|\r?\n\.\r?\n|$)/i)
   if (htmlPartMatch) {
     return htmlPartMatch[1]
       .replace(/<[^>]*>/g, " ")
       .replace(/&nbsp;/g, " ")
       .replace(/&amp;/g, "&")
-      .replace(/<[^>]*>/g, "")
       .replace(/\s+/g, " ")
       .trim()
   }
 
-  // Last resort: return first 500 chars of source
   return raw.slice(0, 500).replace(/<[^>]*>/g, " ").trim()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Demo mode — generate realistic sample emails with AI analysis
+// Each sync generates emails with a unique timestamp so they're always "new"
 // ─────────────────────────────────────────────────────────────────────────────
 async function syncDemoEmails(account: any, count: number): Promise<number> {
   const templates = [
@@ -223,15 +211,18 @@ async function syncDemoEmails(account: any, count: number): Promise<number> {
     },
   ]
 
-  const selected = [...templates].sort(() => Math.random() - 0.5).slice(0, Math.min(count, templates.length))
+  // Pick random templates — always generate NEW emails by adding a timestamp
+  // to the subject so they don't collide with existing ones
+  const selected = [...templates]
+    .sort(() => Math.random() - 0.5)
+    .slice(0, Math.min(count, templates.length))
+
   let added = 0
+  const now = Date.now()
 
   for (const tpl of selected) {
-    // Check if already exists
-    const existing = await db.inboxEmail.findFirst({
-      where: { fromAddress: tpl.from, subject: tpl.subject },
-    })
-    if (existing) continue
+    // Add a unique timestamp suffix to make each sync generate unique emails
+    const uniqueSubject = `${tpl.subject} [${new Date(now - added * 60000).toLocaleTimeString()}]`
 
     const analysis = await analyzeEmail(tpl.from, tpl.subject, tpl.body)
 
@@ -241,7 +232,7 @@ async function syncDemoEmails(account: any, count: number): Promise<number> {
         fromAddress: tpl.from,
         fromName: tpl.name,
         toAddress: account.emailAddress,
-        subject: tpl.subject,
+        subject: uniqueSubject,
         body: tpl.body,
         category: analysis?.category ?? "normal",
         action: analysis?.action ?? "review",
@@ -250,7 +241,7 @@ async function syncDemoEmails(account: any, count: number): Promise<number> {
         suggestedReply: analysis?.suggestedReply ?? "",
         analyzed: !!analysis,
         threadId: tpl.subject.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 40),
-        receivedAt: new Date(Date.now() - Math.random() * 3600000),
+        receivedAt: new Date(now - added * 60000 - Math.random() * 60000),
       },
     })
     added++

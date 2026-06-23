@@ -313,6 +313,8 @@ export function Inbox_() {
       </div>
 
       <ConnectAccountDialog open={connectOpen} onOpenChange={setConnectOpen} />
+      <ManageAccountsDialog open={manageOpen} onOpenChange={setManageOpen} />
+      <BriefingDialog open={briefingOpen} onOpenChange={setBriefingOpen} />
     </div>
   )
 }
@@ -701,10 +703,6 @@ function ReplyGenerator({
           </Button>
         </div>
       )}
-
-      <ConnectAccountDialog open={connectOpen} onOpenChange={setConnectOpen} />
-      <ManageAccountsDialog open={manageOpen} onOpenChange={setManageOpen} />
-      <BriefingDialog open={briefingOpen} onOpenChange={setBriefingOpen} />
     </div>
   )
 }
@@ -818,13 +816,18 @@ function ConnectAccountDialog({
   const [imapPassword, setImapPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [connecting, setConnecting] = useState(false)
+  const [verifying, setVerifying] = useState(false)
+  const [error, setError] = useState("")
 
   const handleConnect = async () => {
     if (!emailAddress.trim()) {
-      toast.error("Email address is required")
+      setError("Email address is required")
       return
     }
+    setError("")
     setConnecting(true)
+    setVerifying(!!imapPassword.trim()) // Show "verifying" if password provided
+
     try {
       const r = await fetch("/api/email-accounts", {
         method: "POST",
@@ -836,15 +839,22 @@ function ConnectAccountDialog({
         }),
       })
       const d = await r.json()
-      if (!r.ok) throw new Error(d.error)
-      toast.success(d.message || "Account connected")
+      if (!r.ok) {
+        setError(d.error || d.detail || "Connection failed")
+        setVerifying(false)
+        return
+      }
+      toast.success(d.message || "Account connected", {
+        description: d.verified ? "IMAP verified ✓" : "Demo mode",
+      })
       setEmailAddress("")
       setDisplayName("")
       setImapPassword("")
+      setError("")
       onOpenChange(false)
       qc.invalidateQueries({ queryKey: ["email-accounts"] })
     } catch (e: any) {
-      toast.error(e.message || "Connection failed")
+      setError(e.message || "Connection failed")
     } finally {
       setConnecting(false)
     }
@@ -926,22 +936,30 @@ function ConnectAccountDialog({
               only subject + body snippets are sent, not your full mailbox.
             </p>
           </div>
+
+          {/* Error display */}
+          {error && (
+            <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 flex items-start gap-2">
+              <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0 mt-0.5" />
+              <p className="text-[11px] text-destructive leading-relaxed">{error}</p>
+            </div>
+          )}
         </div>
 
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={() => { onOpenChange(false); setError("") }}>
             Cancel
           </Button>
           <Button onClick={handleConnect} disabled={connecting || !emailAddress.trim()}>
             {connecting ? (
               <>
                 <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                Connecting…
+                {verifying ? "Verifying IMAP..." : "Connecting..."}
               </>
             ) : (
               <>
                 <Wifi className="h-4 w-4 mr-1" />
-                Connect
+                {imapPassword.trim() ? "Verify & Connect" : "Connect (Demo Mode)"}
               </>
             )}
           </Button>
