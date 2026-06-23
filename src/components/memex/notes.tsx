@@ -51,6 +51,7 @@ import {
   Clock3,
   Mic,
   FileUp,
+  Check,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -71,6 +72,8 @@ export function Notes() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [activeTag, setActiveTag] = useState<string | null>(null)
+  const [bulkMode, setBulkMode] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [pinnedOnly, setPinnedOnly] = useState(false)
   const { recent, addSearch, clearSearches } = useRecentSearches("memex-note-searches")
 
@@ -125,6 +128,18 @@ export function Notes() {
           <div className="flex items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <h2 className="text-sm font-semibold">Notes</h2>
+              <button
+                onClick={() => { setBulkMode(!bulkMode); setSelectedIds(new Set()) }}
+                className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${
+                  bulkMode
+                    ? "bg-primary text-primary-foreground border-primary"
+                    : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                }`}
+                title="Select multiple notes"
+              >
+                <Layers className="h-2.5 w-2.5" />
+                Select
+              </button>
               <button
                 onClick={() => setPinnedOnly((p) => !p)}
                 className={`flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border transition-colors ${
@@ -271,7 +286,18 @@ export function Notes() {
                 key={n.id}
                 note={n}
                 active={selectedId === n.id}
-                onClick={() => setSelectedId(n.id)}
+                bulkMode={bulkMode}
+                bulkSelected={selectedIds.has(n.id)}
+                onClick={() => {
+                  if (bulkMode) {
+                    const next = new Set(selectedIds)
+                    if (next.has(n.id)) next.delete(n.id)
+                    else next.add(n.id)
+                    setSelectedIds(next)
+                  } else {
+                    setSelectedId(n.id)
+                  }
+                }}
                 onDelete={async () => {
                   await fetch(`/api/notes/${n.id}`, { method: "DELETE" })
                   toast.success("Note deleted")
@@ -294,6 +320,69 @@ export function Notes() {
             ))}
           </div>
           </ScrollArea>
+          {/* Bulk action bar */}
+          {bulkMode && selectedIds.size > 0 && (
+            <div className="border-t border-border p-2 flex items-center justify-between bg-muted/30">
+              <span className="text-xs font-medium">{selectedIds.size} selected</span>
+              <div className="flex gap-1">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={async () => {
+                    const ids = Array.from(selectedIds)
+                    await fetch("/api/notes/bulk", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "pin", ids }),
+                    })
+                    toast.success(`Pinned ${ids.length} notes`)
+                    setBulkMode(false)
+                    setSelectedIds(new Set())
+                    qc.invalidateQueries({ queryKey: ["notes"] })
+                  }}
+                >
+                  <Pin className="h-3 w-3 mr-1" />
+                  Pin
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    const ids = Array.from(selectedIds)
+                    window.open(`/api/notes/bulk?action=export&ids=${ids.join(",")}`, "_blank")
+                    toast.success("Exporting selected notes...")
+                  }}
+                >
+                  <Download className="h-3 w-3 mr-1" />
+                  Export
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs text-destructive hover:text-destructive"
+                  onClick={async () => {
+                    const ids = Array.from(selectedIds)
+                    await fetch("/api/notes/bulk", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "delete", ids }),
+                    })
+                    toast.success(`Deleted ${ids.length} notes`)
+                    setBulkMode(false)
+                    setSelectedIds(new Set())
+                    setSelectedId(null)
+                    qc.invalidateQueries({ queryKey: ["notes"] })
+                    qc.invalidateQueries({ queryKey: ["stats"] })
+                  }}
+                >
+                  <Trash2 className="h-3 w-3 mr-1" />
+                  Delete
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -327,20 +416,33 @@ function NoteListItem({
   onClick,
   onDelete,
   onTogglePin,
+  bulkMode = false,
+  bulkSelected = false,
 }: {
   note: NoteSummary
   active: boolean
   onClick: () => void
   onDelete: () => void
   onTogglePin: () => void
+  bulkMode?: boolean
+  bulkSelected?: boolean
 }) {
   return (
     <div
       className={`group rounded-md p-2.5 cursor-pointer transition-colors relative ${
-        active ? "bg-accent" : "hover:bg-accent/50"
-      } ${note.pinned ? "border-l-2 border-l-primary" : ""}`}
+        active || bulkSelected ? "bg-accent" : "hover:bg-accent/50"
+      } ${note.pinned ? "border-l-2 border-l-primary" : ""} ${bulkSelected ? "ring-1 ring-primary" : ""}`}
       onClick={onClick}
     >
+      {bulkMode && (
+        <div className="absolute top-2.5 right-2.5 z-10">
+          <div className={`h-4 w-4 rounded border flex items-center justify-center ${
+            bulkSelected ? "bg-primary border-primary" : "border-border bg-background"
+          }`}>
+            {bulkSelected && <Check className="h-3 w-3 text-primary-foreground" />}
+          </div>
+        </div>
+      )}
       {note.pinned && (
         <Pin className="absolute top-2 right-2 h-3 w-3 text-primary fill-primary" />
       )}

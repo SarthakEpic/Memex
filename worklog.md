@@ -740,3 +740,51 @@ Stage Summary:
 - AI email summary improved: shorter, action-oriented, with specific details (deadlines, amounts) instead of restating the subject.
 - Daily email briefing: one-click AI summary of the day's emails with urgency categorization.
 - 32 API routes, 24 UI components, 11 lib modules.
+
+---
+Task ID: 17 (current cron round)
+Agent: main (user-requested: build everything remaining + fix popup)
+Task: Fix popup error, email threads, inbox search, bulk operations, browser notifications
+
+Work Log:
+- Fix: Onboarding tour popup error.
+  - Error: `DialogContent requires a DialogTitle for accessible screen readers` + `Missing Description or aria-describedby`
+  - Root cause: The OnboardingTour dialog had visible content but no `DialogHeader`/`DialogTitle`/`DialogDescription` — Radix UI requires these for accessibility.
+  - Fix: Added a `sr-only` (screen-reader-only) `DialogHeader` with `DialogTitle` and `DialogDescription` inside the dialog. Visible UI unchanged, errors resolved.
+  - Verified: No more console errors after the fix.
+
+- Feature: Email thread view + inbox search.
+  - Updated GET /api/inbox to accept `q=search` (filters by sender/subject/body) and `threaded=true` (groups emails by threadId into thread objects with count, latest subject, hasUnread, categories).
+  - Added search bar to inbox toolbar (real-time filtering by sender, subject, or body content).
+  - Added "Threads" toggle button — when active, groups emails by conversation.
+  - Both verified working in browser.
+
+- Feature: Bulk note operations (select multiple + delete/export/pin).
+  - New API: GET/POST /api/notes/bulk — supports delete, pin, unpin, export actions on multiple note IDs.
+  - Added "Select" toggle button in Notes toolbar — when active, clicking notes toggles checkbox selection instead of opening detail.
+  - Checkbox indicator (blue checkmark) on each note when in bulk mode.
+  - Bulk action bar appears at bottom of notes list when notes are selected: Pin, Export, Delete buttons.
+  - Export generates a Markdown file download of selected notes.
+  - Verified: "1 selected" with Pin/Export/Delete actions visible.
+
+- Feature: Browser notifications for urgent emails.
+  - Added notification permission request on app mount.
+  - Checks for urgent unread emails every 2 minutes.
+  - Sends a browser notification with sender name + subject + AI summary for new urgent emails.
+  - Uses localStorage to track which email was last notified (avoids duplicate notifications).
+
+- Feature: Better intent detection in chat (improved from previous round).
+  - Two-tier system: checks general conversational phrases first ("hi", "hello", "thanks"), then note keywords.
+  - Prevents unnecessary BM25 search for greetings and general chat.
+
+- Feature: Onboarding tour (completed from previous round, now with fix).
+  - 6-step walkthrough, shows on first visit, stored in localStorage.
+
+Stage Summary:
+- Popup/accessibility error fixed: DialogTitle/DialogDescription added to OnboardingTour.
+- Email threads: group emails by conversation, toggle on/off.
+- Inbox search: real-time search by sender/subject/body.
+- Bulk operations: select multiple notes, bulk delete/export/pin.
+- Browser notifications: automatic alerts for urgent unread emails.
+- 35 API routes, 22 UI components, 11 lib modules.
+- Lint clean, no runtime errors.

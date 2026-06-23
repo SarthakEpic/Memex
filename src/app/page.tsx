@@ -39,6 +39,7 @@ export default function Home() {
   }, [])
 
   // Background scheduled check — runs every 5 minutes to deliver scheduled emails
+  // and check for urgent inbox emails
   useEffect(() => {
     const checkScheduled = async () => {
       try {
@@ -52,6 +53,52 @@ export default function Home() {
     // Then every 5 minutes
     const interval = setInterval(checkScheduled, 5 * 60 * 1000)
     return () => clearInterval(interval)
+  }, [])
+
+  // Browser notifications for urgent emails — checks every 2 minutes
+  useEffect(() => {
+    const lastNotifiedKey = "memex-last-notified-email"
+    const checkUrgentEmails = async () => {
+      try {
+        const r = await fetch("/api/inbox?category=urgent&unread=true")
+        const d = await r.json()
+        const urgent = d.emails || []
+        if (urgent.length === 0) return
+
+        // Get last notified email ID
+        const lastNotified = localStorage.getItem(lastNotifiedKey) || ""
+
+        // Find new urgent emails we haven't notified about
+        const newUrgent = urgent.filter((e: any) => e.id !== lastNotified)
+        if (newUrgent.length === 0) return
+
+        // Request notification permission if not granted
+        if ("Notification" in window && Notification.permission === "granted") {
+          const latest = newUrgent[0]
+          new Notification("🚨 Urgent Email — " + (latest.fromName || latest.fromAddress), {
+            body: latest.subject + (latest.summary ? "\n" + latest.summary : ""),
+            icon: "/logo.svg",
+            tag: latest.id,
+          })
+          localStorage.setItem(lastNotifiedKey, latest.id)
+        }
+      } catch {
+        // silent fail
+      }
+    }
+
+    // Request permission on mount
+    if ("Notification" in window && Notification.permission === "default") {
+      Notification.requestPermission()
+    }
+
+    // Check after 10 seconds (let app load), then every 2 minutes
+    const timer = setTimeout(checkUrgentEmails, 10000)
+    const interval = setInterval(checkUrgentEmails, 2 * 60 * 1000)
+    return () => {
+      clearTimeout(timer)
+      clearInterval(interval)
+    }
   }, [])
 
   return (

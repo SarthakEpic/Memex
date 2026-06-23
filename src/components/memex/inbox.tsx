@@ -40,6 +40,7 @@ import {
   Shield,
   Zap,
   FileText,
+  Search,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -65,6 +66,8 @@ export function Inbox_() {
   const [connectOpen, setConnectOpen] = useState(false)
   const [manageOpen, setManageOpen] = useState(false)
   const [briefingOpen, setBriefingOpen] = useState(false)
+  const [search, setSearch] = useState("")
+  const [threaded, setThreaded] = useState(false)
   const qc = useQueryClient()
 
   const params = new URLSearchParams()
@@ -73,9 +76,11 @@ export function Inbox_() {
   if (tab === "normal") params.set("category", "normal")
   if (tab === "newsletter") params.set("category", "newsletter")
   if (tab === "unread") params.set("unread", "true")
+  if (search) params.set("q", search)
+  if (threaded) params.set("threaded", "true")
 
-  const { data: inboxData, isLoading } = useQuery<{ emails: InboxEmailData[] }>({
-    queryKey: ["inbox", tab],
+  const { data: inboxData, isLoading } = useQuery<{ emails: InboxEmailData[]; threads?: any[] }>({
+    queryKey: ["inbox", tab, search, threaded],
     queryFn: async () => {
       const r = await fetch(`/api/inbox?${params.toString()}`)
       return r.json()
@@ -214,6 +219,30 @@ export function Inbox_() {
                 {t}
               </button>
             ))}
+          </div>
+          {/* Search + Thread toggle */}
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search inbox..."
+                className="w-full text-xs pl-7 pr-2 h-7 rounded-md border border-border bg-background outline-none focus:border-primary/40"
+              />
+            </div>
+            <button
+              onClick={() => setThreaded(!threaded)}
+              className={`flex items-center gap-1 text-[10px] px-2 py-1 rounded-md border transition-colors shrink-0 ${
+                threaded
+                  ? "bg-primary text-primary-foreground border-primary"
+                  : "border-border text-muted-foreground hover:text-foreground"
+              }`}
+              title="Group emails by conversation"
+            >
+              <Mail className="h-2.5 w-2.5" />
+              Threads
+            </button>
           </div>
         </div>
 

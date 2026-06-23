@@ -94,6 +94,10 @@ export function OnboardingTour() {
   return (
     <Dialog open={open} onOpenChange={(o) => !o && handleClose()}>
       <DialogContent className="sm:max-w-md">
+        <DialogHeader className="sr-only">
+          <DialogTitle>Memex Onboarding Tour — Step {step + 1}: {current.title}</DialogTitle>
+          <DialogDescription>{current.description}</DialogDescription>
+        </DialogHeader>
         <div className="flex items-center gap-3 mb-2">
           <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-primary/10">
             <Icon className={`h-6 w-6 ${current.color}`} />
