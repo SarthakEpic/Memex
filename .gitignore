@@ -52,3 +52,17 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Database (contains personal notes, emails, chat history — DO NOT commit)
+/db/*.db
+/db/*.db-journal
+
+# Mini-services (separate node projects)
+/mini-services/*/node_modules
+/mini-services/*/.env*
+
+# Agent context
+/agent-ctx/
+
+# Watchdog logs
+/tmp/watchdog*.log
