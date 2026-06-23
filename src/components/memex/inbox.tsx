@@ -130,8 +130,8 @@ export function Inbox_() {
 
   return (
     <div className="flex h-full">
-      {/* List */}
-      <div className={`${selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
+      {/* List — hidden entirely when no emails and no account (empty state takes full width) */}
+      <div className={`${(emails.length === 0 && connectedAccounts.length === 0) ? "hidden" : selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
         {/* Header — clean, well-spaced */}
         <div className="p-4 border-b border-border space-y-3">
           <div className="flex items-center justify-between gap-2">
@@ -287,8 +287,8 @@ export function Inbox_() {
         </div>
       </div>
 
-      {/* Detail */}
-      <div className={`${selectedId ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
+      {/* Detail / Empty state — full width when list is hidden */}
+      <div className={`${selectedId ? "flex" : (emails.length === 0 && connectedAccounts.length === 0) ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
         {selectedId ? (
           <div className="w-full">
             <button
@@ -370,12 +370,12 @@ function InboxListItem({
 
   return (
     <div
-      className={`group rounded-md p-2.5 cursor-pointer transition-colors relative ${
-        active ? "bg-accent" : "hover:bg-accent/50"
+      className={`group rounded-lg p-3 cursor-pointer transition-all relative overflow-hidden ${
+        active ? "bg-accent ring-1 ring-primary/20" : "hover:bg-accent/50"
       } ${!email.isRead ? "border-l-2 border-l-primary" : ""}`}
       onClick={onClick}
     >
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-2.5">
         {/* Category icon */}
         <div className={`shrink-0 rounded p-1 border ${cat.bg}`}>
           <CatIcon className={`h-3 w-3 ${cat.color}`} />

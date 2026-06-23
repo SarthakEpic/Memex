@@ -111,10 +111,10 @@ export function Email() {
 
   return (
     <div className="flex h-full">
-      {/* List */}
-      <div className={`${selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
+      {/* List — hidden when no emails at all (empty state takes full width) */}
+      <div className={`${allEmails.length === 0 && !selectedId ? "hidden" : selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-[380px] shrink-0 flex-col border-r border-border`}>
         {/* Toolbar */}
-        <div className="p-3 border-b border-border space-y-2.5">
+        <div className="p-4 border-b border-border space-y-3">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold flex items-center gap-2">
               <Send className="h-4 w-4 text-primary" />
@@ -205,8 +205,8 @@ export function Email() {
         </div>
       </div>
 
-      {/* Detail */}
-      <div className={`${selectedId ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
+      {/* Detail / Empty state — full width when list is hidden */}
+      <div className={`${selectedId ? "flex" : (allEmails.length === 0 && !selectedId) ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
         {selectedId ? (
           <div className="w-full">
             <button
@@ -278,8 +278,8 @@ function EmailListItem({
 
   return (
     <div
-      className={`group rounded-md p-2.5 cursor-pointer transition-colors ${
-        active ? "bg-accent" : "hover:bg-accent/50"
+      className={`group rounded-lg p-3 cursor-pointer transition-all overflow-hidden ${
+        active ? "bg-accent ring-1 ring-primary/20" : "hover:bg-accent/50"
       }`}
       onClick={onClick}
     >
