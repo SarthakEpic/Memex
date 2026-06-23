@@ -1,11 +1,21 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { retrieve } from "@/lib/retrieval"
-import { generateSmartAnswer, type ContextChunk } from "@/lib/llm"
+import {
+  generateSmartAnswer,
+  draftEmailFromInstruction,
+  type ContextChunk,
+  type EmailDraftResult,
+} from "@/lib/llm"
 
 // POST /api/chat
 // Body: { message: string, sessionId?: string }
-// Returns: { sessionId, answer, citations, mode, refused, serviceError }
+// Returns: { sessionId, answer, citations, mode, refused, serviceError, emailDraft? }
+//
+// Email intent detection: if the user is asking to send/draft/compose an email,
+// we call `draftEmailFromInstruction()` to produce a STRUCTURED draft
+// (recipient, subject, body) that the UI renders as an interactive preview card.
+// The draft body is EXACTLY what gets sent when the user clicks "Send Email".
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const { message, sessionId } = body as {
@@ -32,24 +42,61 @@ export async function POST(req: NextRequest) {
     data: { sessionId: session.id, role: "user", content: message },
   })
 
-  // Retrieve context chunks (BM25 + optional LLM rerank)
-  // Smarter intent detection — distinguish note questions from general chat
-  const lowerMsg = message.toLowerCase().trim()
+  // Build conversation history (last 20 messages)
+  const history = await db.chatMessage.findMany({
+    where: { sessionId: session.id, role: { in: ["user", "assistant"] } },
+    orderBy: { createdAt: "asc" },
+    take: 20,
+  })
+  const historyClean = history
+    .slice(0, -1) // exclude the just-stored user message
+    .map((h) => ({ role: h.role as "user" | "assistant", content: h.content }))
 
-  // Phrases that are clearly NOT about notes (general conversation)
+  // Build email context from recent inbox emails (keep it SHORT)
+  let emailContext = ""
+  try {
+    const recentEmails = await db.inboxEmail.findMany({
+      orderBy: { receivedAt: "desc" },
+      take: 3,
+    })
+    if (recentEmails.length > 0) {
+      emailContext = recentEmails
+        .map(
+          (e) =>
+            `[${e.category}] FROM: ${e.fromName || e.fromAddress} | SUBJECT: ${e.subject}`
+        )
+        .join("\n")
+    }
+  } catch {
+    // inboxEmail table might not exist yet
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // EMAIL INTENT DETECTION — check if the user wants to send/draft an email
+  // ───────────────────────────────────────────────────────────────────────
+  const lowerMsg = message.toLowerCase().trim()
+  const emailIntentKeywords = [
+    "send email", "send an email", "send a email", "send mail",
+    "email to", "compose email", "compose an email",
+    "draft email", "draft an email", "write email", "write an email",
+    "mail to", "write to", "reply to",
+    "send a message to", "send message to",
+  ]
+  // Phrases that clearly indicate "draft me an email" intent
+  const wantsEmail = emailIntentKeywords.some((kw) => lowerMsg.includes(kw))
+  // But skip if it's clearly a question ABOUT email (e.g., "how do I send email?")
+  const isQuestionAboutEmail =
+    (lowerMsg.includes("how do i") || lowerMsg.includes("how to") || lowerMsg.includes("what is")) &&
+    !lowerMsg.includes(" to ")
+
+  // Intent flags for general conversation detection
   const generalPhrases = [
     "hi", "hello", "hey", "thanks", "thank you", "bye", "good morning",
     "good afternoon", "good evening", "how are you", "what's up", "sup",
     "what can you do", "who are you", "what are you", "help me",
     "what is memex", "about this app", "how does this work",
   ]
-
-  // Check if this is a general conversational phrase (exact or close match)
-  // BUT: if the user mentions email keywords, don't treat it as general
-  const emailKeywords = ["send email", "send an email", "email to", "compose", "draft email", "mail to", "write email", "reply to"]
-  const isEmailRequest = emailKeywords.some((kw) => lowerMsg.includes(kw))
-
-  const isGeneral = !isEmailRequest && generalPhrases.some(
+  const isGeneral = !wantsEmail && generalPhrases.some(
     (phrase) =>
       lowerMsg === phrase ||
       lowerMsg.startsWith(phrase + " ") ||
@@ -57,7 +104,65 @@ export async function POST(req: NextRequest) {
       lowerMsg.startsWith(phrase + "!")
   )
 
-  // Keywords that suggest the user is asking about their notes
+  // ───────────────────────────────────────────────────────────────────────
+  // PATH A: EMAIL DRAFT — generate a structured draft for the chat UI
+  // ───────────────────────────────────────────────────────────────────────
+  if (wantsEmail && !isQuestionAboutEmail) {
+    const draft = await draftEmailFromInstruction(message, emailContext || undefined)
+
+    if (draft) {
+      // Short, action-oriented assistant message — the actual email content
+      // lives in the structured `emailDraft` payload, NOT in the chat text.
+      const recipientLabel =
+        draft.recipient === "me" ? "yourself" : draft.recipient
+      const answer = `I've drafted an email to **${recipientLabel}**. Review the preview below — you can edit any field inline, regenerate with feedback, or send it as-is.\n\n*Rationale:* ${draft.rationale}`
+
+      const emailDraftPayload: EmailDraftPayload = {
+        recipient: draft.recipient,
+        subject: draft.subject,
+        bodyMarkdown: draft.bodyMarkdown,
+        rationale: draft.rationale,
+        status: "draft",
+        timeline: [
+          {
+            action: "Draft Generated",
+            timestamp: new Date().toISOString(),
+            details: `Initial draft generated for ${recipientLabel}`,
+          },
+        ],
+      }
+
+      // Store assistant message with the draft attached
+      await db.chatMessage.create({
+        data: {
+          sessionId: session.id,
+          role: "assistant",
+          content: answer,
+          citations: "[]",
+          emailDraft: JSON.stringify(emailDraftPayload),
+        },
+      })
+
+      return NextResponse.json({
+        sessionId: session.id,
+        answer,
+        citations: [],
+        context: [],
+        mode: "email",
+        refused: false,
+        serviceError: false,
+        retrievalCount: 0,
+        emailDraft: emailDraftPayload,
+      })
+    }
+    // If draft generation failed (rate limit, etc.), fall through to normal chat
+  }
+
+  // ───────────────────────────────────────────────────────────────────────
+  // PATH B: NORMAL CHAT — note Q&A, app help, general conversation
+  // ───────────────────────────────────────────────────────────────────────
+
+  // Retrieve context chunks (BM25)
   const noteKeywords = [
     "why", "how did", "what did", "decide", "decision", "pick", "choose",
     "postgres", "redis", "keycloak", "cache", "llm", "auth", "vector",
@@ -66,65 +171,21 @@ export async function POST(req: NextRequest) {
     "stack", "framework", "library", "technology", "approach", "rationale",
     "alternative", "tradeoff", "comparison", "benchmark",
   ]
-
-  // Also check conversation history for context — if the last message was about notes,
-  // and this message is a follow-up, treat it as a note question too
-  const lastFewMessages = await db.chatMessage.findMany({
-    where: { sessionId: session.id, role: { in: ["user", "assistant"] } },
-    orderBy: { createdAt: "desc" },
-    take: 3,
-  })
-  const lastAssistantMsg = lastFewMessages.find((m) => m.role === "assistant")
-  const lastWasAboutNotes = lastAssistantMsg?.content?.includes("[^") || false
-
-  // Trigger note search if: contains a question mark OR contains note keywords
-  // AND is NOT a general conversational phrase
-  // OR if the last assistant message was about notes (follow-up context)
+  const lastAssistantMsg = [...history].reverse().find((m) => m.role === "assistant")
+  const lastWasAboutNotes = (lastAssistantMsg as any)?.content?.includes("[^") || false
   const hasQuestionMark = lowerMsg.includes("?")
   const hasNoteKeyword = noteKeywords.some((kw) => lowerMsg.includes(kw))
   const mightBeAboutNotes = !isGeneral && (hasQuestionMark || hasNoteKeyword || lastWasAboutNotes)
 
-  // Retrieve context chunks — SKIP reranking to avoid an extra LLM call
-  // that could hit rate limits. BM25-only retrieval is fast and reliable.
   const chunks: ContextChunk[] = mightBeAboutNotes
     ? await retrieve(message, { topK: 6, rerank: false })
     : []
-
-  // Build conversation history — pass MORE messages for better conversation flow
-  const history = await db.chatMessage.findMany({
-    where: { sessionId: session.id, role: { in: ["user", "assistant"] } },
-    orderBy: { createdAt: "asc" },
-    take: 20, // Get last 20 messages (10 exchanges)
-  })
-  const historyClean = history
-    .slice(0, -1) // exclude the just-stored user message (we pass it separately)
-    .map((h) => ({ role: h.role as "user" | "assistant", content: h.content }))
-
-  // Build email context from recent inbox emails (keep it SHORT)
-  let emailContext = ""
-  try {
-    const recentEmails = await db.inboxEmail.findMany({
-      orderBy: { receivedAt: "desc" },
-      take: 3, // Only 3 emails instead of 5 to keep context small
-    })
-    if (recentEmails.length > 0) {
-      emailContext = recentEmails
-        .map(
-          (e) =>
-            `[${e.category}] FROM: ${e.fromName || e.fromAddress} | SUBJECT: ${e.subject}`
-        )
-        .join("\n") // Just subject lines, no body — keeps it compact
-    }
-  } catch {
-    // inboxEmail table might not exist yet
-  }
 
   // Generate smart answer (multi-mode)
   const { answer, mode, citedChunkIds, refused, serviceError } =
     await generateSmartAnswer(message, chunks, historyClean, emailContext || undefined)
 
-  // If the LLM was rate-limited, generate a fallback answer from BM25 results
-  // so the user still gets something useful instead of just an error message.
+  // Fallback answer if rate-limited
   const finalAnswer = serviceError
     ? generateFallbackAnswer(message, chunks)
     : answer
@@ -146,7 +207,6 @@ export async function POST(req: NextRequest) {
       score: Number(c.score.toFixed(4)),
     }))
 
-  // Also include all retrieved chunks as "context" even if uncited
   const context = chunks.map((c) => ({
     chunkId: c.id,
     sourcePath: c.sourcePath,
@@ -156,13 +216,14 @@ export async function POST(req: NextRequest) {
     cited: finalCitedChunkIds.includes(c.id),
   }))
 
-  // Store assistant message with citations
+  // Store assistant message
   await db.chatMessage.create({
     data: {
       sessionId: session.id,
       role: "assistant",
       content: finalAnswer,
       citations: JSON.stringify(citations),
+      emailDraft: "",
     },
   })
 
@@ -173,15 +234,30 @@ export async function POST(req: NextRequest) {
     context,
     mode: finalMode,
     refused: finalRefused,
-    serviceError: false, // We handled the error with a fallback
+    serviceError: false,
     retrievalCount: chunks.length,
   })
 }
 
+// Shape of the emailDraft payload sent to the client and persisted on the
+// ChatMessage row. Kept here (and mirrored in the client types) so the
+// contract between server and UI is explicit.
+export interface EmailDraftPayload {
+  recipient: string
+  subject: string
+  bodyMarkdown: string
+  rationale: string
+  status: "draft" | "sending" | "sent" | "failed" | "scheduled" | "cancelled"
+  timeline: {
+    action: string
+    timestamp: string
+    details?: string
+  }[]
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Fallback answer generator — when the LLM is completely rate-limited,
-// we generate a basic answer from BM25 search results so the user still
-// gets useful information instead of just an error message.
+// we generate a basic answer from BM25 search results.
 // ─────────────────────────────────────────────────────────────────────────────
 
 function generateFallbackAnswer(question: string, chunks: ContextChunk[]): string {

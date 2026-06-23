@@ -1,0 +1,760 @@
+     1→"use client"
+     2→
+     3→import { useEffect, useRef, useState, useCallback } from "react"
+     4→import { useQuery, useQueryClient } from "@tanstack/react-query"
+     5→import {
+     6→  Card,
+     7→} from "@/components/ui/card"
+     8→import { Button } from "@/components/ui/button"
+     9→import { Textarea } from "@/components/ui/textarea"
+    10→import { Badge } from "@/components/ui/badge"
+    11→import { Separator } from "@/components/ui/separator"
+    12→import { ScrollArea } from "@/components/ui/scroll-area"
+    13→import {
+    14→  Send,
+    15→  Loader2,
+    16→  Sparkles,
+    17→  Mail,
+    18→  Copy,
+    19→  Check,
+    20→  User,
+    21→  Bot,
+    22→  Plus,
+    23→  History,
+    24→  Trash2,
+    25→  FileText,
+    26→  AlertTriangle,
+    27→  Download,
+    28→  Pencil,
+    29→  X,
+    30→  GitCompare,
+    31→  Search,
+    32→} from "lucide-react"
+    33→import { toast } from "sonner"
+    34→import { useMemex } from "./store"
+    35→import { AnswerRenderer } from "./answer-renderer"
+    36→import { CompareDialog } from "./compare-dialog"
+    37→import { useDevice } from "@/hooks/use-device"
+    38→import type { ChatMessageData, ChatSessionSummary, Citation } from "./types"
+    39→
+    40→const SUGGESTED = [
+    41→  "Why did we pick postgres?",
+    42→  "What did we decide about caching?",
+    43→  "Why Llama 3.1 8B and not Mistral?",
+    44→  "How does the reranker help retrieval?",
+    45→  "Why Keycloak over Auth0?",
+    46→]
+    47→
+    48→export function Chat() {
+    49→  const [input, setInput] = useState("")
+    50→  const [sending, setSending] = useState(false)
+    51→  const [compareOpen, setCompareOpen] = useState(false)
+    52→  const { isMobile } = useDevice()
+    53→  const [messageSearch, setMessageSearch] = useState("")
+    54→  const [searchOpen, setSearchOpen] = useState(false)
+    55→  const [streamingAnswer, setStreamingAnswer] = useState<{
+    56→    answer: string
+    57→    citations: Citation[]
+    58→    refused: boolean
+    59→    serviceError: boolean
+    60→    mode?: string
+    61→  } | null>(null)
+    62→  const sessionId = useMemex((s) => s.activeSessionId)
+    63→  const setSessionId = useMemex((s) => s.setActiveSession)
+    64→  const openEmail = useMemex((s) => s.openEmailComposer)
+    65→  const qc = useQueryClient()
+    66→  const scrollRef = useRef<HTMLDivElement>(null)
+    67→  const inputRef = useRef<HTMLTextAreaElement>(null)
+    68→  const section = useMemex((s) => s.section)
+    69→
+    70→  // "/" focuses the chat input when on the chat section (unless already typing)
+    71→  useEffect(() => {
+    72→    const handler = (e: KeyboardEvent) => {
+    73→      if (e.key === "/" && section === "chat") {
+    74→        const target = e.target as Element
+    75→        const tag = target?.tagName?.toLowerCase()
+    76→        if (tag !== "input" && tag !== "textarea" && !target?.isContentEditable) {
+    77→          e.preventDefault()
+    78→          inputRef.current?.focus()
+    79→        }
+    80→      }
+    81→    }
+    82→    window.addEventListener("keydown", handler)
+    83→    return () => window.removeEventListener("keydown", handler)
+    84→  }, [section])
+    85→
+    86→  // Load messages for active session
+    87→  const { data: sessionData } = useQuery<{
+    88→    session: { id: string; title: string; messages: ChatMessageData[] }
+    89→  }>({
+    90→    queryKey: ["chat-session", sessionId],
+    91→    queryFn: async () => {
+    92→      const r = await fetch(`/api/chat/sessions/${sessionId}`)
+    93→      return r.json()
+    94→    },
+    95→    enabled: !!sessionId,
+    96→  })
+    97→
+    98→  // Sessions list (sidebar)
+    99→  const { data: sessionsData } = useQuery<{ sessions: ChatSessionSummary[] }>({
+   100→    queryKey: ["chat-sessions"],
+   101→    queryFn: async () => {
+   102→      const r = await fetch("/api/chat/sessions")
+   103→      return r.json()
+   104→    },
+   105→  })
+   106→
+   107→  const messages = sessionData?.session?.messages ?? []
+   108→
+   109→  useEffect(() => {
+   110→    scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
+   111→  }, [messages.length, streamingAnswer])
+   112→
+   113→  const handleSend = async (text?: string) => {
+   114→    const message = (text ?? input).trim()
+   115→    if (!message || sending) return
+   116→    setInput("")
+   117→    setSending(true)
+   118→    setStreamingAnswer({
+   119→      answer: "",
+   120→      citations: [],
+   121→      refused: false,
+   122→      serviceError: false,
+   123→      mode: undefined,
+   124→    })
+   125→
+   126→    try {
+   127→      const res = await fetch("/api/chat", {
+   128→        method: "POST",
+   129→        headers: { "Content-Type": "application/json" },
+   130→        body: JSON.stringify({ message, sessionId, rerank: true }),
+   131→      })
+   132→      const data = await res.json()
+   133→      if (!res.ok) throw new Error(data.error || "Chat failed")
+   134→
+   135→      // Animate the answer in token-by-token
+   136→      const target = data.answer as string
+   137→      const words = target.split(" ")
+   138→      let i = 0
+   139→      const tick = () => {
+   140→        i = Math.min(i + Math.max(1, Math.floor(words.length / 40)), words.length)
+   141→        setStreamingAnswer({
+   142→          answer: words.slice(0, i).join(" "),
+   143→          citations: data.citations,
+   144→          refused: data.refused,
+   145→          serviceError: data.serviceError,
+   146→          mode: data.mode,
+   147→        })
+   148→        if (i < words.length) {
+   149→          setTimeout(tick, 20)
+   150→        } else {
+   151→          // Finalize — invalidate to load persisted message
+   152→          setStreamingAnswer(null)
+   153→          setSessionId(data.sessionId)
+   154→          qc.invalidateQueries({ queryKey: ["chat-session", data.sessionId] })
+   155→          qc.invalidateQueries({ queryKey: ["chat-sessions"] })
+   156→          qc.invalidateQueries({ queryKey: ["stats"] })
+   157→          setSending(false)
+   158→        }
+   159→      }
+   160→      tick()
+   161→    } catch (e: any) {
+   162→      toast.error(e.message || "Chat failed")
+   163→      setStreamingAnswer(null)
+   164→      setSending(false)
+   165→    }
+   166→  }
+   167→
+   168→  const handleNewChat = () => {
+   169→    setSessionId(null)
+   170→    setStreamingAnswer(null)
+   171→  }
+   172→
+   173→  const handleDeleteSession = async (id: string) => {
+   174→    await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" })
+   175→    if (sessionId === id) setSessionId(null)
+   176→    qc.invalidateQueries({ queryKey: ["chat-sessions"] })
+   177→    toast.success("Chat deleted")
+   178→  }
+   179→
+   180→  const [editingId, setEditingId] = useState<string | null>(null)
+   181→  const [editTitle, setEditTitle] = useState("")
+   182→
+   183→  const startRename = (id: string, currentTitle: string) => {
+   184→    setEditingId(id)
+   185→    setEditTitle(currentTitle)
+   186→  }
+   187→
+   188→  const saveRename = async () => {
+   189→    if (!editingId || !editTitle.trim()) {
+   190→      setEditingId(null)
+   191→      return
+   192→    }
+   193→    try {
+   194→      await fetch(`/api/chat/sessions/${editingId}`, {
+   195→        method: "PATCH",
+   196→        headers: { "Content-Type": "application/json" },
+   197→        body: JSON.stringify({ title: editTitle.trim() }),
+   198→      })
+   199→      qc.invalidateQueries({ queryKey: ["chat-sessions"] })
+   200→      if (sessionId === editingId) {
+   201→        qc.invalidateQueries({ queryKey: ["chat-session", editingId] })
+   202→      }
+   203→      toast.success("Chat renamed")
+   204→    } catch {
+   205→      toast.error("Rename failed")
+   206→    }
+   207→    setEditingId(null)
+   208→  }
+   209→
+   210→  const handleEmailAnswer = (answer: string, citations: Citation[]) => {
+   211→    const citeList = citations.length
+   212→      ? `\n\n## Sources\n${citations
+   213→          .map((c) => `- ${c.sourcePath}${c.headingPath ? ` › ${c.headingPath}` : ""} (chunk ${c.chunkIndex})`)
+   214→          .join("\n")}\n`
+   215→      : ""
+   216→    openEmail({
+   217→      subject: "Memex answer: " + (messages.find((m) => m.role === "user")?.content.slice(0, 50) ?? "your question"),
+   218→      bodyMarkdown: `${answer}${citeList}\n---\n_Sent from Memex · citation-first knowledge retrieval_\n`,
+   219→      sourceType: "chat",
+   220→    })
+   221→  }
+   222→
+   223→  // Resizable sidebar width
+   224→  const [sidebarWidth, setSidebarWidth] = useState(224) // 14rem default
+   225→  const [isDragging, setIsDragging] = useState(false)
+   226→  const dragStartX = useRef(0)
+   227→  const dragStartWidth = useRef(0)
+   228→
+   229→  const handleDragStart = useCallback((e: React.MouseEvent) => {
+   230→    e.preventDefault()
+   231→    setIsDragging(true)
+   232→    dragStartX.current = e.clientX
+   233→    dragStartWidth.current = sidebarWidth
+   234→  }, [sidebarWidth])
+   235→
+   236→  useEffect(() => {
+   237→    if (!isDragging) return
+   238→    const handleMouseMove = (e: MouseEvent) => {
+   239→      const delta = e.clientX - dragStartX.current
+   240→      const newWidth = Math.max(180, Math.min(400, dragStartWidth.current + delta))
+   241→      setSidebarWidth(newWidth)
+   242→    }
+   243→    const handleMouseUp = () => setIsDragging(false)
+   244→    document.addEventListener("mousemove", handleMouseMove)
+   245→    document.addEventListener("mouseup", handleMouseUp)
+   246→    return () => {
+   247→      document.removeEventListener("mousemove", handleMouseMove)
+   248→      document.removeEventListener("mouseup", handleMouseUp)
+   249→    }
+   250→  }, [isDragging])
+   251→
+   252→  return (
+   253→    <div className="flex h-full">
+   254→      {/* Sessions sidebar — resizable */}
+   255→      <div
+   256→        className={`${isMobile ? "hidden" : "flex"} shrink-0 flex-col border-r border-border bg-sidebar/30 relative`}
+   257→        style={{ width: sidebarWidth }}
+   258→      >
+   259→        <div className="p-3 border-b border-border">
+   260→          <Button size="sm" variant="outline" className="w-full" onClick={handleNewChat}>
+   261→            <Plus className="h-3.5 w-3.5 mr-1.5" />
+   262→            New chat
+   263→          </Button>
+   264→        </div>
+   265→        <div className="flex-1 min-h-0 overflow-hidden">
+   266→          <ScrollArea className="h-full">
+   267→          <div className="p-2 space-y-0.5">
+   268→            {sessionsData?.sessions.length === 0 && (
+   269→              <p className="text-xs text-muted-foreground p-3 text-center">
+   270→                No chats yet. Ask your first question.
+   271→              </p>
+   272→            )}
+   273→            {sessionsData?.sessions.map((s) => (
+   274→              <div
+   275→                key={s.id}
+   276→                className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors cursor-pointer ${
+   277→                  sessionId === s.id
+   278→                    ? "bg-accent text-accent-foreground"
+   279→                    : "hover:bg-accent/50"
+   280→                }`}
+   281→                onClick={() => editingId !== s.id && setSessionId(s.id)}
+   282→              >
+   283→                <History className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+   284→                {editingId === s.id ? (
+   285→                  <div className="flex-1 min-w-0 flex items-center gap-1">
+   286→                    <input
+   287→                      autoFocus
+   288→                      value={editTitle}
+   289→                      onChange={(e) => setEditTitle(e.target.value)}
+   290→                      onKeyDown={(e) => {
+   291→                        if (e.key === "Enter") saveRename()
+   292→                        if (e.key === "Escape") setEditingId(null)
+   293→                      }}
+   294→                      onClick={(e) => e.stopPropagation()}
+   295→                      className="flex-1 min-w-0 bg-background border border-primary rounded px-1 py-0.5 text-xs"
+   296→                    />
+   297→                    <button
+   298→                      onClick={(e) => { e.stopPropagation(); saveRename() }}
+   299→                      className="text-emerald-600 hover:text-emerald-700 shrink-0"
+   300→                    >
+   301→                      <Check className="h-3 w-3" />
+   302→                    </button>
+   303→                    <button
+   304→                      onClick={(e) => { e.stopPropagation(); setEditingId(null) }}
+   305→                      className="text-muted-foreground hover:text-destructive shrink-0"
+   306→                    >
+   307→                      <X className="h-3 w-3" />
+   308→                    </button>
+   309→                  </div>
+   310→                ) : (
+   311→                  <>
+   312→                    <div className="flex-1 min-w-0">
+   313→                      <div className="text-xs font-medium truncate">{s.title}</div>
+   314→                      <div className="text-[10px] text-muted-foreground">
+   315→                        {s.messageCount} msgs
+   316→                      </div>
+   317→                    </div>
+   318→                    <button
+   319→                      onClick={(e) => {
+   320→                        e.stopPropagation()
+   321→                        startRename(s.id, s.title)
+   322→                      }}
+   323→                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-primary transition-opacity"
+   324→                      title="Rename"
+   325→                    >
+   326→                      <Pencil className="h-3 w-3" />
+   327→                    </button>
+   328→                    <button
+   329→                      onClick={(e) => {
+   330→                        e.stopPropagation()
+   331→                        handleDeleteSession(s.id)
+   332→                      }}
+   333→                      className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity"
+   334→                      title="Delete"
+   335→                    >
+   336→                      <Trash2 className="h-3 w-3" />
+   337→                    </button>
+   338→                  </>
+   339→                )}
+   340→              </div>
+   341→            ))}
+   342→          </div>
+   343→          </ScrollArea>
+   344→        </div>
+   345→      </div>
+   346→      {/* Drag handle for resizing */}
+   347→      <div
+   348→        onMouseDown={handleDragStart}
+   349→        className={`${isMobile ? "hidden" : "block"} w-1 shrink-0 cursor-col-resize transition-colors ${
+   350→          isDragging ? "bg-primary" : "bg-border hover:bg-primary/40"
+   351→        }`}
+   352→        title="Drag to resize"
+   353→      />
+   354→
+   355→      {/* Chat area */}
+   356→      <div className="flex-1 flex flex-col min-w-0">
+   357→        {/* Header */}
+   358→        <div className="border-b border-border px-4 py-2.5 flex items-center justify-between">
+   359→          <div className="min-w-0">
+   360→            <h2 className="text-sm font-semibold truncate">
+   361→              {sessionData?.session?.title ?? "New chat"}
+   362→            </h2>
+   363→            <p className="text-[11px] text-muted-foreground">
+   364→              Citation-first · answers cite source chunks or honestly refuse
+   365→            </p>
+   366→          </div>
+   367→          <div className="flex items-center gap-2 shrink-0">
+   368→            {messages.length > 0 && (
+   369→              <Button
+   370→                size="sm"
+   371→                variant="ghost"
+   372→                className="h-7 text-xs"
+   373→                onClick={() => setSearchOpen((s) => !s)}
+   374→                title="Search within this chat"
+   375→              >
+   376→                <Search className="h-3.5 w-3.5 mr-1" />
+   377→                Find
+   378→              </Button>
+   379→            )}
+   380→            <Button
+   381→              size="sm"
+   382→              variant="ghost"
+   383→              className="h-7 text-xs"
+   384→              onClick={() => setCompareOpen(true)}
+   385→              title="Compare two chat sessions side by side"
+   386→            >
+   387→              <GitCompare className="h-3.5 w-3.5 mr-1" />
+   388→              Compare
+   389→            </Button>
+   390→            {sessionData?.session && messages.length > 0 && (
+   391→              <Button
+   392→                size="sm"
+   393→                variant="ghost"
+   394→                className="h-7 text-xs"
+   395→                onClick={() => exportChat(sessionData.session, "md")}
+   396→                title="Export as Markdown"
+   397→              >
+   398→                <Download className="h-3.5 w-3.5 mr-1" />
+   399→                Export
+   400→              </Button>
+   401→            )}
+   402→            {sessionData?.session && (
+   403→              <Badge variant="outline" className="text-[10px]">
+   404→                {messages.length} messages
+   405→              </Badge>
+   406→            )}
+   407→          </div>
+   408→        </div>
+   409→
+   410→        {/* In-session search bar */}
+   411→        {searchOpen && messages.length > 0 && (
+   412→          <div className="border-b border-border px-4 py-2 bg-muted/30">
+   413→            <div className="max-w-3xl mx-auto flex items-center gap-2">
+   414→              <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+   415→              <input
+   416→                value={messageSearch}
+   417→                onChange={(e) => setMessageSearch(e.target.value)}
+   418→                placeholder="Search in this chat…"
+   419→                className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
+   420→                autoFocus
+   421→              />
+   422→              {messageSearch && (
+   423→                <span className="text-[10px] text-muted-foreground tabular-nums">
+   424→                  {messages.filter((m) => m.content.toLowerCase().includes(messageSearch.toLowerCase())).length} match
+   425→                  {messages.filter((m) => m.content.toLowerCase().includes(messageSearch.toLowerCase())).length !== 1 ? "es" : ""}
+   426→                </span>
+   427→              )}
+   428→              <button
+   429→                onClick={() => { setSearchOpen(false); setMessageSearch("") }}
+   430→                className="text-muted-foreground hover:text-foreground transition-colors"
+   431→              >
+   432→                <X className="h-3.5 w-3.5" />
+   433→              </button>
+   434→            </div>
+   435→          </div>
+   436→        )}
+   437→
+   438→        {/* Messages */}
+   439→        <div ref={scrollRef} className="flex-1 overflow-y-auto thin-scroll">
+   440→          <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
+   441→            {messages.length === 0 && !streamingAnswer && (
+   442→              <EmptyState onPick={handleSend} />
+   443→            )}
+   444→
+   445→            {messages.map((m) => {
+   446→              // Filter out non-matching messages when searching
+   447→              const isMatch = !messageSearch ||
+   448→                m.content.toLowerCase().includes(messageSearch.toLowerCase())
+   449→              if (!isMatch && messageSearch) return null
+   450→              return (
+   451→                <MessageBubble
+   452→                  key={m.id}
+   453→                  message={m}
+   454→                  onEmail={() => handleEmailAnswer(m.content, m.citations)}
+   455→                  searchTerm={messageSearch}
+   456→                />
+   457→              )
+   458→            })}
+   459→
+   460→            {streamingAnswer && (
+   461→              <div className="flex gap-3 memex-fade-up">
+   462→                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground">
+   463→                  <Bot className="h-4 w-4" />
+   464→                </div>
+   465→                <div className="flex-1 min-w-0 space-y-2">
+   466→                  {streamingAnswer.answer ? (
+   467→                    <AnswerRenderer answer={streamingAnswer.answer} />
+   468→                  ) : (
+   469→                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+   470→                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+   471→                      Retrieving + reasoning…
+   472→                    </div>
+   473→                  )}
+   474→                  {streamingAnswer.citations.length > 0 && streamingAnswer.answer === messages[0]?.content && (
+   475→                    <CitationStrip citations={streamingAnswer.citations} />
+   476→                  )}
+   477→                </div>
+   478→              </div>
+   479→            )}
+   480→          </div>
+   481→        </div>
+   482→
+   483→        {/* Composer */}
+   484→        <div className="border-t border-border bg-background/95 backdrop-blur p-3">
+   485→          <div className="max-w-3xl mx-auto">
+   486→            <div className="relative">
+   487→              <Textarea
+   488→                ref={inputRef}
+   489→                value={input}
+   490→                onChange={(e) => setInput(e.target.value)}
+   491→                onKeyDown={(e) => {
+   492→                  if (e.key === "Enter" && !e.shiftKey) {
+   493→                    e.preventDefault()
+   494→                    handleSend()
+   495→                  }
+   496→                }}
+   497→                placeholder="Ask about your notes…  e.g. why did we pick postgres?"
+   498→                className="min-h-[52px] max-h-[160px] resize-none pr-24 text-sm"
+   499→                disabled={sending}
+   500→              />
+   501→              <Button
+   502→                size="sm"
+   503→                className="absolute right-2 bottom-2"
+   504→                onClick={() => handleSend()}
+   505→                disabled={!input.trim() || sending}
+   506→              >
+   507→                {sending ? (
+   508→                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+   509→                ) : (
+   510→                  <>
+   511→                    <Send className="h-3.5 w-3.5 mr-1" />
+   512→                    Send
+   513→                  </>
+   514→                )}
+   515→              </Button>
+   516→            </div>
+   517→            <p className="text-[10px] text-muted-foreground mt-1.5 px-1">
+   518→              Press Enter to send · Shift+Enter for newline · answers cite source
+   519→              chunks inline
+   520→            </p>
+   521→          </div>
+   522→        </div>
+   523→      </div>
+   524→
+   525→      {/* A/B Compare dialog */}
+   526→      <CompareDialog open={compareOpen} onOpenChange={setCompareOpen} />
+   527→    </div>
+   528→  )
+   529→}
+   530→
+   531→function EmptyState({ onPick }: { onPick: (q: string) => void }) {
+   532→  return (
+   533→    <div className="text-center py-10 space-y-6">
+   534→      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+   535→        <Sparkles className="h-7 w-7 text-primary" />
+   536→      </div>
+   537→      <div className="space-y-1.5">
+   538→        <h3 className="text-lg font-semibold">Ask anything about your notes</h3>
+   539→        <p className="text-sm text-muted-foreground max-w-md mx-auto">
+   540→          Memex retrieves the most relevant chunks from your Markdown corpus and
+   541→          generates an answer that cites them inline. If it can&apos;t find a source,
+   542→          it says so.
+   543→        </p>
+   544→      </div>
+   545→      <div className="flex flex-wrap gap-2 justify-center max-w-2xl mx-auto">
+   546→        {SUGGESTED.map((q) => (
+   547→          <button
+   548→            key={q}
+   549→            onClick={() => onPick(q)}
+   550→            className="text-xs px-3 py-1.5 rounded-full border border-border hover:border-primary hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+   551→          >
+   552→            {q}
+   553→          </button>
+   554→        ))}
+   555→      </div>
+   556→    </div>
+   557→  )
+   558→}
+   559→
+   560→function MessageBubble({
+   561→  message,
+   562→  onEmail,
+   563→  searchTerm = "",
+   564→}: {
+   565→  message: ChatMessageData
+   566→  onEmail: () => void
+   567→  searchTerm?: string
+   568→}) {
+   569→  const [copied, setCopied] = useState(false)
+   570→  const isUser = message.role === "user"
+   571→  const isServiceError = message.content.startsWith("⚠️")
+   572→  const isRefusal =
+   573→    !isUser &&
+   574→    message.citations.length === 0 &&
+   575→    !isServiceError &&
+   576→    message.content.trim().toLowerCase().startsWith("i don't have a source for this")
+   577→
+   578→  // Highlight search term in text (for user messages rendered as plain text)
+   579→  const highlightSearch = (text: string) => {
+   580→    if (!searchTerm) return text
+   581→    const lower = text.toLowerCase()
+   582→    const term = searchTerm.toLowerCase()
+   583→    const parts: React.ReactNode[] = []
+   584→    let lastIdx = 0
+   585→    let idx = lower.indexOf(term)
+   586→    let key = 0
+   587→    while (idx !== -1) {
+   588→      if (idx > lastIdx) parts.push(text.slice(lastIdx, idx))
+   589→      parts.push(
+   590→        <mark key={key++} className="bg-amber-300/60 dark:bg-amber-500/40 rounded px-0.5 text-foreground">
+   591→          {text.slice(idx, idx + searchTerm.length)}
+   592→        </mark>
+   593→      )
+   594→      lastIdx = idx + searchTerm.length
+   595→      idx = lower.indexOf(term, lastIdx)
+   596→    }
+   597→    if (lastIdx < text.length) parts.push(text.slice(lastIdx))
+   598→    return parts
+   599→  }
+   600→
+   601→  return (
+   602→    <div className="flex gap-3 memex-fade-up">
+   603→      <div
+   604→        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full ${
+   605→          isUser
+   606→            ? "bg-muted text-muted-foreground"
+   607→            : isServiceError
+   608→            ? "bg-amber-500 text-white"
+   609→            : "bg-primary text-primary-foreground"
+   610→        }`}
+   611→      >
+   612→        {isUser ? (
+   613→          <User className="h-4 w-4" />
+   614→        ) : isServiceError ? (
+   615→          <AlertTriangle className="h-4 w-4" />
+   616→        ) : (
+   617→          <Bot className="h-4 w-4" />
+   618→        )}
+   619→      </div>
+   620→      <div className="flex-1 min-w-0 space-y-2">
+   621→        {isUser ? (
+   622→          <p className="text-sm whitespace-pre-wrap leading-relaxed">{highlightSearch(message.content)}</p>
+   623→        ) : (
+   624→          <>
+   625→            <AnswerRenderer answer={message.content} />
+   626→            {isServiceError && (
+   627→              <div className="text-xs text-amber-600 dark:text-amber-400 flex items-center gap-1.5 mt-1 p-2 rounded-md bg-amber-500/10 border border-amber-500/30">
+   628→                <AlertTriangle className="h-3 w-3 shrink-0" />
+   629→                <span>The reasoning service hit a rate limit. Please retry in a few seconds.</span>
+   630→              </div>
+   631→            )}
+   632→            {isRefusal && (
+   633→              <div className="text-xs text-muted-foreground italic flex items-center gap-1.5 mt-1">
+   634→                <FileText className="h-3 w-3" />
+   635→                No source citation — the model honestly refused.
+   636→              </div>
+   637→            )}
+   638→            {message.citations.length > 0 && (
+   639→              <CitationStrip citations={message.citations} />
+   640→            )}
+   641→            <div className="flex items-center gap-1 pt-1">
+   642→              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onEmail}>
+   643→                <Mail className="h-3 w-3 mr-1" />
+   644→                Email
+   645→              </Button>
+   646→              <Button
+   647→                size="sm"
+   648→                variant="ghost"
+   649→                className="h-7 text-xs"
+   650→                onClick={() => {
+   651→                  navigator.clipboard.writeText(message.content)
+   652→                  setCopied(true)
+   653→                  setTimeout(() => setCopied(false), 1500)
+   654→                }}
+   655→              >
+   656→                {copied ? (
+   657→                  <>
+   658→                    <Check className="h-3 w-3 mr-1" />
+   659→                    Copied
+   660→                  </>
+   661→                ) : (
+   662→                  <>
+   663→                    <Copy className="h-3 w-3 mr-1" />
+   664→                    Copy
+   665→                  </>
+   666→                )}
+   667→              </Button>
+   668→            </div>
+   669→          </>
+   670→        )}
+   671→      </div>
+   672→    </div>
+   673→  )
+   674→}
+   675→
+   676→function CitationStrip({ citations }: { citations: Citation[] }) {
+   677→  const openSource = useMemex((s) => s.openSource)
+   678→  return (
+   679→    <div className="space-y-1.5">
+   680→      <Separator className="my-1" />
+   681→      <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+   682→        Sources ({citations.length})
+   683→      </div>
+   684→      <div className="flex flex-wrap gap-1.5">
+   685→        {citations.map((c) => (
+   686→          <button
+   687→            key={c.chunkId}
+   688→            onClick={() => openSource(c.chunkId)}
+   689→            className="group flex items-center gap-1.5 text-[11px] px-2 py-1 rounded-md border border-border hover:border-primary/50 hover:bg-accent transition-colors text-left max-w-[280px]"
+   690→          >
+   691→            <FileText className="h-3 w-3 shrink-0 text-primary" />
+   692→            <span className="truncate">
+   693→              {c.sourcePath}
+   694→              <span className="text-muted-foreground"> · #{c.chunkIndex}</span>
+   695→            </span>
+   696→          </button>
+   697→        ))}
+   698→      </div>
+   699→    </div>
+   700→  )
+   701→}
+   702→
+   703→// Export a chat session as a Markdown file download.
+   704→function exportChat(
+   705→  session: { id: string; title: string; messages: ChatMessageData[] },
+   706→  format: "md" | "json"
+   707→) {
+   708→  const stamp = new Date().toISOString().slice(0, 10)
+   709→  let content: string
+   710→  let mime: string
+   711→  let ext: string
+   712→
+   713→  if (format === "json") {
+   714→    content = JSON.stringify(session, null, 2)
+   715→    mime = "application/json"
+   716→    ext = "json"
+   717→  } else {
+   718→    const lines: string[] = []
+   719→    lines.push(`# ${session.title}`)
+   720→    lines.push("")
+   721→    lines.push(`_Exported from Memex on ${new Date().toLocaleString()}_`)
+   722→    lines.push(`_Session ID: ${session.id} · ${session.messages.length} messages_`)
+   723→    lines.push("")
+   724→    lines.push("---")
+   725→    lines.push("")
+   726→    for (const m of session.messages) {
+   727→      const role = m.role === "user" ? "🧑 You" : "🤖 Memex"
+   728→      const time = new Date(m.createdAt).toLocaleString()
+   729→      lines.push(`## ${role}`)
+   730→      lines.push(`_${time}_`)
+   731→      lines.push("")
+   732→      lines.push(m.content)
+   733→      if (m.citations.length > 0) {
+   734→        lines.push("")
+   735→        lines.push("**Sources:**")
+   736→        for (const c of m.citations) {
+   737→          lines.push(`- ${c.sourcePath} (chunk #${c.chunkIndex}) — _${c.snippet.slice(0, 100)}…_`)
+   738→        }
+   739→      }
+   740→      lines.push("")
+   741→      lines.push("---")
+   742→      lines.push("")
+   743→    }
+   744→    content = lines.join("\n")
+   745→    mime = "text/markdown"
+   746→    ext = "md"
+   747→  }
+   748→
+   749→  const blob = new Blob([content], { type: mime })
+   750→  const url = URL.createObjectURL(blob)
+   751→  const a = document.createElement("a")
+   752→  a.href = url
+   753→  a.download = `memex-chat-${stamp}.${ext}`
+   754→  document.body.appendChild(a)
+   755→  a.click()
+   756→  document.body.removeChild(a)
+   757→  URL.revokeObjectURL(url)
+   758→  toast.success(`Exported as ${ext.toUpperCase()}`)
+   759→}
+   760→

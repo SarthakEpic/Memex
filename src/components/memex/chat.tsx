@@ -34,8 +34,9 @@ import { toast } from "sonner"
 import { useMemex } from "./store"
 import { AnswerRenderer } from "./answer-renderer"
 import { CompareDialog } from "./compare-dialog"
+import { EmailDraftCard } from "./email-draft-card"
 import { useDevice } from "@/hooks/use-device"
-import type { ChatMessageData, ChatSessionSummary, Citation } from "./types"
+import type { ChatMessageData, ChatSessionSummary, Citation, EmailDraftPayload } from "./types"
 
 const SUGGESTED = [
   "Why did we pick postgres?",
@@ -58,6 +59,7 @@ export function Chat() {
     refused: boolean
     serviceError: boolean
     mode?: string
+    emailDraft?: EmailDraftPayload | null
   } | null>(null)
   const sessionId = useMemex((s) => s.activeSessionId)
   const setSessionId = useMemex((s) => s.setActiveSession)
@@ -121,6 +123,7 @@ export function Chat() {
       refused: false,
       serviceError: false,
       mode: undefined,
+      emailDraft: null,
     })
 
     try {
@@ -131,6 +134,29 @@ export function Chat() {
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Chat failed")
+
+      // If the response includes an emailDraft, skip the token animation —
+      // show the short answer + the draft card immediately.
+      if (data.emailDraft) {
+        setStreamingAnswer({
+          answer: data.answer,
+          citations: data.citations || [],
+          refused: data.refused,
+          serviceError: data.serviceError,
+          mode: data.mode,
+          emailDraft: data.emailDraft,
+        })
+        // Brief delay so the user sees the assistant's intro before the card
+        setTimeout(() => {
+          setStreamingAnswer(null)
+          setSessionId(data.sessionId)
+          qc.invalidateQueries({ queryKey: ["chat-session", data.sessionId] })
+          qc.invalidateQueries({ queryKey: ["chat-sessions"] })
+          qc.invalidateQueries({ queryKey: ["stats"] })
+          setSending(false)
+        }, 400)
+        return
+      }
 
       // Animate the answer in token-by-token
       const target = data.answer as string
@@ -144,6 +170,7 @@ export function Chat() {
           refused: data.refused,
           serviceError: data.serviceError,
           mode: data.mode,
+          emailDraft: null,
         })
         if (i < words.length) {
           setTimeout(tick, 20)
@@ -219,6 +246,40 @@ export function Chat() {
       sourceType: "chat",
     })
   }
+
+  // Persist email draft updates back to the server so the card state
+  // (status, timeline, edits) survives page reloads and session switches.
+  const handleDraftChange = useCallback(
+    async (messageId: string, updated: EmailDraftPayload) => {
+      try {
+        await fetch(`/api/chat/sessions/${sessionId}/messages/${messageId}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ emailDraft: updated }),
+        })
+        // Optimistically update the local cache so the UI reflects the change
+        qc.setQueryData<{ session: { id: string; title: string; messages: ChatMessageData[] } }>(
+          ["chat-session", sessionId],
+          (old) => {
+            if (!old) return old
+            return {
+              ...old,
+              session: {
+                ...old.session,
+                messages: old.session.messages.map((m) =>
+                  m.id === messageId ? { ...m, emailDraft: updated } : m
+                ),
+              },
+            }
+          }
+        )
+      } catch {
+        // Silent fail — the local UI state is already correct, this is just
+        // a best-effort persistence to the server.
+      }
+    },
+    [sessionId, qc]
+  )
 
   // Resizable sidebar width
   const [sidebarWidth, setSidebarWidth] = useState(224) // 14rem default
@@ -442,17 +503,30 @@ export function Chat() {
               <EmptyState onPick={handleSend} />
             )}
 
-            {messages.map((m) => {
+            {messages.map((m, idx) => {
               // Filter out non-matching messages when searching
               const isMatch = !messageSearch ||
                 m.content.toLowerCase().includes(messageSearch.toLowerCase())
               if (!isMatch && messageSearch) return null
+              // Find the preceding user message to use as the "instruction"
+              // for email draft regeneration.
+              let instruction = ""
+              if (m.role === "assistant" && m.emailDraft) {
+                for (let j = idx - 1; j >= 0; j--) {
+                  if (messages[j].role === "user") {
+                    instruction = messages[j].content
+                    break
+                  }
+                }
+              }
               return (
                 <MessageBubble
                   key={m.id}
                   message={m}
                   onEmail={() => handleEmailAnswer(m.content, m.citations)}
                   searchTerm={messageSearch}
+                  instruction={instruction}
+                  onDraftChange={handleDraftChange}
                 />
               )
             })}
@@ -473,6 +547,20 @@ export function Chat() {
                   )}
                   {streamingAnswer.citations.length > 0 && streamingAnswer.answer === messages[0]?.content && (
                     <CitationStrip citations={streamingAnswer.citations} />
+                  )}
+                  {/* While streaming, if the server returned an emailDraft,
+                      render a read-only preview of the card. The interactive
+                      version with full state will appear once the message is
+                      persisted and the query is invalidated. */}
+                  {streamingAnswer.emailDraft && (
+                    <EmailDraftCard
+                      messageId="streaming"
+                      initialDraft={streamingAnswer.emailDraft}
+                      instruction=""
+                      onDraftChange={() => {
+                        // No-op during streaming — the persisted card takes over
+                      }}
+                    />
                   )}
                 </div>
               </div>
@@ -561,10 +649,14 @@ function MessageBubble({
   message,
   onEmail,
   searchTerm = "",
+  instruction = "",
+  onDraftChange,
 }: {
   message: ChatMessageData
   onEmail: () => void
   searchTerm?: string
+  instruction?: string
+  onDraftChange?: (messageId: string, updated: EmailDraftPayload) => void
 }) {
   const [copied, setCopied] = useState(false)
   const isUser = message.role === "user"
@@ -637,6 +729,19 @@ function MessageBubble({
             )}
             {message.citations.length > 0 && (
               <CitationStrip citations={message.citations} />
+            )}
+            {/* Email draft card — rendered when the assistant message has an
+                emailDraft payload. The user can edit fields inline, regenerate
+                with feedback, send the email, schedule it, save as draft, or
+                cancel. The card maintains its own state but notifies the parent
+                so the persisted message can be updated. */}
+            {message.emailDraft && onDraftChange && (
+              <EmailDraftCard
+                messageId={message.id}
+                initialDraft={message.emailDraft}
+                instruction={instruction}
+                onDraftChange={(updated) => onDraftChange(message.id, updated)}
+              />
             )}
             <div className="flex items-center gap-1 pt-1">
               <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={onEmail}>

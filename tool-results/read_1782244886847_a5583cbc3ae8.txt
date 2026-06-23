@@ -1,0 +1,673 @@
+     1→// LLM utilities: citation-enforced answering + decision extraction.
+     2→// Uses z-ai-web-dev-sdk chat completions (server-side only).
+     3→
+     4→import ZAI from "z-ai-web-dev-sdk"
+     5→
+     6→let zaiPromise: Promise<ZAI> | null = null
+     7→function getClient(): Promise<ZAI> {
+     8→  if (!zaiPromise) zaiPromise = ZAI.create()
+     9→  return zaiPromise
+    10→}
+    11→
+    12→// ─────────────────────────────────────────────────────────────────────────────
+    13→// Retry wrapper with exponential backoff for 429 (rate limit) errors.
+    14→// The z-ai SDK does not retry by default, and bulk operations (decision
+    15→// extraction, chat during traffic spikes) can hit 429s. We retry up to 5
+    16→// times with 5s, 10s, 20s, 40s, 60s backoff.
+    17→// ─────────────────────────────────────────────────────────────────────────────
+    18→
+    19→const MAX_RETRIES = 5
+    20→const BASE_BACKOFF_MS = 5000
+    21→
+    22→function isRateLimited(err: unknown): boolean {
+    23→  const msg = err instanceof Error ? err.message : String(err)
+    24→  return msg.includes("429") || msg.toLowerCase().includes("too many requests")
+    25→}
+    26→
+    27→async function withRetry<T>(fn: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+    28→  let lastErr: unknown
+    29→  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    30→    try {
+    31→      const value = await fn()
+    32→      return { ok: true, value }
+    33→    } catch (err) {
+    34→      lastErr = err
+    35→      if (!isRateLimited(err)) return { ok: false, error: err }
+    36→      if (attempt === MAX_RETRIES) break
+    37→      // Exponential backoff with jitter: 5s, 10s, 20s, 40s, 60s
+    38→      const baseBackoff = Math.min(BASE_BACKOFF_MS * Math.pow(2, attempt), 60000)
+    39→      const jitter = Math.random() * 2000 // Add randomness to avoid thundering herd
+    40→      const backoff = baseBackoff + jitter
+    41→      await new Promise((r) => setTimeout(r, backoff))
+    42→    }
+    43→  }
+    44→  return { ok: false, error: lastErr }
+    45→}
+    46→
+    47→export interface ContextChunk {
+    48→  id: string
+    49→  sourcePath: string
+    50→  headingPath: string
+    51→  chunkIndex: number
+    52→  text: string
+    53→  score: number
+    54→}
+    55→
+    56→export interface CitedAnswer {
+    57→  answer: string
+    58→  citedChunkIds: string[]
+    59→  refused: boolean
+    60→  serviceError: boolean
+    61→}
+    62→
+    63→// ─────────────────────────────────────────────────────────────────────────────
+    64→// Smart multi-mode chat — intent detection + appropriate response.
+    65→// The chat can operate in 4 modes:
+    66→//   1. NOTE_QA  — citation-first Q&A from notes (the original differentiator)
+    67→//   2. APP_HELP — questions about how to use Memex itself
+    68→//   3. GENERAL  — normal conversation, greetings, general knowledge
+    69→//   4. EMAIL    — questions about the user's inbox/emails
+    70→// ─────────────────────────────────────────────────────────────────────────────
+    71→
+    72→export type ChatMode = "note_qa" | "app_help" | "general" | "email"
+    73→
+    74→export interface SmartAnswer {
+    75→  answer: string
+    76→  mode: ChatMode
+    77→  citedChunkIds: string[]
+    78→  refused: boolean
+    79→  serviceError: boolean
+    80→}
+    81→
+    82→const SMART_SYSTEM_PROMPT = `You are Memex, a friendly, intelligent, and highly capable AI assistant. You are deeply knowledgeable about the app you live in, can hold any conversation, and can help users take actions. You have FIVE capabilities:
+    83→
+    84→## 1. Note Q&A (citation-first)
+    85→When the user asks about something that might be in their notes (technical decisions, project rationale, past choices, study material), you answer using ONLY the provided context chunks. Every factual claim MUST be cited with [^chunk_id]. If the context doesn't contain the answer, say "I don't have a source for this in your notes." Never speculate about note content.
+    86→
+    87→## 2. App Help (you know EVERYTHING about Memex)
+    88→You are the ultimate guide to Memex. You know every feature, every setting, every shortcut. When users ask about the app, explain clearly and helpfully. Here is your complete knowledge:
+    89→
+    90→**Notes section:**
+    91→- Write notes manually with live Markdown preview (Edit/Split toggle)
+    92→- Import from URL (paste any web page URL, AI extracts content)
+    93→- Upload files: PDF, Word (.docx), PowerPoint (.pptx), TXT, Markdown
+    94→- Audio to Note: speak in English or Hindi (Hindi becomes Hinglish), AI transcribes + structures
+    95→- Quick start templates: Decision, Meeting, Blank
+    96→- Each note is chunked by H2 headings (~512 tokens per chunk) for precise citation
+    97→- AI auto-extracts decisions from notes ("We chose X because Y")
+    98→- Pin important notes, filter by tags, duplicate, edit with live preview
+    99→- Table of contents auto-generated from headings
+   100→- Export all notes as Markdown
+   101→- Bulk select: select multiple notes → pin, export, or delete
+   102→
+   103→**Chat section:**
+   104→- Ask anything — about notes, about the app, or just chat
+   105→- AI detects intent: note Q&A (with citations), app help, general conversation, email help
+   106→- Citation pills [^chunkId] are clickable — opens source chunk
+   107→- Chat export as Markdown, rename sessions, A/B compare two sessions
+   108→- In-session search (Find button), keyboard shortcut "/" to focus input
+   109→- Sessions sidebar is resizable (drag the border)
+   110→- If AI is rate-limited, falls back to BM25 search results
+   111→
+   112→**Decisions section:**
+   113→- AI-extracted from notes automatically
+   114→- Each decision has: title, rationale, alternatives, confidence score, source chunk
+   115→- Filter by confidence slider, search, pin important decisions
+   116→- Copy as quote (markdown blockquote), view related decisions by topic overlap
+   117→- Click any decision to see the source chunk it came from
+   118→
+   119→**Timeline section:**
+   120→- Notes and decisions interleaved chronologically
+   121→- Filter by date range, by project
+   122→- Click events to open source
+   123→
+   124→**Analytics section:**
+   125→- Most-cited chunks (which notes the AI references most)
+   126→- Question activity chart (14 days)
+   127→- Project distribution
+   128→- Export as CSV or JSON
+   129→
+   130→**Smart Inbox section:**
+   131→- Connect your email account (Gmail, Outlook, Yahoo, iCloud)
+   132→- For Gmail: use an App Password (go to myaccount.google.com/apppasswords), NOT your regular password
+   133→- IMAP = Internet Message Access Protocol — it's how apps read your email. You don't need to know what it is; just provide your email + app password and Memex handles the rest
+   134→- Without a password, inbox runs in Demo Mode (sample emails)
+   135→- With a password, inbox syncs REAL emails from your inbox + sent folder
+   136→- AI categorizes each email: urgent (needs immediate action), important (needs response), normal, newsletter, spam
+   137→- AI writes a short summary + key points for each email
+   138→- AI suggests reply drafts for emails that need responses
+   139→- AI Reply Generator: type an instruction ("accept and suggest Tuesday") → AI drafts the reply
+   140→- Daily Email Briefing: one-click AI summary of today's important emails
+   141→- Convert any email to a note with one click
+   142→- Search inbox by sender/subject/body
+   143→- Thread view: group emails by conversation
+   144→- Star, archive, mark read/unread
+   145→- Browser notifications for urgent emails
+   146→- Manage connected accounts (view, disconnect)
+   147→
+   148→**Sent section (formerly Outbox):**
+   149→- All emails sent from Memex (composed, chat answers, decision briefs, digests)
+   150→- Schedule emails for future delivery (background scheduler delivers them)
+   151→- Status pipeline: queued → scheduled → delivered
+   152→- Email templates: Daily Digest, Decision Brief, Source Snapshot
+   153→- When connected with SMTP credentials, emails are sent via REAL SMTP (nodemailer)
+   154→- Without SMTP, emails are saved locally (simulated delivery)
+   155→
+   156→**Settings section:**
+   157→- Profile: name, email, SMTP settings
+   158→- Daily digest: enable/disable, set hour
+   159→- Security & Privacy: local storage (all data on your device), LLM privacy mode (only relevant snippets sent to AI), data encryption indicator, erase all data (Danger Zone — type "ERASE ALL DATA" to confirm)
+   160→- Dark mode toggle
+   161→- Shield icon in sidebar shows data is encrypted locally
+   162→
+   163→**Keyboard shortcuts:**
+   164→- Cmd+K / Ctrl+K: Command palette (search notes, decisions, navigate, actions)
+   165→- ?: Show shortcuts help
+   166→- /: Focus chat input (when on Chat section)
+   167→- Esc: Close dialog/panel
+   168→- Enter: Send chat message
+   169→- Shift+Enter: New line in chat
+   170→
+   171→**Command palette (Cmd+K):**
+   172→- Navigate to any section
+   173→- Start new chat, compose email, run digest
+   174→- Switch light/dark theme
+   175→- Search notes and decisions
+   176→
+   177→**Security:**
+   178→- All data stored locally in SQLite database
+   179→- No cloud sync — your data never leaves your device
+   180→- Only relevant note chunks (not entire library) sent to AI for analysis
+   181→- Email credentials stored locally
+   182→- Full data erase available in Settings
+   183→
+   184→## 3. General Conversation
+   185→When the user says "hi", "hello", "thanks", asks general questions not related to their notes or the app, or just wants to chat — respond warmly and naturally. You CAN use your general knowledge. Be conversational, not robotic. If they greet you, greet back and briefly mention what you can help with. Handle any topic — technology, science, history, casual chat, jokes, etc.
+   186→
+   187→## 4. Email Help
+   188→When the user asks about emails, their inbox, or email management:
+   189→- If email context is provided, use it to answer
+   190→- If they ask "what is IMAP" or "how do I connect my email" → explain in simple terms
+   191→- If they want to send an email → tell them to use the Compose Email button or go to Sent section
+   192→- If they want to check emails → tell them to go to Smart Inbox and click Sync
+   193→- Explain AI categorization, summaries, reply drafts, daily briefing
+   194→
+   195→## 5. Action Assistance & Email Drafting
+   196→When the user wants to DO something, be proactive and helpful:
+   197→
+   198→**Email sending (MOST IMPORTANT):**
+   199→When the user says "send an email to X about Y" or "email John about Z":
+   200→1. IMMEDIATELY draft the email content in your response — write the actual subject and body
+   201→2. Format it clearly:
+   202→   **To:** john@example.com
+   203→   **Subject:** Project Update — [specific subject]
+   204→   
+   205→   [Full email body written for them]
+   206→3. Tell them: "I've drafted this email for you. Click the **Email** button below this message to open it in the composer, review it, and send it."
+   207→4. Do NOT just say "go to compose and fill it in" — that's unhelpful. DRAFT THE ACTUAL EMAIL.
+   208→
+   209→**Other actions:**
+   210→- "Check my emails" → "Go to Smart Inbox in the left sidebar under Email, then click Sync. Your emails will be categorized by AI."
+   211→- "Add a note about X" → "Click the Add button in Notes, then choose Write manually, Upload file, or Audio to note."
+   212→
+   213→## Rules
+   214→- For note questions: ALWAYS cite with [^chunk_id]. If no relevant context, say "I don't have a source for this in your notes."
+   215→- For general conversation, app help, and email help: be warm, concise, and helpful. No citations needed.
+   216→- Use Markdown formatting for readability.
+   217→- Keep answers focused — don't ramble.
+   218→- If the user's intent is ambiguous, lean toward being helpful and conversational.
+   219→- NEVER say "I can't do that" — instead explain HOW they can do it themselves or DO it for them.
+   220→- When explaining technical terms (IMAP, SMTP, BM25, etc.), use simple language.
+   221→- **CONVERSATION CONTINUITY (CRITICAL):** Always read the conversation history before responding. If the user says "what about Redis?" after discussing databases, understand they're asking about Redis in the context of the previous database discussion. Never ignore previous messages. If the user asks a follow-up question, answer it in the context of what was discussed before — don't start a new topic.
+   222→- **EMAIL DRAFTING:** When the user asks to send an email, ALWAYS draft the full email (subject + body) in your response. Do NOT just tell them to go click a button. Write the actual email content for them.`
+   223→
+   224→export async function generateSmartAnswer(
+   225→  question: string,
+   226→  chunks: ContextChunk[],
+   227→  history: { role: "user" | "assistant"; content: string }[] = [],
+   228→  emailContext?: string
+   229→): Promise<SmartAnswer> {
+   230→  // Build a compact context block — only include the most relevant chunks
+   231→  // and keep email context SHORT to avoid drowning out conversation history
+   232→  const contextBlock = chunks.length > 0 ? buildContextBlock(chunks.slice(0, 3)) : ""
+   233→  const shortEmailContext = emailContext ? emailContext.slice(0, 800) : ""
+   234→
+   235→  // Keep MORE conversation history (last 10 messages = 5 exchanges)
+   236→  // This is critical for maintaining conversation flow
+   237→  const recentHistory = history.slice(-10)
+   238→
+   239→  // Build the user prompt — keep it SHORT so conversation history fits
+   240→  // The context is provided as SEPARATE messages, not stuffed into the user prompt
+   241→  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+   242→    { role: "system", content: SMART_SYSTEM_PROMPT },
+   243→  ]
+   244→
+   245→  // Add note context as a system-level note (not part of the conversation)
+   246→  if (contextBlock) {
+   247→    messages.push({
+   248→      role: "system",
+   249→      content: `NOTE CONTEXT (use ONLY if the user asks about their notes, cite with [^chunk_id]):\n${contextBlock}`,
+   250→    })
+   251→  }
+   252→
+   253→  // Add email context as a system-level note (keep it SHORT)
+   254→  if (shortEmailContext) {
+   255→    messages.push({
+   256→      role: "system",
+   257→      content: `RECENT INBOX EMAILS (use ONLY if the user asks about emails):\n${shortEmailContext}`,
+   258→    })
+   259→  }
+   260→
+   261→  // Add conversation history — this is the KEY part for maintaining flow
+   262→  messages.push(...recentHistory.map((h) => ({ role: h.role, content: h.content })))
+   263→
+   264→  // Add the current user message as a clean, simple message
+   265→  // (NOT wrapped in context — the context is already in system messages above)
+   266→  messages.push({ role: "user", content: question })
+   267→
+   268→  const zai = await getClient()
+   269→  let raw = ""
+   270→  const result = await withRetry(() =>
+   271→    zai.chat.completions.create({
+   272→      messages,
+   273→      temperature: 0.4,
+   274→      max_tokens: 800,
+   275→    })
+   276→  )
+   277→  if (!result.ok) {
+   278→    return {
+   279→      answer:
+   280→        "⚠️ I'm having trouble connecting right now (rate limited). Please try again in a moment — your message has been saved.",
+   281→      mode: "general",
+   282→      citedChunkIds: [],
+   283→      refused: false,
+   284→      serviceError: true,
+   285→    }
+   286→  }
+   287→  const completion = result.value
+   288→  if (typeof completion === "string") {
+   289→    raw = completion
+   290→  } else if (completion?.choices?.[0]?.message?.content) {
+   291→    raw = completion.choices[0].message.content
+   292→  } else if (completion?.content) {
+   293→    raw = completion.content
+   294→  } else {
+   295→    raw = String(completion ?? "")
+   296→  }
+   297→
+   298→  // Post-process: extract + verify citations
+   299→  const validIds = new Set(chunks.map((c) => c.id))
+   300→  const cited = new Set<string>()
+   301→  const markerRe = /\[\^([a-z0-9]+)\]/gi
+   302→  let m: RegExpExecArray | null
+   303→  while ((m = markerRe.exec(raw)) !== null) {
+   304→    const id = m[1]
+   305→    if (validIds.has(id)) cited.add(id)
+   306→  }
+   307→
+   308→  // Detect mode from the answer
+   309→  const lower = raw.toLowerCase()
+   310→  let mode: ChatMode = "general"
+   311→  if (cited.size > 0) mode = "note_qa"
+   312→  else if (lower.includes("i don't have a source") || lower.includes("in your notes")) mode = "note_qa"
+   313→  else if (lower.includes("memex can") || lower.includes("you can") || lower.includes("to add a note") || lower.includes("keyboard shortcut") || lower.includes("command palette")) mode = "app_help"
+   314→  else if (lower.includes("email") || lower.includes("inbox")) mode = "email"
+   315→
+   316→  const refused = mode === "note_qa" && cited.size === 0
+   317→
+   318→  return {
+   319→    answer: raw.trim(),
+   320→    mode,
+   321→    citedChunkIds: Array.from(cited),
+   322→    refused,
+   323→    serviceError: false,
+   324→  }
+   325→}
+   326→
+   327→// ─────────────────────────────────────────────────────────────────────────────
+   328→// Original citation-first prompt (the critical differentiator)
+   329→// ─────────────────────────────────────────────────────────────────────────────
+   330→
+   331→const SYSTEM_PROMPT = `You are Memex, a citation-first knowledge assistant. You answer questions using ONLY the provided context chunks. You must cite the source of every claim using inline markers [^chunk_id].
+   332→
+   333→RULES:
+   334→1. Every factual statement MUST be followed by [^<chunk_id>].
+   335→2. If the context does not contain information to answer, say exactly: "I don't have a source for this."
+   336→3. Never use outside knowledge. Never speculate.
+   337→4. If multiple chunks support a claim, cite all of them: [^a] [^b].
+   338→5. Keep answers under 200 words. Be concrete, not verbose.
+   339→6. Use Markdown formatting for readability (headings, lists, bold).`
+   340→
+   341→function buildContextBlock(chunks: ContextChunk[]): string {
+   342→  return chunks
+   343→    .map((c) => {
+   344→      return `[chunk_id: ${c.id}]
+   345→source: ${c.sourcePath}${c.headingPath ? ` (section: ${c.headingPath})` : ""}
+   346→---
+   347→${c.text}`
+   348→    })
+   349→    .join("\n\n")
+   350→}
+   351→
+   352→export async function generateCitedAnswer(
+   353→  question: string,
+   354→  chunks: ContextChunk[],
+   355→  history: { role: "user" | "assistant"; content: string }[] = []
+   356→): Promise<CitedAnswer> {
+   357→  if (chunks.length === 0) {
+   358→    return {
+   359→      answer: "I don't have a source for this.",
+   360→      citedChunkIds: [],
+   361→      refused: true,
+   362→      serviceError: false,
+   363→    }
+   364→  }
+   365→
+   366→  const contextBlock = buildContextBlock(chunks)
+   367→  const userPrompt = `CONTEXT CHUNKS:
+   368→${contextBlock}
+   369→
+   370→QUESTION: ${question}
+   371→
+   372→ANSWER (with [^chunk_id] citations):`
+   373→
+   374→  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+   375→    { role: "system", content: SYSTEM_PROMPT },
+   376→    ...history.slice(-4).map((h) => ({ role: h.role, content: h.content })),
+   377→    { role: "user", content: userPrompt },
+   378→  ]
+   379→
+   380→  const zai = await getClient()
+   381→  let raw = ""
+   382→  const result = await withRetry(() =>
+   383→    zai.chat.completions.create({
+   384→      messages,
+   385→      temperature: 0.3,
+   386→      max_tokens: 600,
+   387→    })
+   388→  )
+   389→  if (!result.ok) {
+   390→    // Distinguish a genuine service error from an honest refusal.
+   391→    return {
+   392→      answer:
+   393→        "⚠️ The reasoning service is temporarily unavailable (rate limited). Please try again in a moment — your question has been saved.",
+   394→      citedChunkIds: [],
+   395→      refused: false,
+   396→      serviceError: true,
+   397→    }
+   398→  }
+   399→  const completion = result.value
+   400→  if (typeof completion === "string") {
+   401→    raw = completion
+   402→  } else if (completion?.choices?.[0]?.message?.content) {
+   403→    raw = completion.choices[0].message.content
+   404→  } else if (completion?.content) {
+   405→    raw = completion.content
+   406→  } else {
+   407→    raw = String(completion ?? "")
+   408→  }
+   409→
+   410→  // Post-process: verify every [^chunk_id] marker exists in the provided context.
+   411→  const validIds = new Set(chunks.map((c) => c.id))
+   412→  const cited = new Set<string>()
+   413→  const markerRe = /\[\^([a-z0-9]+)\]/gi
+   414→  let m: RegExpExecArray | null
+   415→  while ((m = markerRe.exec(raw)) !== null) {
+   416→    const id = m[1]
+   417→    if (validIds.has(id)) cited.add(id)
+   418→  }
+   419→
+   420→  // Detect refusal
+   421→  const refused =
+   422→    raw.trim().toLowerCase().startsWith("i don't have a source for this") ||
+   423→    cited.size === 0
+   424→
+   425→  return {
+   426→    answer: raw.trim(),
+   427→    citedChunkIds: Array.from(cited),
+   428→    refused,
+   429→    serviceError: false,
+   430→  }
+   431→}
+   432→
+   433→// ─────────────────────────────────────────────────────────────────────────────
+   434→// Email intelligence — categorization, summarization, draft replies.
+   435→// ─────────────────────────────────────────────────────────────────────────────
+   436→
+   437→export type EmailCategory = "urgent" | "important" | "normal" | "newsletter" | "spam"
+   438→export type EmailAction = "reply_needed" | "review" | "archive" | "unsubscribe"
+   439→
+   440→export interface EmailAnalysis {
+   441→  category: EmailCategory
+   442→  action: EmailAction
+   443→  summary: string
+   444→  keyPoints: string[]
+   445→  suggestedReply?: string
+   446→}
+   447→
+   448→const EMAIL_ANALYSIS_PROMPT = `You are Memex's email intelligence assistant. Analyze the given email and return a JSON object with:
+   449→
+   450→{
+   451→  "category": "urgent" | "important" | "normal" | "newsletter" | "spam",
+   452→  "action": "reply_needed" | "review" | "archive" | "unsubscribe",
+   453→  "summary": "A SHORT, CLEAR summary in this format: '[Sender] wants you to [do X] by [deadline]. [Key detail].' Keep it under 15 words. Be specific about what action is needed — don't just restate the subject line. If no action is needed, say what the email is informing you about.",
+   454→  "keyPoints": ["3-5 bullet points, each starting with an action verb or clear topic. Be specific — include dates, amounts, or names."],
+   455→  "suggestedReply": "A draft reply if action is reply_needed, otherwise null"
+   456→}
+   457→
+   458→SUMMARY RULES (very important):
+   459→- DON'T just restate the subject — extract the ACTION or KEY INFORMATION
+   460→- DO say what the sender wants from you (reply, approve, review, pay, etc.)
+   461→- DO include deadlines or dates if mentioned
+   462→- DO include amounts if it's a bill or payment
+   463→- Keep it under 15 words — shorter is better
+   464→- Bad summary: "A pull request has been opened to add a scheduling feature"
+   465→- Good summary: "GitHub wants you to review PR #142 by checking 2 changed files"
+   466→
+   467→Category guidelines:
+   468→- urgent: time-sensitive, requires immediate action (deadlines today/tomorrow, outages, legal)
+   469→- important: needs a response or review but not time-critical (project updates, requests this week)
+   470→- normal: routine communication (confirmations, updates, standup summaries)
+   471→- newsletter: marketing, digests, automated content
+   472→- spam: unwanted, phishing, irrelevant
+   473→
+   474→Respond with JSON only, no prose.`
+   475→
+   476→export async function analyzeEmail(
+   477→  from: string,
+   478→  subject: string,
+   479→  body: string
+   480→): Promise<EmailAnalysis | null> {
+   481→  const zai = await getClient()
+   482→  const result = await withRetry(() =>
+   483→    zai.chat.completions.create({
+   484→      messages: [
+   485→        { role: "system", content: EMAIL_ANALYSIS_PROMPT },
+   486→        {
+   487→          role: "user",
+   488→          content: `FROM: ${from}\nSUBJECT: ${subject}\n\nBODY:\n${body.slice(0, 2000)}\n\nJSON:`,
+   489→        },
+   490→      ],
+   491→      temperature: 0.2,
+   492→      max_tokens: 500,
+   493→    })
+   494→  )
+   495→  if (!result.ok) return null
+   496→  try {
+   497→    const completion = result.value
+   498→    let raw = ""
+   499→    if (typeof completion === "string") raw = completion
+   500→    else if (completion?.choices?.[0]?.message?.content)
+   501→      raw = completion.choices[0].message.content
+   502→    else raw = String(completion ?? "")
+   503→    const match = raw.match(/\{[\s\S]*\}/)
+   504→    if (!match) return null
+   505→    return JSON.parse(match[0]) as EmailAnalysis
+   506→  } catch {
+   507→    return null
+   508→  }
+   509→}
+   510→
+   511→// Generate a reply draft for an email
+   512→export async function draftEmailReply(
+   513→  from: string,
+   514→  subject: string,
+   515→  body: string,
+   516→  instruction: string
+   517→): Promise<string> {
+   518→  const zai = await getClient()
+   519→  const result = await withRetry(() =>
+   520→    zai.chat.completions.create({
+   521→      messages: [
+   522→        {
+   523→          role: "system",
+   524→          content:
+   525→            "You are a helpful email assistant. Draft a professional, concise reply based on the user's instruction. Write only the reply body, no subject line.",
+   526→        },
+   527→        {
+   528→          role: "user",
+   529→          content: `ORIGINAL EMAIL FROM: ${from}\nSUBJECT: ${subject}\nBODY: ${body.slice(0, 1500)}\n\nUSER'S INSTRUCTION: ${instruction}\n\nDRAFT REPLY:`,
+   530→        },
+   531→      ],
+   532→      temperature: 0.5,
+   533→      max_tokens: 400,
+   534→    })
+   535→  )
+   536→  if (!result.ok) return "Unable to generate a draft at this time."
+   537→  const completion = result.value
+   538→  let raw = ""
+   539→  if (typeof completion === "string") raw = completion
+   540→  else if (completion?.choices?.[0]?.message?.content)
+   541→    raw = completion.choices[0].message.content
+   542→  else raw = String(completion ?? "")
+   543→  return raw.trim()
+   544→}
+   545→
+   546→// ─────────────────────────────────────────────────────────────────────────────
+   547→// LLM reranker — semantic re-ranking of BM25 candidates.
+   548→// We ask the model to score 0..1 relevance of each candidate to the query.
+   549→// Falls back gracefully if the model misbehaves.
+   550→// ─────────────────────────────────────────────────────────────────────────────
+   551→
+   552→export async function llmRerank(
+   553→  query: string,
+   554→  chunks: ContextChunk[]
+   555→): Promise<ContextChunk[]> {
+   556→  if (chunks.length <= 1) return chunks
+   557→  const zai = await getClient()
+   558→  const numbered = chunks
+   559→    .map((c, i) => `[${i}] ${c.text.slice(0, 400)}`)
+   560→    .join("\n")
+   561→  const prompt = `Rate the relevance of each candidate passage to the query on a scale of 0.0 to 1.0. Respond ONLY with a JSON array of numbers, one per candidate, in order. No prose.
+   562→
+   563→QUERY: ${query}
+   564→
+   565→CANDIDATES:
+   566→${numbered}
+   567→
+   568→JSON scores:`
+   569→  try {
+   570→    const result = await withRetry(() =>
+   571→      zai.chat.completions.create({
+   572→        messages: [
+   573→          {
+   574→            role: "system",
+   575→            content:
+   576→              "You are a relevance rater. Output only a JSON array of floats between 0 and 1.",
+   577→          },
+   578→          { role: "user", content: prompt },
+   579→        ],
+   580→        temperature: 0,
+   581→        max_tokens: 200,
+   582→      })
+   583→    )
+   584→    if (!result.ok) return chunks
+   585→    const completion = result.value
+   586→    let raw = ""
+   587→    if (typeof completion === "string") raw = completion
+   588→    else if (completion?.choices?.[0]?.message?.content)
+   589→      raw = completion.choices[0].message.content
+   590→    else raw = String(completion ?? "")
+   591→    const match = raw.match(/\[[\s\S]*\]/)
+   592→    if (!match) return chunks
+   593→    const scores = JSON.parse(match[0]) as number[]
+   594→    if (!Array.isArray(scores) || scores.length !== chunks.length) return chunks
+   595→    return chunks
+   596→      .map((c, i) => ({ ...c, score: c.score * 0.4 + (scores[i] ?? 0) * 2 }))
+   597→      .sort((a, b) => b.score - a.score)
+   598→  } catch {
+   599→    return chunks
+   600→  }
+   601→}
+   602→
+   603→// ─────────────────────────────────────────────────────────────────────────────
+   604→// Decision extraction (Phase 8 of the spec)
+   605→// ─────────────────────────────────────────────────────────────────────────────
+   606→
+   607→export interface ExtractedDecision {
+   608→  title: string
+   609→  decisionDate: string
+   610→  alternatives: string[]
+   611→  rationale: string
+   612→  outcome: string
+   613→  participants: string[]
+   614→  confidence: number
+   615→}
+   616→
+   617→const DECISION_PROMPT = `You are Memex's decision extractor. Read the following note chunk and extract any decisions it contains. A decision is a statement that X was chosen over Y for reason Z.
+   618→
+   619→If no decision is present, return {"decisions": []}.
+   620→
+   621→If decisions are present, return JSON:
+   622→{
+   623→  "decisions": [
+   624→    {
+   625→      "title": "Use Postgres for primary DB",
+   626→      "decision_date": "2024-03-14",
+   627→      "alternatives": ["Mongo", "SQLite"],
+   628→      "rationale": "ACID guarantees matter for financial data",
+   629→      "outcome": "Working well 6 months later",
+   630→      "participants": ["@me"],
+   631→      "confidence": 0.9
+   632→    }
+   633→  ]
+   634→}
+   635→
+   636→Respond with JSON only, no prose. Dates must be ISO format YYYY-MM-DD or null.`
+   637→
+   638→export async function extractDecisions(
+   639→  chunkText: string,
+   640→  headingPath: string
+   641→): Promise<ExtractedDecision[]> {
+   642→  const zai = await getClient()
+   643→  const result = await withRetry(() =>
+   644→    zai.chat.completions.create({
+   645→      messages: [
+   646→        { role: "system", content: DECISION_PROMPT },
+   647→        {
+   648→          role: "user",
+   649→          content: `Heading path: ${headingPath}\n\nNOTE CHUNK:\n${chunkText}\n\nJSON:`,
+   650→        },
+   651→      ],
+   652→      temperature: 0.1,
+   653→      max_tokens: 600,
+   654→    })
+   655→  )
+   656→  if (!result.ok) return []
+   657→  try {
+   658→    const completion = result.value
+   659→    let raw = ""
+   660→    if (typeof completion === "string") raw = completion
+   661→    else if (completion?.choices?.[0]?.message?.content)
+   662→      raw = completion.choices[0].message.content
+   663→    else raw = String(completion ?? "")
+   664→    const match = raw.match(/\{[\s\S]*\}/)
+   665→    if (!match) return []
+   666→    const parsed = JSON.parse(match[0]) as { decisions?: ExtractedDecision[] }
+   667→    if (!parsed.decisions || !Array.isArray(parsed.decisions)) return []
+   668→    return parsed.decisions.filter((d) => d && d.title && d.rationale)
+   669→  } catch {
+   670→    return []
+   671→  }
+   672→}
+   673→

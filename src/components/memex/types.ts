@@ -80,7 +80,34 @@ export interface ChatMessageData {
   role: "user" | "assistant"
   content: string
   citations: Citation[]
+  emailDraft: EmailDraftPayload | null
   createdAt: string
+}
+
+// Shape of the email draft payload that travels between the chat API and the UI.
+// When present on an assistant message, the chat renders an interactive
+// EmailDraftCard below the message text.
+export interface EmailDraftPayload {
+  recipient: string
+  subject: string
+  bodyMarkdown: string
+  rationale: string
+  status: "draft" | "sending" | "sent" | "failed" | "scheduled" | "cancelled"
+  // Optional: link to the Email row once it's been sent/saved
+  emailId?: string
+  // Optional: error message when status === "failed"
+  errorMessage?: string
+  // Optional: ISO timestamp for scheduled send
+  scheduledFor?: string
+  // Timeline of actions taken on this draft (Draft Generated, Subject Approved,
+  // User Confirmed, Email Sent, Delivery Confirmed, etc.)
+  timeline: EmailTimelineEvent[]
+}
+
+export interface EmailTimelineEvent {
+  action: string
+  timestamp: string
+  details?: string
 }
 
 export interface ChatSessionSummary {

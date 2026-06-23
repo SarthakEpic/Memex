@@ -670,3 +670,210 @@ export async function extractDecisions(
     return []
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Structured email drafting — produces a ready-to-send email draft as JSON.
+// This is the CRITICAL function for the chat-driven email flow:
+//   - The body is EXACTLY what gets sent (no preamble, no chat history,
+//     no internal prompts, no assistant reasoning).
+//   - The subject is concise, professional, and derived from the body content.
+//   - The recipient is parsed from the user's instruction.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface EmailDraftResult {
+  recipient: string
+  subject: string
+  bodyMarkdown: string
+  rationale: string
+}
+
+const EMAIL_DRAFT_PROMPT = `You are Memex's email drafting assistant. The user wants to send an email. Draft a complete, ready-to-send email based on their instruction.
+
+CRITICAL RULES (read carefully):
+1. The "bodyMarkdown" field must contain ONLY the email body — the actual message the recipient will read.
+   - NO preamble like "Here's your email:" or "I've drafted this for you"
+   - NO meta-commentary about the email
+   - NO instructions to the user
+   - NO copy of the user's original instruction
+   - NO conversation history
+   - NO assistant reasoning or thought process
+2. The "subject" must be:
+   - Concise (under 60 characters)
+   - Professional
+   - Directly relevant to the email body
+   - NOT generic like "Email" or "Message"
+3. The "recipient" must be:
+   - A valid email address (e.g., "john@example.com")
+   - If the user said "to me", "send to myself", or no recipient: use "me"
+   - Extract the exact email address from the instruction if present
+4. The body should:
+   - Start with a professional greeting ("Hi [Name]," or "Dear [Name],")
+   - Be concise and clear
+   - Use Markdown formatting (headings, lists, bold) where helpful
+   - End with a professional sign-off ("Best regards," / "Thanks," etc.)
+   - Be ready to send AS-IS — what you write here is exactly what gets sent
+5. The "rationale" is a brief (1 sentence) note to the USER (not the recipient) explaining what you drafted.
+6. NEVER include the user's original instruction in the body.
+7. NEVER include chat history or prior conversation in the body.
+8. NEVER include internal reasoning or thought process in the body.
+
+Return ONLY a JSON object with this exact shape:
+{
+  "recipient": "email@address.com",
+  "subject": "Concise subject line",
+  "bodyMarkdown": "Hi Name,\\n\\n[Email body here]\\n\\nBest regards,\\nMemex User",
+  "rationale": "Brief note to the user about what was drafted"
+}`
+
+export async function draftEmailFromInstruction(
+  instruction: string,
+  emailContext?: string
+): Promise<EmailDraftResult | null> {
+  const zai = await getClient()
+  const userContent = `INSTRUCTION:
+${instruction}
+${emailContext ? `\nRECENT INBOX CONTEXT (use only if relevant to the email):\n${emailContext.slice(0, 600)}\n` : ""}
+JSON:`
+
+  const result = await withRetry(() =>
+    zai.chat.completions.create({
+      messages: [
+        { role: "system", content: EMAIL_DRAFT_PROMPT },
+        { role: "user", content: userContent },
+      ],
+      temperature: 0.5,
+      max_tokens: 900,
+    })
+  )
+  if (!result.ok) return null
+  try {
+    const completion = result.value
+    let raw = ""
+    if (typeof completion === "string") raw = completion
+    else if (completion?.choices?.[0]?.message?.content)
+      raw = completion.choices[0].message.content
+    else raw = String(completion ?? "")
+    const match = raw.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    const parsed = JSON.parse(match[0]) as EmailDraftResult
+    if (!parsed.recipient || !parsed.subject || !parsed.bodyMarkdown) return null
+    // Sanitize: strip any leaked preamble patterns from the body
+    let body = parsed.bodyMarkdown.trim()
+    body = body.replace(/^(here'?s?\s+(?:your|the)\s+email[^:]*:\s*)/i, "")
+    body = body.replace(/^(i'?ve\s+drafted[^:]*:\s*)/i, "")
+    body = body.replace(/^(draft\s+email[^:]*:\s*)/i, "")
+    return {
+      recipient: parsed.recipient.trim(),
+      subject: parsed.subject.trim().replace(/^["']|["']$/g, ""),
+      bodyMarkdown: body,
+      rationale: (parsed.rationale || "Drafted based on your instruction.").trim(),
+    }
+  } catch {
+    return null
+  }
+}
+
+// Regenerate an email draft based on user feedback (e.g., "make it shorter",
+// "more formal", "add a meeting time").
+export async function regenerateEmailDraft(
+  originalInstruction: string,
+  previousDraft: EmailDraftResult,
+  feedback: string
+): Promise<EmailDraftResult | null> {
+  const zai = await getClient()
+  const result = await withRetry(() =>
+    zai.chat.completions.create({
+      messages: [
+        { role: "system", content: EMAIL_DRAFT_PROMPT },
+        {
+          role: "user",
+          content: `INSTRUCTION:
+${originalInstruction}
+
+PREVIOUS DRAFT (improve this based on feedback):
+Recipient: ${previousDraft.recipient}
+Subject: ${previousDraft.subject}
+Body:
+${previousDraft.bodyMarkdown}
+
+USER FEEDBACK:
+${feedback}
+
+JSON:`,
+        },
+      ],
+      temperature: 0.6,
+      max_tokens: 900,
+    })
+  )
+  if (!result.ok) return null
+  try {
+    const completion = result.value
+    let raw = ""
+    if (typeof completion === "string") raw = completion
+    else if (completion?.choices?.[0]?.message?.content)
+      raw = completion.choices[0].message.content
+    else raw = String(completion ?? "")
+    const match = raw.match(/\{[\s\S]*\}/)
+    if (!match) return null
+    const parsed = JSON.parse(match[0]) as EmailDraftResult
+    if (!parsed.recipient || !parsed.subject || !parsed.bodyMarkdown) return null
+    let body = parsed.bodyMarkdown.trim()
+    body = body.replace(/^(here'?s?\s+(?:your|the)\s+email[^:]*:\s*)/i, "")
+    body = body.replace(/^(i'?ve\s+drafted[^:]*:\s*)/i, "")
+    return {
+      recipient: parsed.recipient.trim(),
+      subject: parsed.subject.trim().replace(/^["']|["']$/g, ""),
+      bodyMarkdown: body,
+      rationale: (parsed.rationale || "Regenerated based on your feedback.").trim(),
+    }
+  } catch {
+    return null
+  }
+}
+
+// Generate a concise, professional subject from an email body.
+// Used when the user edits the body — the subject can be auto-updated.
+export async function generateEmailSubject(bodyMarkdown: string): Promise<string | null> {
+  if (!bodyMarkdown.trim()) return null
+  const zai = await getClient()
+  const result = await withRetry(() =>
+    zai.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content: `You generate a concise, professional email subject line based on the email body. Rules:
+- Under 60 characters
+- Directly relevant to the body content
+- Professional tone
+- No quotes, no trailing punctuation
+- No prefix like "Subject:" — just the subject text itself
+Respond with ONLY the subject text, nothing else.`,
+        },
+        {
+          role: "user",
+          content: `EMAIL BODY:
+${bodyMarkdown.slice(0, 1500)}
+
+SUBJECT:`,
+        },
+      ],
+      temperature: 0.3,
+      max_tokens: 60,
+    })
+  )
+  if (!result.ok) return null
+  try {
+    const completion = result.value
+    let raw = ""
+    if (typeof completion === "string") raw = completion
+    else if (completion?.choices?.[0]?.message?.content)
+      raw = completion.choices[0].message.content
+    else raw = String(completion ?? "")
+    const subject = raw.trim().replace(/^["']|["']$/g, "").replace(/^subject:\s*/i, "")
+    if (!subject || subject.length > 120) return null
+    return subject
+  } catch {
+    return null
+  }
+}

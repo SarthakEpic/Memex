@@ -20,6 +20,7 @@ export async function GET(
       messages: session.messages.map((m) => ({
         ...m,
         citations: safeParse(m.citations, []),
+        emailDraft: safeParse(m.emailDraft, null),
       })),
     },
   })

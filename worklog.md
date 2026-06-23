@@ -788,3 +788,106 @@ Stage Summary:
 - Browser notifications: automatic alerts for urgent unread emails.
 - 35 API routes, 22 UI components, 11 lib modules.
 - Lint clean, no runtime errors.
+
+---
+Task ID: 18 (user-requested: Smart Assistant Chat major UX upgrade)
+Agent: main (interactive email drafting + action buttons + timeline)
+Task: Major UX & functionality upgrade for the Smart Assistant Chat section — interactive action buttons, email preview before sending, fix send button behavior, accurate subject/body generation, enhanced chat components (cards, status indicators, confirmation), chat history timeline.
+
+Work Log:
+- Schema update: added `emailDraft` String field to ChatMessage model (stores JSON of the draft payload). Pushed to DB + regenerated Prisma client.
+
+- Backend: structured email drafting in lib/llm.ts.
+  - New `draftEmailFromInstruction(instruction, emailContext?)` — calls LLM with a STRICT prompt that returns JSON `{recipient, subject, bodyMarkdown, rationale}`. The bodyMarkdown is EXACTLY what gets sent — no preamble, no chat history, no internal reasoning. Prompt explicitly forbids including the user's instruction, conversation history, or assistant reasoning in the body.
+  - New `regenerateEmailDraft(instruction, previousDraft, feedback)` — re-generates the draft based on user feedback ("make it shorter", "more formal", etc.).
+  - New `generateEmailSubject(bodyMarkdown)` — generates a concise, professional subject from the body content. Used when the user edits the body and the subject auto-updates.
+  - All three functions sanitize the output (strip leaked preamble patterns like "Here's your email:").
+
+- Backend: updated /api/chat/route.ts with email intent detection.
+  - Detects email requests via keywords ("send email", "email to", "compose", "draft email", "write email", "mail to", etc.).
+  - When email intent detected: calls `draftEmailFromInstruction()` instead of the regular chat flow.
+  - Returns a structured `emailDraft` payload alongside a short assistant message.
+  - The assistant message is just a brief intro ("I've drafted an email to X. Review below…") — the actual email content lives in the structured payload, NOT in the chat text.
+  - Falls back to regular chat if draft generation fails (rate limit, etc.).
+
+- Backend: new API routes.
+  - POST /api/chat/email-regenerate — regenerates a draft with feedback.
+  - POST /api/chat/email-subject — generates a subject from a body (debounced auto-update).
+  - PATCH /api/chat/sessions/[id]/messages/[messageId] — persists emailDraft state changes (edits, status, timeline) back to the ChatMessage row.
+  - Updated GET /api/chat/sessions/[id] to parse and return the emailDraft field on each message.
+
+- Frontend: new EmailDraftCard component (src/components/memex/email-draft-card.tsx).
+  - Renders inside the chat conversation when an assistant message has an emailDraft payload.
+  - Shows: recipient, subject, body (Markdown-rendered), attachments placeholder.
+  - Inline editing for each field (click "Edit" → input appears → save/cancel).
+  - Action buttons: Send Email, Schedule, Regenerate (with feedback box), Save Draft, Cancel.
+  - Status indicator: Draft Created → Sending → Sent Successfully / Failed / Scheduled / Cancelled.
+  - Expandable Timeline showing all actions (Draft Generated, Recipient Selected, Subject Approved, User Confirmed, Email Sent, Delivery Confirmed, Draft Regenerated, etc.) with timestamps and details.
+  - Auto-subject toggle: when enabled, the subject auto-updates from the body content (debounced 1.2s) after the user edits the body.
+  - Error display with retry button when send fails.
+  - CRITICAL: Send Email sends ONLY the displayed subject/body/recipient — never chat history, never internal prompts, never assistant reasoning. The POST /api/emails body is built from the card's local state, not from the chat message.
+
+- Frontend: new ChatActionBar component (in same file).
+  - Contextual action buttons for non-email messages: Reply, Archive, Delete, Mark Important, Create Task, Schedule Follow-up.
+  - Wired to the inbox PATCH/DELETE API for email-related actions.
+
+- Frontend: updated chat.tsx to integrate EmailDraftCard.
+  - MessageBubble now accepts `instruction` (the preceding user message) and `onDraftChange` props.
+  - Renders EmailDraftCard below the assistant message text when `message.emailDraft` is present.
+  - `handleDraftChange` persists draft updates to the server via PATCH and optimistically updates the React Query cache.
+  - Streaming answer now supports `emailDraft` payload — renders the card immediately (no token animation for email responses).
+  - Finds the preceding user message to use as the "instruction" for draft regeneration.
+
+- Types: added EmailDraftPayload and EmailTimelineEvent interfaces to types.ts. Updated ChatMessageData to include `emailDraft: EmailDraftPayload | null`.
+
+Verification:
+- Backend verified via curl: POST /api/chat with "send an email to john@example.com about the project meeting" returns a clean structured draft:
+  - recipient: john@example.com
+  - subject: Project Meeting (concise, relevant)
+  - bodyMarkdown: "Hi John, I'm writing to follow up about our upcoming project meeting…" (clean, ready-to-send, NO chat history, NO preamble)
+  - rationale: brief explanation
+  - status: draft
+  - timeline: [{action: "Draft Generated", ...}]
+
+- agent-browser verified end-to-end:
+  1. Typed "send an email to john@example.com about the project update meeting tomorrow at 3pm" in chat.
+  2. EmailDraftCard rendered with recipient, subject, body, and all action buttons.
+  3. Clicked "Send Email" → status changed to "Sent Successfully", timeline expanded to show 4 events (Draft Generated → User Confirmed → Email Sent → Delivery Confirmed).
+  4. Started new chat, typed another email request, tested inline edit (recipient field) — value updated successfully, timeline added "Recipient Selected" event.
+  5. Tested Regenerate button — feedback box appeared, typed feedback, clicked Regenerate.
+  6. Tested Schedule button — datetime picker appeared.
+  7. Status indicator correctly shows: Draft Created (slate), Sending (blue), Sent Successfully (emerald), Failed (red), Scheduled (amber), Cancelled (zinc).
+
+- Lint clean. No new TypeScript errors (pre-existing errors in unrelated files remain).
+
+Stage Summary:
+- Smart Assistant Chat is now fully action-oriented: email requests produce interactive preview cards instead of text-only responses.
+- Email drafts are structured JSON (recipient + subject + body) — the body is EXACTLY what gets sent. No more random subjects, no chat history in the email body, no internal prompts leaking through.
+- Inline editing: click any field to edit it directly in the chat. Auto-subject mode keeps the subject relevant to the body content.
+- Regeneration with feedback: user can say "make it shorter" or "add a meeting time" and get a new draft.
+- Full action button set: Send Email, Schedule, Regenerate, Save Draft, Cancel — all one-click.
+- Timeline: every email-related action is recorded with timestamp and details, expandable in the card.
+- Status indicators: Draft Created, Sending, Sent Successfully, Failed, Scheduled, Cancelled — each with appropriate color and icon.
+- 38 API routes, 25 UI components, 12 lib modules.
+
+Current project status:
+- Memex is now a comprehensive AI-powered knowledge + email management system with a fully interactive chat-driven email workflow.
+- The chat no longer relies on text-only confirmations — every email action has a clickable button.
+- Email previews are accurate: what the user sees in the preview card is EXACTLY what gets sent.
+- Subject generation is relevant and concise, with auto-update when the body changes.
+- The timeline provides full transparency into every action taken on an email draft.
+
+Unresolved issues / risks:
+- The dev server occasionally dies under memory pressure when both agent-browser (Chrome) and the Next.js server are running simultaneously with LLM calls. A watchdog script auto-restarts it, but this is a sandbox constraint.
+- The "Save Draft" feature uses a far-future scheduled date as a workaround (the email API doesn't have a "draft" status that persists without sending). A future improvement would add a true "draft" status to the Email model.
+- Auto-subject generation requires an extra LLM call (debounced 1.2s) — could be disabled by the user via the "auto" checkbox.
+- The ChatActionBar (Reply/Archive/Delete/Mark Important/Create Task/Schedule Follow-up) is built but not yet wired into the MessageBubble for non-email messages — it's available as a component for future integration.
+
+Priority recommendations for next phase:
+- Wire ChatActionBar into MessageBubble for inbox-email-related messages (when the assistant discusses a specific inbox email, show the action buttons).
+- Add a "Create Task" modal that creates a real task (stored in DB) from a chat message.
+- Add attachment support to the EmailDraftCard (file upload → base64 → email attachment).
+- Add a "Confirm before send" toggle in Settings for users who want an extra confirmation step.
+- Add email template integration in the EmailDraftCard (apply a template to the current draft).
+- Add a "Send to multiple recipients" feature (comma-separated or multi-input).
+- Migrate the "Save Draft" feature to use a true "draft" status instead of far-future scheduling.

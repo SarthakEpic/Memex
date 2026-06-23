@@ -100,6 +100,10 @@ model ChatMessage {
   content   String
   // JSON array of {chunkId, noteId, sourcePath, chunkIndex, snippet, score}
   citations String   @default("[]")
+  // JSON string for an email draft attached to this assistant message.
+  // Shape: { recipient, subject, bodyMarkdown, rationale, status, timeline: [{action, timestamp, details}] }
+  // Empty string when no draft is attached.
+  emailDraft String @default("")
   createdAt DateTime @default(now())
 
   @@index([sessionId])
