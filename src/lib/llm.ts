@@ -192,11 +192,23 @@ When the user asks about emails, their inbox, or email management:
 - If they want to check emails → tell them to go to Smart Inbox and click Sync
 - Explain AI categorization, summaries, reply drafts, daily briefing
 
-## 5. Action Assistance
-When the user wants to DO something (send email, add note, check inbox), guide them step by step:
-- "Send an email to John" → "I can help you send an email! Click the 'Compose email' button in the left sidebar, or go to the Sent section. Fill in the recipient, subject, and body. If you've connected your email account with SMTP credentials, it will send via real SMTP."
-- "Check my emails" → "Go to Smart Inbox in the left sidebar under Email, then click the Sync button. Your emails will be categorized by AI."
-- "Add a note about X" → "Click the 'Add' button in the Notes section, then choose 'Write note manually'. You can also upload a PDF/Word/PPT file, import from a URL, or use Audio-to-Note to speak your note."
+## 5. Action Assistance & Email Drafting
+When the user wants to DO something, be proactive and helpful:
+
+**Email sending (MOST IMPORTANT):**
+When the user says "send an email to X about Y" or "email John about Z":
+1. IMMEDIATELY draft the email content in your response — write the actual subject and body
+2. Format it clearly:
+   **To:** john@example.com
+   **Subject:** Project Update — [specific subject]
+   
+   [Full email body written for them]
+3. Tell them: "I've drafted this email for you. Click the **Email** button below this message to open it in the composer, review it, and send it."
+4. Do NOT just say "go to compose and fill it in" — that's unhelpful. DRAFT THE ACTUAL EMAIL.
+
+**Other actions:**
+- "Check my emails" → "Go to Smart Inbox in the left sidebar under Email, then click Sync. Your emails will be categorized by AI."
+- "Add a note about X" → "Click the Add button in Notes, then choose Write manually, Upload file, or Audio to note."
 
 ## Rules
 - For note questions: ALWAYS cite with [^chunk_id]. If no relevant context, say "I don't have a source for this in your notes."
@@ -204,8 +216,10 @@ When the user wants to DO something (send email, add note, check inbox), guide t
 - Use Markdown formatting for readability.
 - Keep answers focused — don't ramble.
 - If the user's intent is ambiguous, lean toward being helpful and conversational.
-- NEVER say "I can't do that" — instead explain HOW they can do it themselves.
-- When explaining technical terms (IMAP, SMTP, BM25, etc.), use simple language.`
+- NEVER say "I can't do that" — instead explain HOW they can do it themselves or DO it for them.
+- When explaining technical terms (IMAP, SMTP, BM25, etc.), use simple language.
+- **CONVERSATION CONTINUITY (CRITICAL):** Always read the conversation history before responding. If the user says "what about Redis?" after discussing databases, understand they're asking about Redis in the context of the previous database discussion. Never ignore previous messages. If the user asks a follow-up question, answer it in the context of what was discussed before — don't start a new topic.
+- **EMAIL DRAFTING:** When the user asks to send an email, ALWAYS draft the full email (subject + body) in your response. Do NOT just tell them to go click a button. Write the actual email content for them.`
 
 export async function generateSmartAnswer(
   question: string,
@@ -213,23 +227,43 @@ export async function generateSmartAnswer(
   history: { role: "user" | "assistant"; content: string }[] = [],
   emailContext?: string
 ): Promise<SmartAnswer> {
-  const contextBlock = chunks.length > 0 ? buildContextBlock(chunks) : ""
+  // Build a compact context block — only include the most relevant chunks
+  // and keep email context SHORT to avoid drowning out conversation history
+  const contextBlock = chunks.length > 0 ? buildContextBlock(chunks.slice(0, 3)) : ""
+  const shortEmailContext = emailContext ? emailContext.slice(0, 800) : ""
 
-  const userPrompt = `${contextBlock ? `AVAILABLE NOTE CONTEXT (use ONLY for note Q&A, cite with [^chunk_id]):
-${contextBlock}
+  // Keep MORE conversation history (last 10 messages = 5 exchanges)
+  // This is critical for maintaining conversation flow
+  const recentHistory = history.slice(-10)
 
-` : ""}${emailContext ? `EMAIL CONTEXT:
-${emailContext}
-
-` : ""}USER MESSAGE: ${question}
-
-Respond appropriately based on the user's intent. If they're asking about their notes, use the note context and cite it. If they're saying hi or asking about the app, just be helpful and conversational.`
-
+  // Build the user prompt — keep it SHORT so conversation history fits
+  // The context is provided as SEPARATE messages, not stuffed into the user prompt
   const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
     { role: "system", content: SMART_SYSTEM_PROMPT },
-    ...history.slice(-6).map((h) => ({ role: h.role, content: h.content })),
-    { role: "user", content: userPrompt },
   ]
+
+  // Add note context as a system-level note (not part of the conversation)
+  if (contextBlock) {
+    messages.push({
+      role: "system",
+      content: `NOTE CONTEXT (use ONLY if the user asks about their notes, cite with [^chunk_id]):\n${contextBlock}`,
+    })
+  }
+
+  // Add email context as a system-level note (keep it SHORT)
+  if (shortEmailContext) {
+    messages.push({
+      role: "system",
+      content: `RECENT INBOX EMAILS (use ONLY if the user asks about emails):\n${shortEmailContext}`,
+    })
+  }
+
+  // Add conversation history — this is the KEY part for maintaining flow
+  messages.push(...recentHistory.map((h) => ({ role: h.role, content: h.content })))
+
+  // Add the current user message as a clean, simple message
+  // (NOT wrapped in context — the context is already in system messages above)
+  messages.push({ role: "user", content: question })
 
   const zai = await getClient()
   let raw = ""

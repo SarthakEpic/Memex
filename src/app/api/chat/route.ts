@@ -45,7 +45,11 @@ export async function POST(req: NextRequest) {
   ]
 
   // Check if this is a general conversational phrase (exact or close match)
-  const isGeneral = generalPhrases.some(
+  // BUT: if the user mentions email keywords, don't treat it as general
+  const emailKeywords = ["send email", "send an email", "email to", "compose", "draft email", "mail to", "write email", "reply to"]
+  const isEmailRequest = emailKeywords.some((kw) => lowerMsg.includes(kw))
+
+  const isGeneral = !isEmailRequest && generalPhrases.some(
     (phrase) =>
       lowerMsg === phrase ||
       lowerMsg.startsWith(phrase + " ") ||
@@ -63,11 +67,22 @@ export async function POST(req: NextRequest) {
     "alternative", "tradeoff", "comparison", "benchmark",
   ]
 
+  // Also check conversation history for context — if the last message was about notes,
+  // and this message is a follow-up, treat it as a note question too
+  const lastFewMessages = await db.chatMessage.findMany({
+    where: { sessionId: session.id, role: { in: ["user", "assistant"] } },
+    orderBy: { createdAt: "desc" },
+    take: 3,
+  })
+  const lastAssistantMsg = lastFewMessages.find((m) => m.role === "assistant")
+  const lastWasAboutNotes = lastAssistantMsg?.content?.includes("[^") || false
+
   // Trigger note search if: contains a question mark OR contains note keywords
   // AND is NOT a general conversational phrase
+  // OR if the last assistant message was about notes (follow-up context)
   const hasQuestionMark = lowerMsg.includes("?")
   const hasNoteKeyword = noteKeywords.some((kw) => lowerMsg.includes(kw))
-  const mightBeAboutNotes = !isGeneral && (hasQuestionMark || hasNoteKeyword)
+  const mightBeAboutNotes = !isGeneral && (hasQuestionMark || hasNoteKeyword || lastWasAboutNotes)
 
   // Retrieve context chunks — SKIP reranking to avoid an extra LLM call
   // that could hit rate limits. BM25-only retrieval is fast and reliable.
@@ -75,30 +90,30 @@ export async function POST(req: NextRequest) {
     ? await retrieve(message, { topK: 6, rerank: false })
     : []
 
-  // Build conversation history
+  // Build conversation history — pass MORE messages for better conversation flow
   const history = await db.chatMessage.findMany({
     where: { sessionId: session.id, role: { in: ["user", "assistant"] } },
     orderBy: { createdAt: "asc" },
-    take: 12,
+    take: 20, // Get last 20 messages (10 exchanges)
   })
   const historyClean = history
     .slice(0, -1) // exclude the just-stored user message (we pass it separately)
     .map((h) => ({ role: h.role as "user" | "assistant", content: h.content }))
 
-  // Build email context from recent inbox emails (if any)
+  // Build email context from recent inbox emails (keep it SHORT)
   let emailContext = ""
   try {
     const recentEmails = await db.inboxEmail.findMany({
       orderBy: { receivedAt: "desc" },
-      take: 5,
+      take: 3, // Only 3 emails instead of 5 to keep context small
     })
     if (recentEmails.length > 0) {
       emailContext = recentEmails
         .map(
           (e) =>
-            `[${e.category}] FROM: ${e.fromAddress} | SUBJECT: ${e.subject}\n${e.body.slice(0, 300)}`
+            `[${e.category}] FROM: ${e.fromName || e.fromAddress} | SUBJECT: ${e.subject}`
         )
-        .join("\n\n")
+        .join("\n") // Just subject lines, no body — keeps it compact
     }
   } catch {
     // inboxEmail table might not exist yet
