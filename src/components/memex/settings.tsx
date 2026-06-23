@@ -343,6 +343,11 @@ export function Settings() {
 
       <Separator />
 
+      {/* AI Provider Status */}
+      <AiProviderCard />
+
+      <Separator />
+
       {/* About */}
       <Card>
         <CardHeader className="pb-3">
@@ -359,10 +364,12 @@ export function Settings() {
             honestly says it can&apos;t cite one.
           </p>
           <p>
-            Adapted from a FastAPI + Qdrant + Postgres + Ollama spec to this
-            sandbox stack: Next.js 16 + Prisma/SQLite + z-ai-web-dev-sdk. BM25
-            retrieval replaces vector search; the LLM does reranking + citation
-            enforcement + decision extraction.
+            Adapted from a FastAPI + Qdrant + Postgres + Ollama spec to a
+            portable stack: Next.js 16 + Prisma (SQLite for local dev,
+            PostgreSQL for production) + OpenAI-compatible LLM provider
+            (Google Gemini / Groq / OpenAI / Ollama). BM25 retrieval replaces
+            vector search; the LLM does reranking + citation enforcement +
+            decision extraction.
           </p>
         </CardContent>
       </Card>
@@ -433,3 +440,118 @@ export function Settings() {
     </div>
   )
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// AI Provider Status Card
+// Shows which LLM provider is configured and whether it's ready to use.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function AiProviderCard() {
+  const [status, setStatus] = useState<{
+    provider: string
+    providerName: string
+    model: string
+    configured: boolean
+    missingEnvVar?: string
+  } | null>(null)
+
+  useEffect(() => {
+    fetch("/api/ai-status")
+      .then((r) => r.json())
+      .then(setStatus)
+      .catch(() => {})
+  }, [])
+
+  if (!status) {
+    return (
+      <Card>
+        <CardContent className="py-6 text-center text-xs text-muted-foreground">
+          <Loader2 className="h-4 w-4 animate-spin mx-auto mb-2" />
+          Checking AI provider status…
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const providerColors: Record<string, string> = {
+    gemini: "bg-blue-500/15 text-blue-600 dark:text-blue-300 border-blue-500/30",
+    groq: "bg-orange-500/15 text-orange-600 dark:text-orange-300 border-orange-500/30",
+    openai: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30",
+    openrouter: "bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30",
+    ollama: "bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 border-zinc-500/30",
+    custom: "bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30",
+  }
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="text-sm flex items-center gap-2">
+          <Server className="h-4 w-4 text-primary" />
+          AI Provider
+        </CardTitle>
+        <CardDescription className="text-xs">
+          The LLM backend that powers chat, email drafting, and analysis
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Badge
+              variant="outline"
+              className={`text-[10px] ${providerColors[status.provider] || ""}`}
+            >
+              {status.providerName}
+            </Badge>
+            <span className="text-xs text-muted-foreground font-mono">{status.model}</span>
+          </div>
+          {status.configured ? (
+            <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 border-emerald-500/30">
+              <Shield className="h-2.5 w-2.5 mr-1" />
+              Ready
+            </Badge>
+          ) : (
+            <Badge variant="outline" className="text-[10px] bg-red-500/10 text-red-600 dark:text-red-300 border-red-500/30">
+              <AlertTriangle className="h-2.5 w-2.5 mr-1" />
+              Not configured
+            </Badge>
+          )}
+        </div>
+
+        {status.configured ? (
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            Your AI provider is configured and ready. All AI features (chat,
+            email drafting, decision extraction, email analysis) will use{" "}
+            <strong className="text-foreground">{status.providerName}</strong> with
+            the <code className="text-[10px] px-1 py-0.5 rounded bg-muted">{status.model}</code> model.
+          </p>
+        ) : (
+          <div className="space-y-2">
+            <p className="text-xs text-red-600 dark:text-red-400 leading-relaxed">
+              The <code className="text-[10px] px-1 py-0.5 rounded bg-red-500/10">{status.missingEnvVar}</code>{" "}
+              environment variable is not set. AI features will not work until you configure it.
+            </p>
+            <div className="rounded-md border border-border bg-muted/30 p-3 text-xs space-y-1.5">
+              <p className="font-medium text-foreground">To fix this:</p>
+              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+                <li>Get a free API key from the provider (see README.md)</li>
+                <li>Add it to your <code className="text-[10px]">.env</code> file:
+                  <pre className="mt-1 p-2 rounded bg-background text-[10px] overflow-x-auto">
+{status.missingEnvVar}=your-api-key-here{"\n"}
+AI_PROVIDER={status.provider}
+                  </pre>
+                </li>
+                <li>Restart the dev server</li>
+              </ol>
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              💡 <strong>Free options:</strong> Google Gemini (1500 req/day),
+              Groq (1000 req/day), or Ollama (unlimited, local). See README.md
+              for setup instructions.
+            </p>
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+

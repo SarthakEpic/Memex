@@ -1,28 +1,24 @@
 // Memex — citation-first knowledge retrieval for personal Markdown notes
 //
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │ DATABASE CONFIGURATION                                                  │
-// │                                                                         │
-// │ This schema uses SQLite by default (for local development / sandbox).   │
-// │ To switch to PostgreSQL (for production / cloud deployment):            │
-// │                                                                         │
-// │   1. Copy prisma/schema.postgres.prisma over this file                  │
-// │      (or just change `provider = "sqlite"` to `provider = "postgresql"`)│
-// │   2. Set DATABASE_URL in .env to your Postgres connection string:       │
-// │      postgresql://user:password@host:5432/dbname                        │
-// │   3. Run: bun run db:push                                               │
-// │                                                                         │
-// │ The PostgreSQL schema adds @db.Text annotations for long-text columns   │
-// │ but is otherwise identical — no code changes required.                  │
-// └─────────────────────────────────────────────────────────────────────────┘
+// Database: PostgreSQL (production-ready)
+// This schema was originally developed on SQLite and migrated to PostgreSQL.
+// The migration strategy preserves backward compatibility:
+//   - Columns that store JSON arrays (citations, termFreq, keyPoints, tags,
+//     alternatives, participants) remain as String/TEXT with JSON-serialized
+//     content. This avoids breaking the existing parsing code.
+//   - Long-text columns (content, body, text) use @db.Text for explicit
+//     unlimited-length storage.
+//   - All indexes are preserved.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
+  provider = "postgresql"
   url      = env("DATABASE_URL")
+  // Enable connection pooling on serverless platforms (Vercel, etc.)
+  // directUrl = env("DIRECT_URL") // uncomment if using a pooled + direct URL setup
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -32,7 +28,7 @@ datasource db {
 model Note {
   id          String   @id @default(cuid())
   title       String
-  content     String
+  content     String   @db.Text
   sourcePath  String   @unique // e.g. /notes/databases.md
   project     String   @default("general")
   tags        String   @default("") // comma-separated
@@ -55,11 +51,11 @@ model Chunk {
   noteId       String
   note         Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
   chunkIndex   Int
-  text         String
+  text         String   @db.Text
   headingPath  String   @default("") // e.g. "Databases > Postgres vs Mongo"
   tokens       Int      @default(0)
   // Precomputed term frequencies for BM25 (JSON map: {term: count})
-  termFreq     String   @default("{}")
+  termFreq     String   @default("{}") @db.Text
   createdAt    DateTime @default(now())
 
   decisions Decision[]
@@ -80,9 +76,9 @@ model Decision {
   chunk        Chunk    @relation(fields: [chunkId], references: [id], onDelete: Cascade)
   title        String
   decisionDate String   @default("") // ISO date or empty
-  rationale    String
+  rationale    String   @db.Text
   alternatives String   @default("") // pipe-separated
-  outcome      String   @default("")
+  outcome      String   @default("") @db.Text
   participants String   @default("") // pipe-separated
   project      String   @default("general")
   confidence   Float    @default(0.8) // 0..1 LLM self-reported
@@ -112,13 +108,13 @@ model ChatMessage {
   sessionId String
   session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   role      String   // 'user' | 'assistant'
-  content   String
+  content   String   @db.Text
   // JSON array of {chunkId, noteId, sourcePath, chunkIndex, snippet, score}
-  citations String   @default("[]")
+  citations String   @default("[]") @db.Text
   // JSON string for an email draft attached to this assistant message.
   // Shape: { recipient, subject, bodyMarkdown, rationale, status, timeline: [{action, timestamp, details}] }
   // Empty string when no draft is attached.
-  emailDraft String @default("")
+  emailDraft String @default("") @db.Text
   createdAt DateTime @default(now())
 
   @@index([sessionId])
@@ -133,12 +129,12 @@ model Email {
   toAddress  String
   fromName   String   @default("Memex")
   subject    String
-  bodyMarkdown String // markdown body
-  bodyHtml   String   @default("") // rendered html (computed on send)
+  bodyMarkdown String @db.Text // markdown body
+  bodyHtml   String   @default("") @db.Text // rendered html (computed on send)
   status     String   @default("draft") // draft | pending_verification | queued | scheduled | sending | sent | delivered | failed | cancelled
   sourceType String   @default("manual") // manual | chat | decision | note | digest | ai
   sourceId   String   @default("")
-  errorMessage String @default("")
+  errorMessage String @default("") @db.Text
   queuedAt   DateTime @default(now())
   scheduledFor DateTime?
   sentAt     DateTime?
@@ -161,7 +157,7 @@ model EmailTemplate {
   name      String   @unique
   type      String   // digest | brief | snapshot | custom
   subject   String
-  bodyMarkdown String
+  bodyMarkdown String @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
@@ -179,7 +175,7 @@ model EmailAccount {
   imapPort    Int      @default(993)
   imapUser    String   @default("")
   imapSecure  Boolean  @default(true)
-  imapPassword String  @default("") // app-specific password (encrypted in production)
+  imapPassword String  @default("") // app-specific password (encrypt in production!)
   // SMTP settings (for sending)
   smtpHost    String   @default("")
   smtpPort    Int      @default(587)
@@ -205,14 +201,14 @@ model InboxEmail {
   fromName     String   @default("")
   toAddress    String
   subject      String
-  body         String   // plain text body
-  bodyHtml     String   @default("")
+  body         String   @db.Text // plain text body
+  bodyHtml     String   @default("") @db.Text
   // AI analysis
   category     String   @default("normal") // urgent | important | normal | newsletter | spam
   action       String   @default("review") // reply_needed | review | archive | unsubscribe
-  summary      String   @default("") // AI one-sentence summary
-  keyPoints    String   @default("[]") // JSON array of key points
-  suggestedReply String @default("") // AI draft reply
+  summary      String   @default("") @db.Text // AI one-sentence summary
+  keyPoints    String   @default("[]") @db.Text // JSON array of key points
+  suggestedReply String @default("") @db.Text // AI draft reply
   analyzed     Boolean  @default(false)
   // Thread
   threadId     String   @default("") // groups emails in same conversation

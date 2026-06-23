@@ -1,48 +1,39 @@
 // LLM utilities: citation-enforced answering + decision extraction.
-// Uses z-ai-web-dev-sdk chat completions (server-side only).
+//
+// This module uses the AI provider abstraction layer (src/lib/ai-client.ts)
+// which supports Google Gemini, Groq, OpenRouter, OpenAI, Ollama, and any
+// OpenAI-compatible provider. Configure via environment variables.
+//
+// Default provider: Google Gemini (free tier — 1500 requests/day).
+// See .env.example for configuration options.
 
-import ZAI from "z-ai-web-dev-sdk"
-
-let zaiPromise: Promise<ZAI> | null = null
-function getClient(): Promise<ZAI> {
-  if (!zaiPromise) zaiPromise = ZAI.create()
-  return zaiPromise
-}
+import {
+  chatComplete,
+  type ChatMessage,
+} from "./ai-client"
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Retry wrapper with exponential backoff for 429 (rate limit) errors.
-// The z-ai SDK does not retry by default, and bulk operations (decision
-// extraction, chat during traffic spikes) can hit 429s. We retry up to 5
-// times with 5s, 10s, 20s, 40s, 60s backoff.
+// Backward-compatible retry wrapper (re-exported for other modules)
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// The `withRetry` function is imported by src/app/api/notes/audio/route.ts.
+// We keep it here for backward compatibility, but the new `chatComplete`
+// function already has built-in retry with exponential backoff.
 
-const MAX_RETRIES = 5
-const BASE_BACKOFF_MS = 5000
-
-function isRateLimited(err: unknown): boolean {
-  const msg = err instanceof Error ? err.message : String(err)
-  return msg.includes("429") || msg.toLowerCase().includes("too many requests")
-}
-
-async function withRetry<T>(fn: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
-  let lastErr: unknown
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const value = await fn()
-      return { ok: true, value }
-    } catch (err) {
-      lastErr = err
-      if (!isRateLimited(err)) return { ok: false, error: err }
-      if (attempt === MAX_RETRIES) break
-      // Exponential backoff with jitter: 5s, 10s, 20s, 40s, 60s
-      const baseBackoff = Math.min(BASE_BACKOFF_MS * Math.pow(2, attempt), 60000)
-      const jitter = Math.random() * 2000 // Add randomness to avoid thundering herd
-      const backoff = baseBackoff + jitter
-      await new Promise((r) => setTimeout(r, backoff))
-    }
+export async function withRetry<T>(
+  fn: () => Promise<T>
+): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+  try {
+    const value = await fn()
+    return { ok: true, value }
+  } catch (err) {
+    return { ok: false, error: err }
   }
-  return { ok: false, error: lastErr }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Types
+// ─────────────────────────────────────────────────────────────────────────────
 
 export interface ContextChunk {
   id: string
@@ -236,9 +227,8 @@ export async function generateSmartAnswer(
   // This is critical for maintaining conversation flow
   const recentHistory = history.slice(-10)
 
-  // Build the user prompt — keep it SHORT so conversation history fits
-  // The context is provided as SEPARATE messages, not stuffed into the user prompt
-  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+  // Build the message list
+  const messages: ChatMessage[] = [
     { role: "system", content: SMART_SYSTEM_PROMPT },
   ]
 
@@ -262,38 +252,26 @@ export async function generateSmartAnswer(
   messages.push(...recentHistory.map((h) => ({ role: h.role, content: h.content })))
 
   // Add the current user message as a clean, simple message
-  // (NOT wrapped in context — the context is already in system messages above)
   messages.push({ role: "user", content: question })
 
-  const zai = await getClient()
-  let raw = ""
-  const result = await withRetry(() =>
-    zai.chat.completions.create({
-      messages,
-      temperature: 0.4,
-      max_tokens: 800,
-    })
-  )
+  const result = await chatComplete({
+    messages,
+    temperature: 0.4,
+    maxTokens: 800,
+  })
+
   if (!result.ok) {
     return {
       answer:
-        "⚠️ I'm having trouble connecting right now (rate limited). Please try again in a moment — your message has been saved.",
+        "⚠️ I'm having trouble connecting right now (rate limited or service unavailable). Please try again in a moment — your message has been saved.",
       mode: "general",
       citedChunkIds: [],
       refused: false,
       serviceError: true,
     }
   }
-  const completion = result.value
-  if (typeof completion === "string") {
-    raw = completion
-  } else if (completion?.choices?.[0]?.message?.content) {
-    raw = completion.choices[0].message.content
-  } else if (completion?.content) {
-    raw = completion.content
-  } else {
-    raw = String(completion ?? "")
-  }
+
+  const raw = result.content
 
   // Post-process: extract + verify citations
   const validIds = new Set(chunks.map((c) => c.id))
@@ -371,21 +349,18 @@ QUESTION: ${question}
 
 ANSWER (with [^chunk_id] citations):`
 
-  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+  const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     ...history.slice(-4).map((h) => ({ role: h.role, content: h.content })),
     { role: "user", content: userPrompt },
   ]
 
-  const zai = await getClient()
-  let raw = ""
-  const result = await withRetry(() =>
-    zai.chat.completions.create({
-      messages,
-      temperature: 0.3,
-      max_tokens: 600,
-    })
-  )
+  const result = await chatComplete({
+    messages,
+    temperature: 0.3,
+    maxTokens: 600,
+  })
+
   if (!result.ok) {
     // Distinguish a genuine service error from an honest refusal.
     return {
@@ -396,16 +371,8 @@ ANSWER (with [^chunk_id] citations):`
       serviceError: true,
     }
   }
-  const completion = result.value
-  if (typeof completion === "string") {
-    raw = completion
-  } else if (completion?.choices?.[0]?.message?.content) {
-    raw = completion.choices[0].message.content
-  } else if (completion?.content) {
-    raw = completion.content
-  } else {
-    raw = String(completion ?? "")
-  }
+
+  const raw = result.content
 
   // Post-process: verify every [^chunk_id] marker exists in the provided context.
   const validIds = new Set(chunks.map((c) => c.id))
@@ -478,28 +445,22 @@ export async function analyzeEmail(
   subject: string,
   body: string
 ): Promise<EmailAnalysis | null> {
-  const zai = await getClient()
-  const result = await withRetry(() =>
-    zai.chat.completions.create({
-      messages: [
-        { role: "system", content: EMAIL_ANALYSIS_PROMPT },
-        {
-          role: "user",
-          content: `FROM: ${from}\nSUBJECT: ${subject}\n\nBODY:\n${body.slice(0, 2000)}\n\nJSON:`,
-        },
-      ],
-      temperature: 0.2,
-      max_tokens: 500,
-    })
-  )
+  const result = await chatComplete({
+    messages: [
+      { role: "system", content: EMAIL_ANALYSIS_PROMPT },
+      {
+        role: "user",
+        content: `FROM: ${from}\nSUBJECT: ${subject}\n\nBODY:\n${body.slice(0, 2000)}\n\nJSON:`,
+      },
+    ],
+    temperature: 0.2,
+    maxTokens: 500,
+  })
+
   if (!result.ok) return null
+
   try {
-    const completion = result.value
-    let raw = ""
-    if (typeof completion === "string") raw = completion
-    else if (completion?.choices?.[0]?.message?.content)
-      raw = completion.choices[0].message.content
-    else raw = String(completion ?? "")
+    const raw = result.content
     const match = raw.match(/\{[\s\S]*\}/)
     if (!match) return null
     return JSON.parse(match[0]) as EmailAnalysis
@@ -515,32 +476,24 @@ export async function draftEmailReply(
   body: string,
   instruction: string
 ): Promise<string> {
-  const zai = await getClient()
-  const result = await withRetry(() =>
-    zai.chat.completions.create({
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are a helpful email assistant. Draft a professional, concise reply based on the user's instruction. Write only the reply body, no subject line.",
-        },
-        {
-          role: "user",
-          content: `ORIGINAL EMAIL FROM: ${from}\nSUBJECT: ${subject}\nBODY: ${body.slice(0, 1500)}\n\nUSER'S INSTRUCTION: ${instruction}\n\nDRAFT REPLY:`,
-        },
-      ],
-      temperature: 0.5,
-      max_tokens: 400,
-    })
-  )
+  const result = await chatComplete({
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a helpful email assistant. Draft a professional, concise reply based on the user's instruction. Write only the reply body, no subject line.",
+      },
+      {
+        role: "user",
+        content: `ORIGINAL EMAIL FROM: ${from}\nSUBJECT: ${subject}\nBODY: ${body.slice(0, 1500)}\n\nUSER'S INSTRUCTION: ${instruction}\n\nDRAFT REPLY:`,
+      },
+    ],
+    temperature: 0.5,
+    maxTokens: 400,
+  })
+
   if (!result.ok) return "Unable to generate a draft at this time."
-  const completion = result.value
-  let raw = ""
-  if (typeof completion === "string") raw = completion
-  else if (completion?.choices?.[0]?.message?.content)
-    raw = completion.choices[0].message.content
-  else raw = String(completion ?? "")
-  return raw.trim()
+  return result.content.trim()
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -554,7 +507,7 @@ export async function llmRerank(
   chunks: ContextChunk[]
 ): Promise<ContextChunk[]> {
   if (chunks.length <= 1) return chunks
-  const zai = await getClient()
+
   const numbered = chunks
     .map((c, i) => `[${i}] ${c.text.slice(0, 400)}`)
     .join("\n")
@@ -566,28 +519,24 @@ CANDIDATES:
 ${numbered}
 
 JSON scores:`
+
+  const result = await chatComplete({
+    messages: [
+      {
+        role: "system",
+        content:
+          "You are a relevance rater. Output only a JSON array of floats between 0 and 1.",
+      },
+      { role: "user", content: prompt },
+    ],
+    temperature: 0,
+    maxTokens: 200,
+  })
+
+  if (!result.ok) return chunks
+
   try {
-    const result = await withRetry(() =>
-      zai.chat.completions.create({
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are a relevance rater. Output only a JSON array of floats between 0 and 1.",
-          },
-          { role: "user", content: prompt },
-        ],
-        temperature: 0,
-        max_tokens: 200,
-      })
-    )
-    if (!result.ok) return chunks
-    const completion = result.value
-    let raw = ""
-    if (typeof completion === "string") raw = completion
-    else if (completion?.choices?.[0]?.message?.content)
-      raw = completion.choices[0].message.content
-    else raw = String(completion ?? "")
+    const raw = result.content
     const match = raw.match(/\[[\s\S]*\]/)
     if (!match) return chunks
     const scores = JSON.parse(match[0]) as number[]
@@ -639,28 +588,22 @@ export async function extractDecisions(
   chunkText: string,
   headingPath: string
 ): Promise<ExtractedDecision[]> {
-  const zai = await getClient()
-  const result = await withRetry(() =>
-    zai.chat.completions.create({
-      messages: [
-        { role: "system", content: DECISION_PROMPT },
-        {
-          role: "user",
-          content: `Heading path: ${headingPath}\n\nNOTE CHUNK:\n${chunkText}\n\nJSON:`,
-        },
-      ],
-      temperature: 0.1,
-      max_tokens: 600,
-    })
-  )
+  const result = await chatComplete({
+    messages: [
+      { role: "system", content: DECISION_PROMPT },
+      {
+        role: "user",
+        content: `Heading path: ${headingPath}\n\nNOTE CHUNK:\n${chunkText}\n\nJSON:`,
+      },
+    ],
+    temperature: 0.1,
+    maxTokens: 600,
+  })
+
   if (!result.ok) return []
+
   try {
-    const completion = result.value
-    let raw = ""
-    if (typeof completion === "string") raw = completion
-    else if (completion?.choices?.[0]?.message?.content)
-      raw = completion.choices[0].message.content
-    else raw = String(completion ?? "")
+    const raw = result.content
     const match = raw.match(/\{[\s\S]*\}/)
     if (!match) return []
     const parsed = JSON.parse(match[0]) as { decisions?: ExtractedDecision[] }
@@ -729,30 +672,24 @@ export async function draftEmailFromInstruction(
   instruction: string,
   emailContext?: string
 ): Promise<EmailDraftResult | null> {
-  const zai = await getClient()
   const userContent = `INSTRUCTION:
 ${instruction}
 ${emailContext ? `\nRECENT INBOX CONTEXT (use only if relevant to the email):\n${emailContext.slice(0, 600)}\n` : ""}
 JSON:`
 
-  const result = await withRetry(() =>
-    zai.chat.completions.create({
-      messages: [
-        { role: "system", content: EMAIL_DRAFT_PROMPT },
-        { role: "user", content: userContent },
-      ],
-      temperature: 0.5,
-      max_tokens: 900,
-    })
-  )
+  const result = await chatComplete({
+    messages: [
+      { role: "system", content: EMAIL_DRAFT_PROMPT },
+      { role: "user", content: userContent },
+    ],
+    temperature: 0.5,
+    maxTokens: 900,
+  })
+
   if (!result.ok) return null
+
   try {
-    const completion = result.value
-    let raw = ""
-    if (typeof completion === "string") raw = completion
-    else if (completion?.choices?.[0]?.message?.content)
-      raw = completion.choices[0].message.content
-    else raw = String(completion ?? "")
+    const raw = result.content
     const match = raw.match(/\{[\s\S]*\}/)
     if (!match) return null
     const parsed = JSON.parse(match[0]) as EmailDraftResult
@@ -780,14 +717,12 @@ export async function regenerateEmailDraft(
   previousDraft: EmailDraftResult,
   feedback: string
 ): Promise<EmailDraftResult | null> {
-  const zai = await getClient()
-  const result = await withRetry(() =>
-    zai.chat.completions.create({
-      messages: [
-        { role: "system", content: EMAIL_DRAFT_PROMPT },
-        {
-          role: "user",
-          content: `INSTRUCTION:
+  const result = await chatComplete({
+    messages: [
+      { role: "system", content: EMAIL_DRAFT_PROMPT },
+      {
+        role: "user",
+        content: `INSTRUCTION:
 ${originalInstruction}
 
 PREVIOUS DRAFT (improve this based on feedback):
@@ -800,20 +735,16 @@ USER FEEDBACK:
 ${feedback}
 
 JSON:`,
-        },
-      ],
-      temperature: 0.6,
-      max_tokens: 900,
-    })
-  )
+      },
+    ],
+    temperature: 0.6,
+    maxTokens: 900,
+  })
+
   if (!result.ok) return null
+
   try {
-    const completion = result.value
-    let raw = ""
-    if (typeof completion === "string") raw = completion
-    else if (completion?.choices?.[0]?.message?.content)
-      raw = completion.choices[0].message.content
-    else raw = String(completion ?? "")
+    const raw = result.content
     const match = raw.match(/\{[\s\S]*\}/)
     if (!match) return null
     const parsed = JSON.parse(match[0]) as EmailDraftResult
@@ -833,47 +764,96 @@ JSON:`,
 }
 
 // Generate a concise, professional subject from an email body.
-// Used when the user edits the body — the subject can be auto-updated.
+// Used when the user edits the body — the subject can be auto-updated to
+// stay relevant to the new content.
 export async function generateEmailSubject(bodyMarkdown: string): Promise<string | null> {
   if (!bodyMarkdown.trim()) return null
-  const zai = await getClient()
-  const result = await withRetry(() =>
-    zai.chat.completions.create({
-      messages: [
-        {
-          role: "system",
-          content: `You generate a concise, professional email subject line based on the email body. Rules:
+
+  const result = await chatComplete({
+    messages: [
+      {
+        role: "system",
+        content: `You generate a concise, professional email subject line based on the email body. Rules:
 - Under 60 characters
 - Directly relevant to the body content
 - Professional tone
 - No quotes, no trailing punctuation
 - No prefix like "Subject:" — just the subject text itself
 Respond with ONLY the subject text, nothing else.`,
-        },
-        {
-          role: "user",
-          content: `EMAIL BODY:
+      },
+      {
+        role: "user",
+        content: `EMAIL BODY:
 ${bodyMarkdown.slice(0, 1500)}
 
 SUBJECT:`,
-        },
-      ],
-      temperature: 0.3,
-      max_tokens: 60,
-    })
-  )
+      },
+    ],
+    temperature: 0.3,
+    maxTokens: 60,
+  })
+
   if (!result.ok) return null
+
   try {
-    const completion = result.value
-    let raw = ""
-    if (typeof completion === "string") raw = completion
-    else if (completion?.choices?.[0]?.message?.content)
-      raw = completion.choices[0].message.content
-    else raw = String(completion ?? "")
-    const subject = raw.trim().replace(/^["']|["']$/g, "").replace(/^subject:\s*/i, "")
+    const subject = result.content.trim().replace(/^["']|["']$/g, "").replace(/^subject:\s*/i, "")
     if (!subject || subject.length > 120) return null
     return subject
   } catch {
     return null
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Daily email briefing — natural language summary of today's emails
+// ─────────────────────────────────────────────────────────────────────────────
+
+export async function generateEmailBriefing(
+  emailDigest: string,
+  totalCount: number,
+  urgentCount: number,
+  needReplyCount: number,
+  newsletterCount: number
+): Promise<string> {
+  const result = await chatComplete({
+    messages: [
+      {
+        role: "system",
+        content: `You are Memex's daily email briefing assistant. Write a concise, friendly briefing of today's emails. Structure it as:
+
+## 📬 Today's Email Briefing
+
+**Quick stats:** X urgent, Y need replies, Z newsletters
+
+### 🔴 Needs Immediate Attention
+(List urgent + reply_needed emails with what to do)
+
+### 🟡 Important (review when you have time)
+(List important emails briefly)
+
+### 📰 FYI / Newsletter
+(One line summary of newsletters)
+
+### ✅ You can skip
+(normal/spam emails — just count them)
+
+Keep it under 200 words total. Be specific about what action each urgent email needs. Use Markdown formatting. Be friendly but concise.`,
+      },
+      {
+        role: "user",
+        content: `Today's emails (${totalCount} total):\n\n${emailDigest}\n\nWrite the briefing:`,
+      },
+    ],
+    temperature: 0.3,
+    maxTokens: 500,
+  })
+
+  if (!result.ok) {
+    // Fallback: generate a basic briefing without LLM
+    let briefing = `## 📬 Today's Email Briefing\n\n**Quick stats:** ${urgentCount} urgent, ${needReplyCount} need replies, ${newsletterCount} newsletters\n\n`
+    briefing += `_AI briefing unavailable (${result.error}). Showing basic stats only._`
+    return briefing
+  }
+
+  return result.content.trim()
 }

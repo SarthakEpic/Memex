@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server"
-import ZAI from "z-ai-web-dev-sdk"
 import { db } from "@/lib/db"
 import {
   chunkMarkdown,
@@ -10,16 +9,11 @@ import {
 import { invalidateCorpusCache } from "@/lib/retrieval"
 import { extractDecisions, withRetry } from "@/lib/llm"
 import { reingestNote } from "@/lib/ingest"
-
-let zaiPromise: Promise<ZAI> | null = null
-function getClient(): Promise<ZAI> {
-  if (!zaiPromise) zaiPromise = ZAI.create()
-  return zaiPromise
-}
+import { chatComplete, transcribeAudio } from "@/lib/ai-client"
 
 // POST /api/notes/audio
 // Body: { audio: base64, language: "en" | "hi" | "auto", project?, tags?, extractDecisions? }
-// 1. Transcribe audio via ASR
+// 1. Transcribe audio via the configured AI provider's ASR (Groq Whisper / OpenAI Whisper)
 // 2. Detect if Hindi → structure as Hinglish
 // 3. Use LLM to structure the raw transcription into a well-formatted Markdown note
 // 4. Ingest the structured note (chunk + extract decisions)
@@ -43,23 +37,12 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Audio data (base64) is required" }, { status: 400 })
   }
 
-  // Step 1: Transcribe audio
-  const zai = await getClient()
-  let rawTranscription = ""
-  try {
-    const asrResult = await withRetry(() =>
-      zai.audio.asr.create({ file_base64: audio })
-    )
-    if (typeof asrResult === "string") {
-      rawTranscription = asrResult
-    } else if (asrResult?.text) {
-      rawTranscription = asrResult.text
-    } else {
-      rawTranscription = String(asrResult ?? "")
-    }
-  } catch (err: any) {
-    const msg = err?.message || "Unknown error"
-    if (msg.includes("429")) {
+  // Step 1: Transcribe audio via the AI provider's ASR service
+  // (Groq Whisper is free; OpenAI Whisper is paid; Gemini/Ollama don't support ASR)
+  const asrResult = await transcribeAudio(audio)
+  if (!asrResult.ok) {
+    const msg = asrResult.error || "Unknown error"
+    if (msg.includes("429") || msg.toLowerCase().includes("rate limit")) {
       return NextResponse.json(
         { error: "Speech recognition service is rate-limited. Please try again in a moment." },
         { status: 429 }
@@ -70,6 +53,8 @@ export async function POST(req: NextRequest) {
       { status: 502 }
     )
   }
+
+  const rawTranscription = asrResult.text
 
   if (!rawTranscription.trim()) {
     return NextResponse.json(
@@ -100,32 +85,23 @@ RULES:
 
 Return ONLY the Markdown note, no explanations.`
 
-  let structuredContent = ""
-  try {
-    const result = await withRetry(() =>
-      zai.chat.completions.create({
-        messages: [
-          { role: "system", content: structuringPrompt },
-          {
-            role: "user",
-            content: `LANGUAGE HINT: ${language}\n\nRAW TRANSCRIPTION:\n${rawTranscription}\n\nSTRUCTURED MARKDOWN NOTE:`,
-          },
-        ],
-        temperature: 0.3,
-        max_tokens: 1000,
-      })
-    )
-    if (result.ok) {
-      const completion = result.value
-      if (typeof completion === "string") structuredContent = completion
-      else if (completion?.choices?.[0]?.message?.content)
-        structuredContent = completion.choices[0].message.content
-      else structuredContent = String(completion ?? "")
-    } else {
-      // If LLM fails, use the raw transcription with a basic title
-      structuredContent = `# Voice Note\n\n> **Voice note** — transcribed by AI\n\n${rawTranscription}`
-    }
-  } catch {
+  const llmResult = await chatComplete({
+    messages: [
+      { role: "system", content: structuringPrompt },
+      {
+        role: "user",
+        content: `LANGUAGE HINT: ${language}\n\nRAW TRANSCRIPTION:\n${rawTranscription}\n\nSTRUCTURED MARKDOWN NOTE:`,
+      },
+    ],
+    temperature: 0.3,
+    maxTokens: 1000,
+  })
+
+  let structuredContent: string
+  if (llmResult.ok) {
+    structuredContent = llmResult.content
+  } else {
+    // If LLM fails, use the raw transcription with a basic title
     structuredContent = `# Voice Note\n\n> **Voice note** — transcribed by AI\n\n${rawTranscription}`
   }
 

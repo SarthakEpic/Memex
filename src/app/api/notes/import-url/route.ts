@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server"
-import ZAI from "z-ai-web-dev-sdk"
 import { db } from "@/lib/db"
 import {
   chunkMarkdown,
@@ -9,12 +8,7 @@ import {
 } from "@/lib/notes"
 import { invalidateCorpusCache } from "@/lib/retrieval"
 import { extractDecisions } from "@/lib/llm"
-
-let zaiPromise: Promise<ZAI> | null = null
-function getClient(): Promise<ZAI> {
-  if (!zaiPromise) zaiPromise = ZAI.create()
-  return zaiPromise
-}
+import { fetchWebPageContent } from "@/lib/ai-client"
 
 // Convert HTML to Markdown (lightweight — handles common tags)
 function htmlToMarkdown(html: string): string {
@@ -62,8 +56,8 @@ function htmlToMarkdown(html: string): string {
 
 // POST /api/notes/import-url
 // Body: { url: string, project?: string, tags?: string[] }
-// Fetches the URL via the page_reader function, converts HTML → Markdown,
-// and ingests it as a note (chunk + extract decisions).
+// Fetches the URL directly (no AI provider needed — just HTTP fetch + HTML parsing),
+// converts HTML → Markdown, and ingests it as a note (chunk + extract decisions).
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
   const { url, project, tags, extractDecisions: doExtract = true } = body as {
@@ -77,27 +71,14 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "A valid http(s) URL is required" }, { status: 400 })
   }
 
-  let pageData: { title: string; html: string; publishedTime?: string; url: string }
-  try {
-    const zai = await getClient()
-    const result = await zai.functions.invoke("page_reader", { url })
-    if (!result?.data?.html) {
-      return NextResponse.json(
-        { error: "Could not extract content from that URL." },
-        { status: 422 }
-      )
-    }
-    pageData = {
-      title: result.data.title || url,
-      html: result.data.html,
-      publishedTime: result.data.publishedTime,
-      url: result.data.url,
-    }
-  } catch (err: any) {
-    const msg = err?.message || "Unknown error"
+  // Fetch the web page content directly — no AI provider needed for this step
+  const pageResult = await fetchWebPageContent(url)
+
+  if (!pageResult.ok) {
+    const msg = pageResult.error || "Unknown error"
     if (msg.includes("429") || msg.toLowerCase().includes("too many")) {
       return NextResponse.json(
-        { error: "The content extraction service is rate-limited. Please try again in a moment." },
+        { error: "The target website is rate-limiting requests. Please try again in a moment." },
         { status: 429 }
       )
     }
@@ -107,8 +88,15 @@ export async function POST(req: NextRequest) {
     )
   }
 
+  if (!pageResult.html) {
+    return NextResponse.json(
+      { error: "Could not extract content from that URL." },
+      { status: 422 }
+    )
+  }
+
   // Convert HTML → Markdown
-  const markdownBody = htmlToMarkdown(pageData.html)
+  const markdownBody = htmlToMarkdown(pageResult.html)
   if (markdownBody.length < 50) {
     return NextResponse.json(
       { error: "The page content was too short to ingest." },
@@ -117,9 +105,9 @@ export async function POST(req: NextRequest) {
   }
 
   // Add a header with the source URL
-  const title = pageData.title.slice(0, 120)
-  const sourceUrl = pageData.url
-  const publishedAt = pageData.publishedTime || ""
+  const title = pageResult.title.slice(0, 120)
+  const sourceUrl = pageResult.url
+  const publishedAt = pageResult.publishedTime || ""
   const content = `# ${title}
 
 _Source: [${sourceUrl}](${sourceUrl})${publishedAt ? ` · Published ${publishedAt.slice(0, 10)}` : ""}_
