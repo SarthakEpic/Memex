@@ -29,6 +29,7 @@ import {
   MessageSquare,
   Sparkles,
   RefreshCw,
+  Search,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
@@ -47,6 +48,7 @@ const SOURCE_ICON: Record<string, React.ElementType> = {
 export function Email() {
   const [tab, setTab] = useState<Tab>("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [search, setSearch] = useState("")
   const openEmail = useMemex((s) => s.openEmailComposer)
   const qc = useQueryClient()
 
@@ -64,7 +66,15 @@ export function Email() {
     },
   })
 
-  const emails = data?.emails ?? []
+  const allEmails = data?.emails ?? []
+  const emails = search
+    ? allEmails.filter(
+        (e) =>
+          e.toAddress.toLowerCase().includes(search.toLowerCase()) ||
+          e.subject.toLowerCase().includes(search.toLowerCase()) ||
+          e.bodyMarkdown.toLowerCase().includes(search.toLowerCase())
+      )
+    : allEmails
 
   const handleDigest = async () => {
     try {
@@ -91,13 +101,13 @@ export function Email() {
   return (
     <div className="flex h-full">
       {/* List */}
-      <div className="w-full lg:w-96 shrink-0 flex flex-col border-r border-border">
+      <div className={`${selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
         {/* Toolbar */}
         <div className="p-3 border-b border-border space-y-2.5">
           <div className="flex items-center justify-between gap-2">
             <h2 className="text-sm font-semibold flex items-center gap-2">
-              <Mail className="h-4 w-4 text-primary" />
-              Outbox
+              <Send className="h-4 w-4 text-primary" />
+              Sent
             </h2>
             <div className="flex gap-1">
               <Button
@@ -134,6 +144,16 @@ export function Email() {
                 {t}
               </button>
             ))}
+          </div>
+          {/* Search */}
+          <div className="relative">
+            <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search sent emails..."
+              className="w-full text-xs pl-7 pr-2 h-7 rounded-md border border-border bg-background outline-none focus:border-primary/40"
+            />
           </div>
         </div>
 
@@ -176,20 +196,28 @@ export function Email() {
       </div>
 
       {/* Detail */}
-      <div className="flex-1 min-w-0">
+      <div className={`${selectedId ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
         {selectedId ? (
-          <EmailDetailPanel id={selectedId} />
+          <div className="w-full">
+            <button
+              onClick={() => setSelectedId(null)}
+              className="lg:hidden flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border"
+            >
+              ← Back to sent
+            </button>
+            <EmailDetailPanel id={selectedId} />
+          </div>
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-3">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
-              <Mail className="h-7 w-7 text-primary" />
+              <Send className="h-7 w-7 text-primary" />
             </div>
             <div className="space-y-1">
-              <h3 className="text-sm font-medium">Email integration</h3>
+              <h3 className="text-sm font-medium">Sent Emails</h3>
               <p className="text-xs text-muted-foreground max-w-sm">
-                Compose emails from any Memex surface — chat answers, decisions,
-                notes, or daily digests. Emails are rendered Markdown → HTML and
-                delivered through a simulated SMTP pipeline.
+                All emails sent from Memex appear here — composed emails, chat
+                answers, decision briefs, and daily digests. Connect your email
+                account in Settings to send via real SMTP.
               </p>
             </div>
             <div className="flex gap-2">

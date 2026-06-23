@@ -245,18 +245,26 @@ export function Sidebar() {
   )
 }
 
-// Mobile top nav (visible on small screens)
+// Mobile bottom nav — icon-based tab bar at the bottom of the screen
 export function MobileNav() {
   const section = useMemex((s) => s.section)
   const setSection = useMemex((s) => s.setSection)
-  const ALL_NAV = [...TOP_NAV, ...EMAIL_NAV, { id: "settings" as Section, label: "Settings", icon: Settings, desc: "Profile & security" }]
+  const openEmail = useMemex((s) => s.openEmailComposer)
+  const openCommandPalette = useMemex((s) => s.openCommandPalette)
+
+  // Primary nav items (5 main + 1 menu button)
+  const MOBILE_NAV = [
+    { id: "dashboard" as Section, icon: LayoutDashboard, label: "Home" },
+    { id: "chat" as Section, icon: MessageSquare, label: "Chat" },
+    { id: "notes" as Section, icon: FileText, label: "Notes" },
+    { id: "inbox" as Section, icon: Inbox, label: "Inbox" },
+    { id: "settings" as Section, icon: Settings, label: "More" },
+  ]
+
   return (
-    <div className="md:hidden border-b border-border bg-background/95 backdrop-blur sticky top-0 z-30">
-      <div className="flex items-center gap-2 px-3 py-2 overflow-x-auto thin-scroll">
-        <div className="flex h-7 w-7 items-center justify-center rounded-md bg-primary text-primary-foreground font-bold text-xs shrink-0">
-          M
-        </div>
-        {ALL_NAV.map((item) => {
+    <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur-lg safe-area-pb">
+      <div className="flex items-center justify-around px-1 py-1.5">
+        {MOBILE_NAV.map((item) => {
           const Icon = item.icon
           const active = section === item.id
           return (
@@ -264,17 +272,27 @@ export function MobileNav() {
               key={item.id}
               onClick={() => setSection(item.id)}
               className={cn(
-                "flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-xs font-medium shrink-0 transition-colors",
+                "flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors min-w-[48px]",
                 active
-                  ? "bg-accent text-accent-foreground"
-                  : "text-muted-foreground hover:bg-accent/50"
+                  ? "text-primary"
+                  : "text-muted-foreground"
               )}
             >
-              <Icon className="h-3.5 w-3.5" />
-              {item.label}
+              <Icon className={cn("h-5 w-5", active && "fill-primary/10")} />
+              <span className="text-[9px] font-medium">{item.label}</span>
             </button>
           )
         })}
+        {/* Compose email button */}
+        <button
+          onClick={() => openEmail({ sourceType: "manual" as const })}
+          className="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md text-muted-foreground transition-colors min-w-[48px]"
+        >
+          <div className="flex h-5 w-5 items-center justify-center">
+            <Mail className="h-5 w-5" />
+          </div>
+          <span className="text-[9px] font-medium">Email</span>
+        </button>
       </div>
     </div>
   )

@@ -131,7 +131,7 @@ export function Inbox_() {
   return (
     <div className="flex h-full">
       {/* List */}
-      <div className="w-full lg:w-96 shrink-0 flex flex-col border-r border-border">
+      <div className={`${selectedId ? "hidden lg:flex" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
         {/* Header */}
         <div className="p-3 border-b border-border space-y-2.5">
           <div className="flex items-center justify-between gap-2">
@@ -291,9 +291,17 @@ export function Inbox_() {
       </div>
 
       {/* Detail */}
-      <div className="flex-1 min-w-0">
+      <div className={`${selectedId ? "flex" : "hidden lg:flex"} flex-1 min-w-0`}>
         {selectedId ? (
-          <InboxDetailPanel id={selectedId} />
+          <div className="w-full">
+            <button
+              onClick={() => setSelectedId(null)}
+              className="lg:hidden flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground border-b border-border"
+            >
+              ← Back to inbox
+            </button>
+            <InboxDetailPanel id={selectedId} />
+          </div>
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-3">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
