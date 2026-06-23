@@ -765,7 +765,7 @@ bun add package-name
 
 ## 📄 License
 
-This project is open source. Feel free to use it, modify it, and distribute it.
+
 
 ---
 
