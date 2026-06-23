@@ -99,7 +99,7 @@ export interface EmailData {
   subject: string
   bodyMarkdown: string
   bodyHtml: string
-  status: string
+  status: string // draft | pending_verification | queued | scheduled | sending | sent | delivered | failed | cancelled
   sourceType: string
   sourceId: string
   errorMessage: string
@@ -107,6 +107,10 @@ export interface EmailData {
   scheduledFor: string | null
   sentAt: string | null
   deliveredAt: string | null
+  isAiGenerated: boolean
+  verified: boolean
+  attempts: number
+  lastAttemptAt: string | null
 }
 
 export interface EmailTemplateData {

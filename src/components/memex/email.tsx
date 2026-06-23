@@ -5,17 +5,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
-import { Separator } from "@/components/ui/separator"
 import { ScrollArea } from "@/components/ui/scroll-area"
+import { Separator } from "@/components/ui/separator"
 import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog"
-import {
-  Mail,
   Send,
   CheckCircle2,
   Clock,
@@ -23,19 +15,37 @@ import {
   Plus,
   Loader2,
   CalendarClock,
-  Inbox,
   FileText,
   Brain,
   MessageSquare,
   Sparkles,
   RefreshCw,
   Search,
+  AlertTriangle,
+  RotateCw,
+  XCircle,
+  Bot,
+  Shield,
+  Mail,
+  X,
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
 import type { EmailData } from "./types"
 
-type Tab = "all" | "delivered" | "scheduled" | "queued" | "digest"
+type Tab = "all" | "delivered" | "failed" | "pending_verification" | "scheduled" | "cancelled" | "ai"
+
+const STATUS_CONFIG: Record<string, { icon: React.ElementType; color: string; bg: string; label: string }> = {
+  delivered: { icon: CheckCircle2, color: "text-emerald-600 dark:text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/30", label: "Delivered" },
+  sent: { icon: Send, color: "text-teal-600 dark:text-teal-400", bg: "bg-teal-500/10 border-teal-500/30", label: "Sent" },
+  sending: { icon: Loader2, color: "text-blue-600 dark:text-blue-400", bg: "bg-blue-500/10 border-blue-500/30", label: "Sending..." },
+  pending_verification: { icon: Shield, color: "text-amber-600 dark:text-amber-400", bg: "bg-amber-500/10 border-amber-500/30", label: "Needs Verification" },
+  queued: { icon: Clock, color: "text-muted-foreground", bg: "bg-muted border-border", label: "Queued" },
+  scheduled: { icon: CalendarClock, color: "text-purple-600 dark:text-purple-400", bg: "bg-purple-500/10 border-purple-500/30", label: "Scheduled" },
+  failed: { icon: AlertTriangle, color: "text-red-600 dark:text-red-400", bg: "bg-red-500/10 border-red-500/30", label: "Failed" },
+  cancelled: { icon: XCircle, color: "text-muted-foreground", bg: "bg-muted border-border", label: "Cancelled" },
+  draft: { icon: FileText, color: "text-muted-foreground", bg: "bg-muted border-border", label: "Draft" },
+}
 
 const SOURCE_ICON: Record<string, React.ElementType> = {
   manual: Mail,
@@ -43,6 +53,7 @@ const SOURCE_ICON: Record<string, React.ElementType> = {
   decision: Brain,
   note: FileText,
   digest: CalendarClock,
+  ai: Bot,
 }
 
 export function Email() {
@@ -54,9 +65,10 @@ export function Email() {
 
   const params = new URLSearchParams()
   if (tab === "delivered") params.set("status", "delivered")
+  if (tab === "failed") params.set("status", "failed")
+  if (tab === "pending_verification") params.set("status", "pending_verification")
   if (tab === "scheduled") params.set("status", "scheduled")
-  if (tab === "queued") params.set("status", "queued")
-  if (tab === "digest") params.set("sourceType", "digest")
+  if (tab === "cancelled") params.set("status", "cancelled")
 
   const { data, isLoading } = useQuery<{ emails: EmailData[] }>({
     queryKey: ["emails", tab],
@@ -74,6 +86,8 @@ export function Email() {
           e.subject.toLowerCase().includes(search.toLowerCase()) ||
           e.bodyMarkdown.toLowerCase().includes(search.toLowerCase())
       )
+    : tab === "ai"
+    ? allEmails.filter((e) => e.isAiGenerated)
     : allEmails
 
   const handleDigest = async () => {
@@ -85,13 +99,10 @@ export function Email() {
       })
       const d = await r.json()
       if (d.skipped) {
-        toast.info("No new activity", {
-          description: "Nothing to digest from the last 24 hours.",
-        })
+        toast.info("No new activity", { description: "Nothing to digest from the last 24 hours." })
       } else {
         toast.success("Digest delivered", { description: d.subject })
         qc.invalidateQueries({ queryKey: ["emails"] })
-        qc.invalidateQueries({ queryKey: ["stats"] })
       }
     } catch {
       toast.error("Digest failed")
@@ -110,41 +121,42 @@ export function Email() {
               Sent
             </h2>
             <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs"
-                onClick={handleDigest}
-                title="Generate + send daily digest"
-              >
+              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={handleDigest} title="Generate daily digest">
                 <RefreshCw className="h-3 w-3 mr-1" />
                 Digest
               </Button>
-              <Button
-                size="sm"
-                onClick={() => openEmail({ sourceType: "manual" as const })}
-              >
+              <Button size="sm" onClick={() => openEmail({ sourceType: "manual" as const })}>
                 <Plus className="h-3.5 w-3.5 mr-1" />
                 Compose
               </Button>
             </div>
           </div>
+
+          {/* Status dashboard mini-stats */}
+          <div className="grid grid-cols-4 gap-1.5">
+            <StatPill label="Delivered" count={allEmails.filter((e) => e.status === "delivered").length} color="emerald" />
+            <StatPill label="Failed" count={allEmails.filter((e) => e.status === "failed").length} color="red" />
+            <StatPill label="Pending" count={allEmails.filter((e) => e.status === "pending_verification").length} color="amber" />
+            <StatPill label="Scheduled" count={allEmails.filter((e) => e.status === "scheduled").length} color="purple" />
+          </div>
+
           {/* Tabs */}
-          <div className="flex gap-1 text-xs">
-            {(["all", "delivered", "scheduled", "queued", "digest"] as Tab[]).map((t) => (
+          <div className="flex gap-1 text-xs flex-wrap">
+            {(["all", "delivered", "failed", "pending_verification", "scheduled", "cancelled", "ai"] as Tab[]).map((t) => (
               <button
                 key={t}
                 onClick={() => setTab(t)}
-                className={`px-2.5 py-1 rounded-md font-medium capitalize transition-colors ${
+                className={`px-2 py-0.5 rounded-md font-medium capitalize transition-colors ${
                   tab === t
                     ? "bg-accent text-accent-foreground"
                     : "text-muted-foreground hover:bg-accent/50"
                 }`}
               >
-                {t}
+                {t === "ai" ? "AI Drafts" : t === "pending_verification" ? "Verify" : t}
               </button>
             ))}
           </div>
+
           {/* Search */}
           <div className="relative">
             <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
@@ -168,11 +180,9 @@ export function Email() {
             )}
             {!isLoading && emails.length === 0 && (
               <div className="text-center py-12 space-y-2">
-                <Inbox className="h-8 w-8 text-muted-foreground/40 mx-auto" />
+                <Send className="h-8 w-8 text-muted-foreground/40 mx-auto" />
                 <p className="text-sm font-medium">No emails here</p>
-                <p className="text-xs text-muted-foreground">
-                  Compose one or trigger a digest.
-                </p>
+                <p className="text-xs text-muted-foreground">Compose one or trigger a digest.</p>
               </div>
             )}
             {emails.map((e) => (
@@ -215,28 +225,38 @@ export function Email() {
             <div className="space-y-1">
               <h3 className="text-sm font-medium">Sent Emails</h3>
               <p className="text-xs text-muted-foreground max-w-sm">
-                All emails sent from Memex appear here — composed emails, chat
-                answers, decision briefs, and daily digests. Connect your email
-                account in Settings to send via real SMTP.
+                All emails sent from Memex appear here. AI-generated emails require
+                human verification before sending. Failed emails can be resent.
               </p>
             </div>
             <div className="flex gap-2">
-              <Button
-                size="sm"
-                variant="outline"
-                onClick={() => openEmail({ sourceType: "manual" as const })}
-              >
+              <Button size="sm" variant="outline" onClick={() => openEmail({ sourceType: "manual" as const })}>
                 <Plus className="h-3.5 w-3.5 mr-1.5" />
                 Compose
               </Button>
               <Button size="sm" variant="outline" onClick={handleDigest}>
-                <Sparkles className="h-3.5 w-3.5 mr-1.5" />
+                <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
                 Run digest
               </Button>
             </div>
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+function StatPill({ label, count, color }: { label: string; count: number; color: string }) {
+  const colorClass: Record<string, string> = {
+    emerald: "text-emerald-600 dark:text-emerald-400 bg-emerald-500/5",
+    red: "text-red-600 dark:text-red-400 bg-red-500/5",
+    amber: "text-amber-600 dark:text-amber-400 bg-amber-500/5",
+    purple: "text-purple-600 dark:text-purple-400 bg-purple-500/5",
+  }
+  return (
+    <div className={`rounded-md px-1.5 py-1 text-center ${colorClass[color]}`}>
+      <div className="text-sm font-semibold tabular-nums">{count}</div>
+      <div className="text-[9px] text-muted-foreground">{label}</div>
     </div>
   )
 }
@@ -252,7 +272,10 @@ function EmailListItem({
   onClick: () => void
   onDelete: () => void
 }) {
-  const Icon = SOURCE_ICON[email.sourceType] ?? Mail
+  const cat = STATUS_CONFIG[email.status] ?? STATUS_CONFIG.queued
+  const CatIcon = cat.icon
+  const SrcIcon = SOURCE_ICON[email.sourceType] ?? Mail
+
   return (
     <div
       className={`group rounded-md p-2.5 cursor-pointer transition-colors ${
@@ -261,78 +284,54 @@ function EmailListItem({
       onClick={onClick}
     >
       <div className="flex items-start gap-2">
-        <div className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded bg-primary/10">
-          <Icon className="h-3 w-3 text-primary" />
+        <div className={`shrink-0 rounded p-1 border ${cat.bg}`}>
+          <CatIcon className={`h-3 w-3 ${cat.color} ${email.status === "sending" ? "animate-spin" : ""}`} />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center justify-between gap-1">
             <span className="text-xs font-medium truncate">{email.subject}</span>
-            <StatusBadge status={email.status} />
+            <span className="text-[9px] text-muted-foreground shrink-0">
+              {new Date(email.queuedAt).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}
+            </span>
           </div>
           <div className="text-[10px] text-muted-foreground truncate mt-0.5">
-            to: {email.toAddress}
+            To: {email.toAddress}
           </div>
-          <div className="flex items-center justify-between mt-1">
-            <Badge variant="outline" className="text-[9px] h-4 capitalize">
-              {email.sourceType}
+          {email.errorMessage && (
+            <div className="text-[10px] text-red-500 truncate mt-0.5">⚠ {email.errorMessage}</div>
+          )}
+          <div className="flex items-center gap-1 mt-1">
+            <Badge variant="outline" className={`text-[9px] h-4 ${cat.bg} ${cat.color} border-0`}>
+              {cat.label}
             </Badge>
-            <span className="text-[10px] text-muted-foreground">
-              {new Date(email.queuedAt).toLocaleString([], {
-                month: "short",
-                day: "numeric",
-                hour: "2-digit",
-                minute: "2-digit",
-              })}
-            </span>
+            {email.isAiGenerated && (
+              <Badge className="text-[9px] h-4 gap-0.5 bg-violet-600 hover:bg-violet-600">
+                <Bot className="h-2 w-2" />
+                AI
+              </Badge>
+            )}
+            <SrcIcon className="h-2.5 w-2.5 text-muted-foreground" />
+            {email.attempts > 1 && (
+              <span className="text-[9px] text-muted-foreground">{email.attempts} attempts</span>
+            )}
           </div>
         </div>
         <button
-          onClick={(e) => {
-            e.stopPropagation()
-            onDelete()
-          }}
+          onClick={(e) => { e.stopPropagation(); onDelete() }}
           className="opacity-0 group-hover:opacity-100 text-muted-foreground hover:text-destructive transition-opacity shrink-0"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-3 w-3" />
         </button>
       </div>
     </div>
   )
 }
 
-function StatusBadge({ status }: { status: string }) {
-  if (status === "delivered")
-    return (
-      <Badge className="text-[9px] h-4 bg-emerald-600 hover:bg-emerald-600 gap-0.5">
-        <CheckCircle2 className="h-2.5 w-2.5" />
-        delivered
-      </Badge>
-    )
-  if (status === "sent")
-    return (
-      <Badge className="text-[9px] h-4 bg-teal-600 hover:bg-teal-600 gap-0.5">
-        <Send className="h-2.5 w-2.5" />
-        sent
-      </Badge>
-    )
-  if (status === "scheduled")
-    return (
-      <Badge className="text-[9px] h-4 bg-amber-600 hover:bg-amber-600 gap-0.5">
-        <Clock className="h-2.5 w-2.5" />
-        scheduled
-      </Badge>
-    )
-  if (status === "queued")
-    return (
-      <Badge variant="secondary" className="text-[9px] h-4 gap-0.5">
-        <Clock className="h-2.5 w-2.5" />
-        queued
-      </Badge>
-    )
-  return <Badge variant="destructive" className="text-[9px] h-4">{status}</Badge>
-}
-
 function EmailDetailPanel({ id }: { id: string }) {
+  const qc = useQueryClient()
+  const [verifying, setVerifying] = useState(false)
+  const [resending, setResending] = useState(false)
+
   const { data, isLoading } = useQuery<{ email: EmailData }>({
     queryKey: ["email", id],
     queryFn: async () => {
@@ -349,76 +348,204 @@ function EmailDetailPanel({ id }: { id: string }) {
     )
   }
 
-  const email = data.email
+  const e = data.email
+  const cat = STATUS_CONFIG[e.status] ?? STATUS_CONFIG.queued
+  const CatIcon = cat.icon
+
+  const handleVerify = async () => {
+    setVerifying(true)
+    try {
+      const r = await fetch(`/api/emails/${id}/verify`, { method: "POST" })
+      const d = await r.json()
+      if (r.ok && d.delivered) {
+        toast.success(d.message || "Email sent and verified ✓")
+      } else {
+        toast.error(d.message || d.error || "Verification/send failed")
+      }
+      qc.invalidateQueries({ queryKey: ["email", id] })
+      qc.invalidateQueries({ queryKey: ["emails"] })
+    } catch (e: any) {
+      toast.error(e.message || "Verification failed")
+    } finally {
+      setVerifying(false)
+    }
+  }
+
+  const handleResend = async () => {
+    setResending(true)
+    try {
+      const r = await fetch(`/api/emails/${id}/resend`, { method: "POST" })
+      const d = await r.json()
+      if (r.ok && d.delivered) {
+        toast.success(d.message || "Email resent ✓")
+      } else {
+        toast.error(d.message || d.error || "Resend failed")
+      }
+      qc.invalidateQueries({ queryKey: ["email", id] })
+      qc.invalidateQueries({ queryKey: ["emails"] })
+    } catch (e: any) {
+      toast.error(e.message || "Resend failed")
+    } finally {
+      setResending(false)
+    }
+  }
+
+  const handleCancel = async () => {
+    const r = await fetch(`/api/emails/${id}/cancel`, { method: "POST" })
+    const d = await r.json()
+    if (r.ok) {
+      toast.success(d.message || "Email cancelled")
+      qc.invalidateQueries({ queryKey: ["email", id] })
+      qc.invalidateQueries({ queryKey: ["emails"] })
+    } else {
+      toast.error(d.error || "Cancel failed")
+    }
+  }
 
   return (
     <ScrollArea className="h-full thin-scroll">
       <div className="p-4 sm:p-6 space-y-4 max-w-3xl memex-fade-up">
-        {/* Header */}
+        {/* Header with status */}
         <div className="space-y-2">
           <div className="flex items-start justify-between gap-3">
-            <h1 className="text-lg font-semibold leading-tight flex-1">
-              {email.subject}
-            </h1>
-            <StatusBadge status={email.status} />
-          </div>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
-            <div>
-              <span className="text-muted-foreground">From: </span>
-              <span className="font-medium">{email.fromName}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">To: </span>
-              <span className="font-medium">{email.toAddress}</span>
-            </div>
-            <div>
-              <span className="text-muted-foreground">Queued: </span>
-              <span>{new Date(email.queuedAt).toLocaleString()}</span>
-            </div>
-            {email.deliveredAt && (
-              <div>
-                <span className="text-muted-foreground">Delivered: </span>
-                <span>{new Date(email.deliveredAt).toLocaleString()}</span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 mb-1">
+                <div className={`rounded p-1 border ${cat.bg}`}>
+                  <CatIcon className={`h-3.5 w-3.5 ${cat.color} ${e.status === "sending" ? "animate-spin" : ""}`} />
+                </div>
+                <Badge variant="outline" className={`text-[10px] ${cat.bg} ${cat.color} border-0`}>
+                  {cat.label}
+                </Badge>
+                {e.isAiGenerated && (
+                  <Badge className="text-[10px] gap-0.5 bg-violet-600 hover:bg-violet-600">
+                    <Bot className="h-2.5 w-2.5" />
+                    AI Generated
+                  </Badge>
+                )}
+                {e.attempts > 1 && (
+                  <Badge variant="outline" className="text-[10px]">
+                    {e.attempts} attempts
+                  </Badge>
+                )}
               </div>
-            )}
-            <div>
-              <span className="text-muted-foreground">Source: </span>
-              <Badge variant="outline" className="text-[10px] capitalize">
-                {email.sourceType}
-              </Badge>
+              <h1 className="text-lg font-semibold leading-tight">{e.subject}</h1>
+              <div className="flex items-center gap-2 mt-1 text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">To: {e.toAddress}</span>
+                <span>·</span>
+                <span>From: {e.fromName}</span>
+                <span>·</span>
+                <span>{new Date(e.queuedAt).toLocaleString()}</span>
+              </div>
+              {e.sentAt && (
+                <div className="text-[10px] text-emerald-600 dark:text-emerald-400 mt-0.5">
+                  Sent at: {new Date(e.sentAt).toLocaleString()}
+                </div>
+              )}
+              {e.lastAttemptAt && (
+                <div className="text-[10px] text-muted-foreground mt-0.5">
+                  Last attempt: {new Date(e.lastAttemptAt).toLocaleString()}
+                </div>
+              )}
             </div>
           </div>
         </div>
 
+        {/* Error message */}
+        {e.errorMessage && (
+          <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+              <div>
+                <div className="text-xs font-medium text-red-500">Error</div>
+                <p className="text-xs text-muted-foreground mt-0.5">{e.errorMessage}</p>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Verification required banner */}
+        {e.status === "pending_verification" && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-3">
+            <div className="flex items-start gap-2">
+              <Shield className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <div className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                  Human Verification Required
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  This email was drafted by AI. To prevent unauthorized sending,
+                  please verify you're human before sending.
+                </p>
+                <Button
+                  size="sm"
+                  className="mt-2 h-7 text-xs"
+                  onClick={handleVerify}
+                  disabled={verifying}
+                >
+                  {verifying ? (
+                    <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
+                  ) : (
+                    <Shield className="h-3.5 w-3.5 mr-1" />
+                  )}
+                  Verify & Send
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <Separator />
 
-        {/* HTML preview */}
+        {/* Email body */}
         <Card>
-          <CardContent className="p-0">
-            <div className="px-3 py-2 border-b border-border text-[10px] uppercase tracking-wide text-muted-foreground font-medium flex items-center justify-between">
-              <span>Rendered email</span>
-              <span className="text-foreground/60 normal-case">
-                {email.bodyMarkdown.length} chars · markdown → html
-              </span>
-            </div>
-            <div
-              className="p-4 text-sm prose-sm max-w-none"
-              dangerouslySetInnerHTML={{ __html: email.bodyHtml || "<p><em>No HTML body.</em></p>" }}
-            />
-          </CardContent>
-        </Card>
-
-        {/* Raw markdown */}
-        <Card>
-          <CardContent className="p-0">
-            <div className="px-3 py-2 border-b border-border text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
-              Markdown source
-            </div>
-            <pre className="p-3 text-xs font-mono whitespace-pre-wrap leading-relaxed">
-              {email.bodyMarkdown}
+          <CardContent className="p-4">
+            <pre className="text-sm whitespace-pre-wrap leading-relaxed font-sans">
+              {e.bodyMarkdown}
             </pre>
           </CardContent>
         </Card>
+
+        {/* Rendered HTML */}
+        {e.bodyHtml && (
+          <Card>
+            <CardContent className="p-0">
+              <div className="px-3 py-2 border-b border-border text-[10px] uppercase tracking-wide text-muted-foreground font-medium">
+                Rendered HTML Preview
+              </div>
+              <div
+                className="p-4 text-sm prose-sm max-w-none"
+                dangerouslySetInnerHTML={{ __html: e.bodyHtml }}
+              />
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Quick actions */}
+        <div className="flex flex-wrap gap-2">
+          {(e.status === "failed" || e.status === "cancelled") && (
+            <Button size="sm" variant="outline" onClick={handleResend} disabled={resending}>
+              {resending ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <RotateCw className="h-3.5 w-3.5 mr-1" />}
+              Resend
+            </Button>
+          )}
+          {(e.status === "pending_verification" || e.status === "scheduled" || e.status === "queued") && (
+            <Button size="sm" variant="outline" className="text-destructive" onClick={handleCancel}>
+              <XCircle className="h-3.5 w-3.5 mr-1" />
+              Cancel Send
+            </Button>
+          )}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => {
+              navigator.clipboard.writeText(e.bodyMarkdown)
+              toast.success("Copied to clipboard")
+            }}
+          >
+            <FileText className="h-3.5 w-3.5 mr-1" />
+            Copy
+          </Button>
+        </div>
       </div>
     </ScrollArea>
   )

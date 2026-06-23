@@ -252,12 +252,12 @@ export function MobileNav() {
   const openEmail = useMemex((s) => s.openEmailComposer)
   const openCommandPalette = useMemex((s) => s.openCommandPalette)
 
-  // Primary nav items (5 main + 1 menu button)
+  // Primary nav items — "Email" label instead of "Inbox" on mobile
   const MOBILE_NAV = [
     { id: "dashboard" as Section, icon: LayoutDashboard, label: "Home" },
     { id: "chat" as Section, icon: MessageSquare, label: "Chat" },
     { id: "notes" as Section, icon: FileText, label: "Notes" },
-    { id: "inbox" as Section, icon: Inbox, label: "Inbox" },
+    { id: "inbox" as Section, icon: Inbox, label: "Email" },
     { id: "settings" as Section, icon: Settings, label: "More" },
   ]
 
@@ -272,7 +272,7 @@ export function MobileNav() {
               key={item.id}
               onClick={() => setSection(item.id)}
               className={cn(
-                "flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors min-w-[48px]",
+                "flex flex-col items-center gap-0.5 px-2 py-1 rounded-md transition-colors min-w-[56px]",
                 active
                   ? "text-primary"
                   : "text-muted-foreground"
@@ -283,16 +283,6 @@ export function MobileNav() {
             </button>
           )
         })}
-        {/* Compose email button */}
-        <button
-          onClick={() => openEmail({ sourceType: "manual" as const })}
-          className="flex flex-col items-center gap-0.5 px-2 py-1 rounded-md text-muted-foreground transition-colors min-w-[48px]"
-        >
-          <div className="flex h-5 w-5 items-center justify-center">
-            <Mail className="h-5 w-5" />
-          </div>
-          <span className="text-[9px] font-medium">Email</span>
-        </button>
       </div>
     </div>
   )

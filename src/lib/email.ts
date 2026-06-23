@@ -1,6 +1,6 @@
 // Email integration — real SMTP sending via nodemailer (when credentials available),
 // simulated delivery as fallback.
-// Emails are stored in the DB with a status pipeline (queued → sent → delivered).
+// Enhanced with AI verification, draft support, and reliable status tracking.
 
 import { db } from "@/lib/db"
 import { markdownToHtml } from "@/lib/markdown"
@@ -9,10 +9,13 @@ export interface SendEmailInput {
   toAddress: string
   subject: string
   bodyMarkdown: string
-  sourceType?: "manual" | "chat" | "decision" | "note" | "digest"
+  sourceType?: "manual" | "chat" | "decision" | "note" | "digest" | "ai"
   sourceId?: string
   fromName?: string
   scheduledFor?: Date | null
+  isAiGenerated?: boolean
+  // If true, email is saved as "pending_verification" and requires human verification before sending
+  requireVerification?: boolean
 }
 
 export interface SendEmailResult {
@@ -21,13 +24,21 @@ export interface SendEmailResult {
   delivered: boolean
   realSend?: boolean
   error?: string
+  requiresVerification?: boolean
 }
 
-// Send email via real SMTP (if connected account has SMTP credentials)
-// or simulated delivery (fallback).
-export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
+// Create an email (draft or pending verification) — does NOT send yet
+export async function createEmail(input: SendEmailInput): Promise<SendEmailResult> {
   const bodyHtml = await markdownToHtml(input.bodyMarkdown)
   const isScheduled = input.scheduledFor && new Date(input.scheduledFor).getTime() > Date.now()
+
+  // Determine initial status
+  let status = "queued"
+  if (input.requireVerification) {
+    status = "pending_verification"
+  } else if (isScheduled) {
+    status = "scheduled"
+  }
 
   const email = await db.email.create({
     data: {
@@ -36,16 +47,48 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
       subject: input.subject,
       bodyMarkdown: input.bodyMarkdown,
       bodyHtml,
-      status: isScheduled ? "scheduled" : "queued",
+      status,
       sourceType: input.sourceType ?? "manual",
       sourceId: input.sourceId ?? "",
       scheduledFor: isScheduled ? new Date(input.scheduledFor!) : null,
+      isAiGenerated: input.isAiGenerated ?? false,
+      verified: !input.requireVerification,
     },
   })
 
-  if (isScheduled) {
+  if (status === "pending_verification") {
+    return {
+      id: email.id,
+      status: "pending_verification",
+      delivered: false,
+      requiresVerification: true,
+    }
+  }
+
+  if (status === "scheduled") {
     return { id: email.id, status: "scheduled", delivered: false }
   }
+
+  // Immediately send
+  return await executeSend(email.id)
+}
+
+// Execute the actual send — called after verification or for manual emails
+export async function executeSend(emailId: string): Promise<SendEmailResult> {
+  const email = await db.email.findUnique({ where: { id: emailId } })
+  if (!email) {
+    return { id: emailId, status: "failed", delivered: false, error: "Email not found" }
+  }
+
+  // Update status to "sending"
+  await db.email.update({
+    where: { id: emailId },
+    data: {
+      status: "sending",
+      attempts: { increment: 1 },
+      lastAttemptAt: new Date(),
+    },
+  })
 
   // Try real SMTP if an account with SMTP credentials is connected
   const account = await db.emailAccount.findFirst({
@@ -65,47 +108,75 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
         },
       })
 
-      await transporter.sendMail({
+      const info = await transporter.sendMail({
         from: `"${account.displayName || account.emailAddress}" <${account.emailAddress}>`,
-        to: input.toAddress,
-        subject: input.subject,
-        text: input.bodyMarkdown,
-        html: bodyHtml,
+        to: email.toAddress,
+        subject: email.subject,
+        text: email.bodyMarkdown,
+        html: email.bodyHtml,
       })
 
-      const now = new Date()
-      await db.email.update({
-        where: { id: email.id },
-        data: { status: "delivered", sentAt: now, deliveredAt: now },
-      })
-
-      return { id: email.id, status: "delivered", delivered: true, realSend: true }
+      // Verify the email was accepted by the SMTP server
+      if (info.messageId || info.response) {
+        const now = new Date()
+        await db.email.update({
+          where: { id: emailId },
+          data: { status: "delivered", sentAt: now, deliveredAt: now },
+        })
+        return { id: emailId, status: "delivered", delivered: true, realSend: true }
+      } else {
+        throw new Error("SMTP server did not confirm delivery")
+      }
     } catch (err: any) {
-      // Real send failed — fall back to simulated delivery
-      console.error("SMTP send failed, falling back to simulated:", err.message)
-      const now = new Date()
+      // Real send failed — mark as failed (NOT delivered)
       await db.email.update({
-        where: { id: email.id },
-        data: { status: "delivered", sentAt: now, deliveredAt: now, errorMessage: `SMTP failed: ${err.message}` },
+        where: { id: emailId },
+        data: {
+          status: "failed",
+          errorMessage: `SMTP error: ${err.message}`,
+        },
       })
       return {
-        id: email.id,
-        status: "delivered",
-        delivered: true,
+        id: emailId,
+        status: "failed",
+        delivered: false,
         realSend: false,
-        error: `Could not send via real SMTP (${err.message}). Email saved locally only.`,
+        error: err.message,
       }
     }
   }
 
   // No real SMTP credentials — simulated delivery
+  // This is NOT a real send. We mark it as "delivered" but note it's simulated.
   const now = new Date()
   await db.email.update({
-    where: { id: email.id },
+    where: { id: emailId },
     data: { status: "delivered", sentAt: now, deliveredAt: now },
   })
 
-  return { id: email.id, status: "delivered", delivered: true, realSend: false }
+  return {
+    id: emailId,
+    status: "delivered",
+    delivered: true,
+    realSend: false,
+    error: "No SMTP credentials — email saved locally only (not actually sent to recipient)",
+  }
+}
+
+// Verify an email (human verification step for AI-generated emails)
+export async function verifyEmail(emailId: string): Promise<SendEmailResult> {
+  await db.email.update({
+    where: { id: emailId },
+    data: { verified: true, status: "queued" },
+  })
+
+  // Now execute the send
+  return await executeSend(emailId)
+}
+
+// Legacy sendEmail function — now uses createEmail + executeSend
+export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult> {
+  return await createEmail(input)
 }
 
 // Process scheduled emails that are due
@@ -118,13 +189,13 @@ export async function processScheduledEmails(): Promise<number> {
     },
     take: 50,
   })
+
+  let count = 0
   for (const email of due) {
-    await db.email.update({
-      where: { id: email.id },
-      data: { status: "delivered", sentAt: now, deliveredAt: now },
-    })
+    const result = await executeSend(email.id)
+    if (result.delivered) count++
   }
-  return due.length
+  return count
 }
 
 // Build a daily digest email body

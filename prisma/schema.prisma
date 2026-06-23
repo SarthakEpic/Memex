@@ -116,19 +116,25 @@ model Email {
   subject    String
   bodyMarkdown String // markdown body
   bodyHtml   String   @default("") // rendered html (computed on send)
-  status     String   @default("queued") // queued | scheduled | sent | delivered | failed
-  sourceType String   @default("manual") // manual | chat | decision | note | digest
-  sourceId   String   @default("") // related entity id
+  status     String   @default("draft") // draft | pending_verification | queued | scheduled | sending | sent | delivered | failed | cancelled
+  sourceType String   @default("manual") // manual | chat | decision | note | digest | ai
+  sourceId   String   @default("")
   errorMessage String @default("")
   queuedAt   DateTime @default(now())
-  scheduledFor DateTime? // null = immediate; future = scheduled
+  scheduledFor DateTime?
   sentAt     DateTime?
   deliveredAt DateTime?
+  // Enhanced tracking
+  isAiGenerated Boolean @default(false) // true if AI drafted this email
+  verified      Boolean @default(false) // true if human verification completed
+  attempts      Int     @default(0) // number of send attempts
+  lastAttemptAt DateTime?
 
   @@index([status])
   @@index([sourceType])
   @@index([queuedAt])
   @@index([scheduledFor])
+  @@index([isAiGenerated])
 }
 
 model EmailTemplate {

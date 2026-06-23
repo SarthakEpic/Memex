@@ -464,9 +464,31 @@ function InboxDetailPanel({ id }: { id: string }) {
   const CatIcon = cat.icon
 
   const handleDelete = async () => {
+    // Only deletes from the app's local database — does NOT touch the original email in Gmail/Outlook
     await fetch(`/api/inbox/${id}`, { method: "DELETE" })
-    toast.success("Email deleted")
+    toast.success("Email removed from Memex", {
+      description: "The original email is still in your email provider.",
+    })
     qc.invalidateQueries({ queryKey: ["inbox"] })
+  }
+
+  const handleDeleteFromProvider = async () => {
+    const confirmed = window.confirm(
+      "This will PERMANENTLY DELETE the email from your email provider (Gmail/Outlook).\n\n" +
+      "This cannot be undone. The email will also be removed from Memex.\n\n" +
+      "Are you sure?"
+    )
+    if (!confirmed) return
+
+    try {
+      const r = await fetch(`/api/inbox/${id}/delete-from-provider`, { method: "POST" })
+      const d = await r.json()
+      if (!r.ok) throw new Error(d.error || d.message)
+      toast.success(d.message || "Email deleted from provider")
+      qc.invalidateQueries({ queryKey: ["inbox"] })
+    } catch (e: any) {
+      toast.error(e.message || "Failed to delete from provider")
+    }
   }
 
   const handleStar = async () => {
@@ -546,8 +568,11 @@ function InboxDetailPanel({ id }: { id: string }) {
               >
                 <FileText className="h-3.5 w-3.5" />
               </Button>
-              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={handleDelete}>
+              <Button size="sm" variant="ghost" className="h-7 px-2" onClick={handleDelete} title="Remove from Memex (keeps original in email provider)">
                 <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 px-2 text-destructive hover:text-destructive" onClick={handleDeleteFromProvider} title="Permanently delete from email provider (Gmail/Outlook)">
+                <AlertCircle className="h-3.5 w-3.5" />
               </Button>
             </div>
           </div>

@@ -88,11 +88,18 @@ export function EmailComposer() {
           sourceType,
           sourceId: draft.sourceId,
           scheduledFor: scheduleEnabled ? new Date(scheduledFor).toISOString() : null,
+          isAiGenerated: sourceType === "chat",
+          requireVerification: sourceType === "chat", // AI emails require verification
         }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Failed to send")
-      if (scheduleEnabled) {
+
+      if (data.requiresVerification) {
+        toast.info("Verification required", {
+          description: "AI-drafted email needs your verification. Go to Sent → Verify tab to approve and send.",
+        })
+      } else if (scheduleEnabled) {
         toast.success("Email scheduled", {
           description: `For ${new Date(scheduledFor).toLocaleString()}`,
         })
