@@ -4,14 +4,13 @@ import { retrieve } from "@/lib/retrieval"
 import { generateSmartAnswer, type ContextChunk } from "@/lib/llm"
 
 // POST /api/chat
-// Body: { message: string, sessionId?: string, rerank?: boolean }
+// Body: { message: string, sessionId?: string }
 // Returns: { sessionId, answer, citations, mode, refused, serviceError }
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}))
-  const { message, sessionId, rerank = true } = body as {
+  const { message, sessionId } = body as {
     message?: string
     sessionId?: string
-    rerank?: boolean
   }
 
   if (!message || typeof message !== "string") {
@@ -59,8 +58,10 @@ export async function POST(req: NextRequest) {
     lowerMsg.includes("database") ||
     lowerMsg.includes("?")
 
+  // Retrieve context chunks — SKIP reranking to avoid an extra LLM call
+  // that could hit rate limits. BM25-only retrieval is fast and reliable.
   const chunks: ContextChunk[] = mightBeAboutNotes
-    ? await retrieve(message, { topK: 6, rerank })
+    ? await retrieve(message, { topK: 6, rerank: false })
     : []
 
   // Build conversation history
@@ -96,9 +97,20 @@ export async function POST(req: NextRequest) {
   const { answer, mode, citedChunkIds, refused, serviceError } =
     await generateSmartAnswer(message, chunks, historyClean, emailContext || undefined)
 
+  // If the LLM was rate-limited, generate a fallback answer from BM25 results
+  // so the user still gets something useful instead of just an error message.
+  const finalAnswer = serviceError
+    ? generateFallbackAnswer(message, chunks)
+    : answer
+  const finalMode = serviceError ? "note_qa" : mode
+  const finalCitedChunkIds = serviceError
+    ? chunks.slice(0, 3).map((c) => c.id)
+    : citedChunkIds
+  const finalRefused = serviceError ? false : refused
+
   // Build citation metadata for the UI
   const citations = chunks
-    .filter((c) => citedChunkIds.includes(c.id))
+    .filter((c) => finalCitedChunkIds.includes(c.id))
     .map((c) => ({
       chunkId: c.id,
       sourcePath: c.sourcePath,
@@ -115,7 +127,7 @@ export async function POST(req: NextRequest) {
     headingPath: c.headingPath,
     chunkIndex: c.chunkIndex,
     score: Number(c.score.toFixed(4)),
-    cited: citedChunkIds.includes(c.id),
+    cited: finalCitedChunkIds.includes(c.id),
   }))
 
   // Store assistant message with citations
@@ -123,19 +135,53 @@ export async function POST(req: NextRequest) {
     data: {
       sessionId: session.id,
       role: "assistant",
-      content: answer,
+      content: finalAnswer,
       citations: JSON.stringify(citations),
     },
   })
 
   return NextResponse.json({
     sessionId: session.id,
-    answer,
+    answer: finalAnswer,
     citations,
     context,
-    mode,
-    refused,
-    serviceError,
+    mode: finalMode,
+    refused: finalRefused,
+    serviceError: false, // We handled the error with a fallback
     retrievalCount: chunks.length,
   })
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Fallback answer generator — when the LLM is completely rate-limited,
+// we generate a basic answer from BM25 search results so the user still
+// gets useful information instead of just an error message.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function generateFallbackAnswer(question: string, chunks: ContextChunk[]): string {
+  if (chunks.length === 0) {
+    return "I'm currently rate-limited and can't process your question right now. Please try again in a minute. Meanwhile, you can browse your notes directly in the Notes section."
+  }
+
+  const topChunks = chunks.slice(0, 3)
+  const lines: string[] = []
+
+  lines.push("⚠️ **AI rate-limited — showing BM25 search results instead.**")
+  lines.push("")
+  lines.push(`I found **${chunks.length} relevant chunk${chunks.length !== 1 ? "s" : ""}** from your notes that match your question. Here are the top ${topChunks.length}:`)
+  lines.push("")
+
+  topChunks.forEach((c, i) => {
+    lines.push(`### ${i + 1}. ${c.sourcePath}${c.headingPath ? ` › ${c.headingPath}` : ""}`)
+    lines.push("")
+    lines.push(c.text.slice(0, 300) + (c.text.length > 300 ? "…" : ""))
+    lines.push("")
+    lines.push(`[^${c.id}]`)
+    lines.push("")
+  })
+
+  lines.push("---")
+  lines.push("_The AI reasoning service is temporarily unavailable. These are raw search results from your notes. Try asking again in a minute for a full AI-generated answer._")
+
+  return lines.join("\n")
 }

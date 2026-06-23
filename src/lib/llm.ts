@@ -12,12 +12,12 @@ function getClient(): Promise<ZAI> {
 // ─────────────────────────────────────────────────────────────────────────────
 // Retry wrapper with exponential backoff for 429 (rate limit) errors.
 // The z-ai SDK does not retry by default, and bulk operations (decision
-// extraction, chat during traffic spikes) can hit 429s. We retry up to 4
-// times with 3s, 6s, 12s, 24s backoff.
+// extraction, chat during traffic spikes) can hit 429s. We retry up to 5
+// times with 5s, 10s, 20s, 40s, 60s backoff.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const MAX_RETRIES = 4
-const BASE_BACKOFF_MS = 3000
+const MAX_RETRIES = 5
+const BASE_BACKOFF_MS = 5000
 
 function isRateLimited(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
@@ -34,7 +34,10 @@ async function withRetry<T>(fn: () => Promise<T>): Promise<{ ok: true; value: T 
       lastErr = err
       if (!isRateLimited(err)) return { ok: false, error: err }
       if (attempt === MAX_RETRIES) break
-      const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt)
+      // Exponential backoff with jitter: 5s, 10s, 20s, 40s, 60s
+      const baseBackoff = Math.min(BASE_BACKOFF_MS * Math.pow(2, attempt), 60000)
+      const jitter = Math.random() * 2000 // Add randomness to avoid thundering herd
+      const backoff = baseBackoff + jitter
       await new Promise((r) => setTimeout(r, backoff))
     }
   }
