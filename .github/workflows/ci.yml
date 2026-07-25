@@ -9,10 +9,6 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    env:
-      # The standalone server runs from .next, so CI must not rely on a
-      # relative SQLite URL from .env. Every CI step shares this same file.
-      DATABASE_URL: file:${{ runner.temp }}/memex-ci.db
 
     steps:
       - name: Checkout
@@ -27,6 +23,9 @@ jobs:
         run: npm install
 
       - name: Prepare environment
+        env:
+          # Keep setup and standalone smoke on the same absolute SQLite file.
+          DATABASE_URL: file:${{ github.workspace }}/prisma/db/ci-smoke.db
         run: |
           cp .env.example .env
           npx prisma generate
@@ -45,4 +44,6 @@ jobs:
         run: npm run build
 
       - name: Smoke test
+        env:
+          DATABASE_URL: file:${{ github.workspace }}/prisma/db/ci-smoke.db
         run: npm run smoke
