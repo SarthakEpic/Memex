@@ -4,8 +4,10 @@
 
 import { db } from "@/lib/db"
 import { markdownToHtml } from "@/lib/markdown"
+import { decryptSecret } from "@/server/security/encryption"
 
 export interface SendEmailInput {
+  userId: string
   toAddress: string
   subject: string
   bodyMarkdown: string
@@ -43,6 +45,7 @@ export async function createEmail(input: SendEmailInput): Promise<SendEmailResul
   const email = await db.email.create({
     data: {
       toAddress: input.toAddress,
+      userId: input.userId,
       fromName: input.fromName ?? "Memex",
       subject: input.subject,
       bodyMarkdown: input.bodyMarkdown,
@@ -70,12 +73,12 @@ export async function createEmail(input: SendEmailInput): Promise<SendEmailResul
   }
 
   // Immediately send
-  return await executeSend(email.id)
+  return await executeSend(email.id, input.userId)
 }
 
 // Execute the actual send — called after verification or for manual emails
-export async function executeSend(emailId: string): Promise<SendEmailResult> {
-  const email = await db.email.findUnique({ where: { id: emailId } })
+export async function executeSend(emailId: string, userId: string): Promise<SendEmailResult> {
+  const email = await db.email.findFirst({ where: { id: emailId, userId } })
   if (!email) {
     return { id: emailId, status: "failed", delivered: false, error: "Email not found" }
   }
@@ -92,7 +95,7 @@ export async function executeSend(emailId: string): Promise<SendEmailResult> {
 
   // Try real SMTP if an account with SMTP credentials is connected
   const account = await db.emailAccount.findFirst({
-    where: { connected: true, smtpPassword: { not: "" } },
+    where: { userId, connected: true, smtpPassword: { not: "" } },
   })
 
   if (account && account.smtpHost) {
@@ -104,7 +107,7 @@ export async function executeSend(emailId: string): Promise<SendEmailResult> {
         secure: account.smtpPort === 465,
         auth: {
           user: account.smtpUser || account.emailAddress,
-          pass: account.smtpPassword,
+          pass: decryptSecret(account.smtpPassword),
         },
       })
 
@@ -164,14 +167,14 @@ export async function executeSend(emailId: string): Promise<SendEmailResult> {
 }
 
 // Verify an email (human verification step for AI-generated emails)
-export async function verifyEmail(emailId: string): Promise<SendEmailResult> {
-  await db.email.update({
-    where: { id: emailId },
+export async function verifyEmail(emailId: string, userId: string): Promise<SendEmailResult> {
+  await db.email.updateMany({
+    where: { id: emailId, userId },
     data: { verified: true, status: "queued" },
   })
 
   // Now execute the send
-  return await executeSend(emailId)
+  return await executeSend(emailId, userId)
 }
 
 // Legacy sendEmail function — now uses createEmail + executeSend
@@ -180,10 +183,11 @@ export async function sendEmail(input: SendEmailInput): Promise<SendEmailResult>
 }
 
 // Process scheduled emails that are due
-export async function processScheduledEmails(): Promise<number> {
+export async function processScheduledEmails(userId: string): Promise<number> {
   const now = new Date()
   const due = await db.email.findMany({
     where: {
+      userId,
       status: "scheduled",
       scheduledFor: { lte: now },
     },
@@ -192,27 +196,27 @@ export async function processScheduledEmails(): Promise<number> {
 
   let count = 0
   for (const email of due) {
-    const result = await executeSend(email.id)
+    const result = await executeSend(email.id, userId)
     if (result.delivered) count++
   }
   return count
 }
 
 // Build a daily digest email body
-export async function buildDigestBody(): Promise<{
+export async function buildDigestBody(userId: string): Promise<{
   subject: string
   bodyMarkdown: string
   hasContent: boolean
 }> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
   const recentDecisions = await db.decision.findMany({
-    where: { createdAt: { gte: since } },
+    where: { userId, createdAt: { gte: since } },
     orderBy: { createdAt: "desc" },
     take: 10,
     include: { note: true },
   })
   const recentQuestions = await db.chatMessage.findMany({
-    where: { role: "user", createdAt: { gte: since } },
+    where: { userId, role: "user", createdAt: { gte: since } },
     orderBy: { createdAt: "desc" },
     take: 5,
   })

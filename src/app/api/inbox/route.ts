@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/inbox?category=X&unread=true&q=search&threaded=true
 // List inbox emails with optional filters.
 // If threaded=true, groups emails by threadId and returns thread structure.
 // If q=search, filters by sender/subject/body content.
 export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const category = req.nextUrl.searchParams.get("category")
   const unreadOnly = req.nextUrl.searchParams.get("unread") === "true"
   const search = req.nextUrl.searchParams.get("q")
   const threaded = req.nextUrl.searchParams.get("threaded") === "true"
 
-  const where: any = { isArchived: false }
+  const where: any = { userId: auth.user.id, isArchived: false }
   if (category && category !== "all") where.category = category
   if (unreadOnly) where.isRead = false
   if (search) {

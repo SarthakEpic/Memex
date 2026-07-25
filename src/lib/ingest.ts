@@ -13,6 +13,7 @@ import { extractDecisions } from "@/lib/llm"
 import { invalidateCorpusCache } from "@/lib/retrieval"
 
 export interface IngestOptions {
+  userId: string
   title: string
   content: string
   project?: string
@@ -35,8 +36,8 @@ export async function reingestNote(noteId: string, opts: IngestOptions): Promise
   const hash = await contentHash(opts.content)
 
   // Delete old chunks + decisions
-  await db.decision.deleteMany({ where: { noteId } })
-  await db.chunk.deleteMany({ where: { noteId } })
+  await db.decision.deleteMany({ where: { noteId, userId: opts.userId } })
+  await db.chunk.deleteMany({ where: { noteId, userId: opts.userId } })
 
   // Update the note record
   await db.note.update({
@@ -58,6 +59,7 @@ export async function reingestNote(noteId: string, opts: IngestOptions): Promise
     const tf = termFreq(c.text)
     const chunk = await db.chunk.create({
       data: {
+        userId: opts.userId,
         noteId,
         chunkIndex: c.chunkIndex,
         text: c.text,
@@ -73,6 +75,7 @@ export async function reingestNote(noteId: string, opts: IngestOptions): Promise
         for (const d of extracted) {
           await db.decision.create({
             data: {
+              userId: opts.userId,
               noteId,
               chunkId: chunk.id,
               title: d.title,
@@ -98,7 +101,7 @@ export async function reingestNote(noteId: string, opts: IngestOptions): Promise
     data: { chunkCount: chunks.length },
   })
 
-  invalidateCorpusCache()
+  invalidateCorpusCache(opts.userId)
 
   return {
     noteId,

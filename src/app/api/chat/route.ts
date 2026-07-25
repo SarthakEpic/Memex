@@ -7,6 +7,9 @@ import {
   type ContextChunk,
   type EmailDraftResult,
 } from "@/lib/llm"
+import { rateLimit } from "@/server/security/rate-limit"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { chatRequestSchema, validationError } from "@/server/validation/api"
 
 // POST /api/chat
 // Body: { message: string, sessionId?: string }
@@ -17,34 +20,37 @@ import {
 // (recipient, subject, body) that the UI renders as an interactive preview card.
 // The draft body is EXACTLY what gets sent when the user clicks "Send Email".
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => ({}))
-  const { message, sessionId } = body as {
-    message?: string
-    sessionId?: string
-  }
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
 
-  if (!message || typeof message !== "string") {
-    return NextResponse.json({ error: "message is required" }, { status: 400 })
+  const limited = await rateLimit(req, { name: "chat", limit: 40, windowMs: 60_000, userId: auth.user.id })
+  if (limited) return limited
+
+  const body = await req.json().catch(() => ({}))
+  const parsed = chatRequestSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
+  const { message, sessionId } = parsed.data
 
   // Get or create session
   let session = sessionId
-    ? await db.chatSession.findUnique({ where: { id: sessionId } })
+    ? await db.chatSession.findFirst({ where: { id: sessionId, userId: auth.user.id } })
     : null
   if (!session) {
     session = await db.chatSession.create({
-      data: { title: message.slice(0, 60) },
+      data: { userId: auth.user.id, title: message.slice(0, 60) },
     })
   }
 
   // Store user message
   await db.chatMessage.create({
-    data: { sessionId: session.id, role: "user", content: message },
+    data: { userId: auth.user.id, sessionId: session.id, role: "user", content: message },
   })
 
   // Build conversation history (last 20 messages)
   const history = await db.chatMessage.findMany({
-    where: { sessionId: session.id, role: { in: ["user", "assistant"] } },
+    where: { userId: auth.user.id, sessionId: session.id, role: { in: ["user", "assistant"] } },
     orderBy: { createdAt: "asc" },
     take: 20,
   })
@@ -56,6 +62,7 @@ export async function POST(req: NextRequest) {
   let emailContext = ""
   try {
     const recentEmails = await db.inboxEmail.findMany({
+      where: { userId: auth.user.id },
       orderBy: { receivedAt: "desc" },
       take: 3,
     })
@@ -135,6 +142,7 @@ export async function POST(req: NextRequest) {
       // Store assistant message with the draft attached
       await db.chatMessage.create({
         data: {
+          userId: auth.user.id,
           sessionId: session.id,
           role: "assistant",
           content: answer,
@@ -172,13 +180,13 @@ export async function POST(req: NextRequest) {
     "alternative", "tradeoff", "comparison", "benchmark",
   ]
   const lastAssistantMsg = [...history].reverse().find((m) => m.role === "assistant")
-  const lastWasAboutNotes = (lastAssistantMsg as any)?.content?.includes("[^") || false
+  const lastWasAboutNotes = lastAssistantMsg?.content?.includes("[^") || false
   const hasQuestionMark = lowerMsg.includes("?")
   const hasNoteKeyword = noteKeywords.some((kw) => lowerMsg.includes(kw))
   const mightBeAboutNotes = !isGeneral && (hasQuestionMark || hasNoteKeyword || lastWasAboutNotes)
 
   const chunks: ContextChunk[] = mightBeAboutNotes
-    ? await retrieve(message, { topK: 6, rerank: false })
+    ? await retrieve(message, { userId: auth.user.id, topK: 6, rerank: false })
     : []
 
   // Generate smart answer (multi-mode)
@@ -219,6 +227,7 @@ export async function POST(req: NextRequest) {
   // Store assistant message
   await db.chatMessage.create({
     data: {
+      userId: auth.user.id,
       sessionId: session.id,
       role: "assistant",
       content: finalAnswer,

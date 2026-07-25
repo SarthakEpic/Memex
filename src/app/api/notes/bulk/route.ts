@@ -1,17 +1,21 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { invalidateCorpusCache } from "@/lib/retrieval"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/notes/bulk?action=export&ids=id1,id2,id3
 // Export selected notes as a single Markdown document
 export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const action = req.nextUrl.searchParams.get("action")
   const idsParam = req.nextUrl.searchParams.get("ids")
 
   if (action === "export" && idsParam) {
     const ids = idsParam.split(",")
     const notes = await db.note.findMany({
-      where: { id: { in: ids } },
+      where: { id: { in: ids }, userId: auth.user.id },
       orderBy: [{ pinned: "desc" }, { title: "asc" }],
     })
     const sections: string[] = ["# Memex Notes Export (Selected)\n"]
@@ -34,6 +38,9 @@ export async function GET(req: NextRequest) {
 // POST /api/notes/bulk
 // Body: { action: "delete" | "pin" | "unpin" | "export", ids: string[] }
 export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const body = await req.json().catch(() => ({}))
   const { action, ids } = body as { action?: string; ids?: string[] }
 
@@ -44,23 +51,23 @@ export async function POST(req: NextRequest) {
   switch (action) {
     case "delete": {
       // Delete notes and all related data
-      await db.decision.deleteMany({ where: { noteId: { in: ids } } })
-      await db.chunk.deleteMany({ where: { noteId: { in: ids } } })
-      await db.note.deleteMany({ where: { id: { in: ids } } })
-      invalidateCorpusCache()
+      await db.decision.deleteMany({ where: { noteId: { in: ids }, userId: auth.user.id } })
+      await db.chunk.deleteMany({ where: { noteId: { in: ids }, userId: auth.user.id } })
+      await db.note.deleteMany({ where: { id: { in: ids }, userId: auth.user.id } })
+      invalidateCorpusCache(auth.user.id)
       return NextResponse.json({ ok: true, deleted: ids.length })
     }
     case "pin": {
-      await db.note.updateMany({ where: { id: { in: ids } }, data: { pinned: true } })
+      await db.note.updateMany({ where: { id: { in: ids }, userId: auth.user.id }, data: { pinned: true } })
       return NextResponse.json({ ok: true, pinned: ids.length })
     }
     case "unpin": {
-      await db.note.updateMany({ where: { id: { in: ids } }, data: { pinned: false } })
+      await db.note.updateMany({ where: { id: { in: ids }, userId: auth.user.id }, data: { pinned: false } })
       return NextResponse.json({ ok: true, unpinned: ids.length })
     }
     case "export": {
       const notes = await db.note.findMany({
-        where: { id: { in: ids } },
+        where: { id: { in: ids }, userId: auth.user.id },
         orderBy: [{ pinned: "desc" }, { title: "asc" }],
       })
       const sections: string[] = ["# Memex Notes Export (Selected)\n"]

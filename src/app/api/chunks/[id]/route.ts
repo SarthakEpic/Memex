@@ -1,15 +1,19 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/chunks/[id] — single chunk with its note + decisions
 // Used by the citation side panel.
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  const chunk = await db.chunk.findUnique({
-    where: { id },
+  const chunk = await db.chunk.findFirst({
+    where: { id, userId: auth.user.id },
     include: {
       note: true,
       decisions: true,

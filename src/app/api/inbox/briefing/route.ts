@@ -1,15 +1,20 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { generateEmailBriefing } from "@/lib/llm"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/inbox/briefing
 // Generates a daily email briefing — a natural language summary of today's
 // important emails that tells the user what needs attention.
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   // Get today's emails (last 24 hours)
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
   const emails = await db.inboxEmail.findMany({
     where: {
+      userId: auth.user.id,
       receivedAt: { gte: since },
       isArchived: false,
     },

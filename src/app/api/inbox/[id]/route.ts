@@ -1,19 +1,23 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/inbox/[id] — single inbox email
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  const email = await db.inboxEmail.findUnique({ where: { id } })
+  const email = await db.inboxEmail.findFirst({ where: { id, userId: auth.user.id } })
   if (!email) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
   // Mark as read when viewed
   if (!email.isRead) {
-    await db.inboxEmail.update({
-      where: { id },
+    await db.inboxEmail.updateMany({
+      where: { id, userId: auth.user.id },
       data: { isRead: true },
     })
   }
@@ -31,6 +35,9 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
   const body = await req.json().catch(() => ({}))
   const { isRead, isStarred, isArchived, category } = body as {
@@ -46,17 +53,21 @@ export async function PATCH(
   if (isArchived !== undefined) data.isArchived = isArchived
   if (category !== undefined) data.category = category
 
-  const email = await db.inboxEmail.update({ where: { id }, data })
+  await db.inboxEmail.updateMany({ where: { id, userId: auth.user.id }, data })
+  const email = await db.inboxEmail.findFirstOrThrow({ where: { id, userId: auth.user.id } })
   return NextResponse.json({ email })
 }
 
 // DELETE /api/inbox/[id]
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  await db.inboxEmail.delete({ where: { id } })
+  await db.inboxEmail.deleteMany({ where: { id, userId: auth.user.id } })
   return NextResponse.json({ ok: true })
 }
 

@@ -97,5 +97,6 @@ export function ShortcutsHelp() {
 function isTypingTarget(target: EventTarget | null): boolean {
   if (!target || !(target instanceof Element)) return false
   const tag = target.tagName.toLowerCase()
-  return tag === "input" || tag === "textarea" || target.isContentEditable
+  const isEditable = target instanceof HTMLElement && target.isContentEditable
+  return tag === "input" || tag === "textarea" || isEditable
 }

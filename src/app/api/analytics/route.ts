@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/analytics
 // Returns analytics data: most-cited chunks, chat question frequency,
@@ -12,10 +13,13 @@ interface CitationRef {
   chunkIndex: number
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   // Gather all assistant messages with their citations
   const assistantMessages = await db.chatMessage.findMany({
-    where: { role: "assistant" },
+    where: { role: "assistant", userId: auth.user.id },
     select: { content: true, citations: true, createdAt: true },
     orderBy: { createdAt: "asc" },
   })
@@ -44,7 +48,7 @@ export async function GET() {
 
   // User messages = questions asked
   const userMessages = await db.chatMessage.findMany({
-    where: { role: "user" },
+    where: { role: "user", userId: auth.user.id },
     select: { content: true, createdAt: true },
     orderBy: { createdAt: "desc" },
     take: 100,
@@ -79,10 +83,12 @@ export async function GET() {
   // Top projects by note count + decision count
   const notesByProject = await db.note.groupBy({
     by: ["project"],
+    where: { userId: auth.user.id },
     _count: true,
   })
   const decisionsByProject = await db.decision.groupBy({
     by: ["project"],
+    where: { userId: auth.user.id },
     _count: true,
   })
 

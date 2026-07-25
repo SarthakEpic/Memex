@@ -2,15 +2,19 @@ import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { invalidateCorpusCache } from "@/lib/retrieval"
 import { reingestNote } from "@/lib/ingest"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/notes/[id] — full note with chunks + decisions
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  const note = await db.note.findUnique({
-    where: { id },
+  const note = await db.note.findFirst({
+    where: { id, userId: auth.user.id },
     include: {
       chunks: { orderBy: { chunkIndex: "asc" } },
       decisions: { orderBy: { createdAt: "desc" } },
@@ -31,6 +35,9 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
   const body = await req.json().catch(() => ({}))
   const { title, content, project, tags, extractDecisions = true } = body as {
@@ -41,7 +48,7 @@ export async function PATCH(
     extractDecisions?: boolean
   }
 
-  const existing = await db.note.findUnique({ where: { id } })
+  const existing = await db.note.findFirst({ where: { id, userId: auth.user.id } })
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
   // Merge with existing values
@@ -55,6 +62,7 @@ export async function PATCH(
   }
 
   const result = await reingestNote(id, {
+    userId: auth.user.id,
     title: newTitle,
     content: newContent,
     project: newProject,
@@ -77,12 +85,14 @@ export async function PATCH(
 
 // DELETE /api/notes/[id]
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  await db.note.delete({ where: { id } })
-  invalidateCorpusCache()
+  await db.note.deleteMany({ where: { id, userId: auth.user.id } })
+  invalidateCorpusCache(auth.user.id)
   return NextResponse.json({ ok: true })
 }
-

@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // POST /api/emails/[id]/cancel
 // Cancel a pending/scheduled/failed email
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  const email = await db.email.findUnique({ where: { id } })
+  const email = await db.email.findFirst({ where: { id, userId: auth.user.id } })
   if (!email) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
   if (email.status === "delivered") {
@@ -18,8 +22,8 @@ export async function POST(
     )
   }
 
-  await db.email.update({
-    where: { id },
+  await db.email.updateMany({
+    where: { id, userId: auth.user.id },
     data: { status: "cancelled" },
   })
 

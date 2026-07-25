@@ -1,12 +1,17 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/notes/export-all
 // Exports all notes as a single concatenated Markdown document.
 // Each note is separated by a horizontal rule with a header containing
 // title, source path, project, tags, and dates.
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const notes = await db.note.findMany({
+    where: { userId: auth.user.id },
     orderBy: [{ pinned: "desc" }, { title: "asc" }],
   })
 

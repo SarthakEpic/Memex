@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { tokenize } from "@/lib/notes"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/decisions/[id]/related?limit=5
 // Finds related decisions by computing term overlap between the target
@@ -10,11 +11,14 @@ export async function GET(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
   const limit = Number(req.nextUrl.searchParams.get("limit") ?? 5)
 
-  const target = await db.decision.findUnique({
-    where: { id },
+  const target = await db.decision.findFirst({
+    where: { id, userId: auth.user.id },
     include: { note: true },
   })
   if (!target) return NextResponse.json({ error: "Not found" }, { status: 404 })
@@ -24,7 +28,7 @@ export async function GET(
   if (targetTerms.size === 0) return NextResponse.json({ related: [] })
 
   const others = await db.decision.findMany({
-    where: { id: { not: id } },
+    where: { id: { not: id }, userId: auth.user.id },
     include: { note: true },
     take: 500,
   })

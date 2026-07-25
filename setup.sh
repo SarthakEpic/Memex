@@ -11,7 +11,7 @@
 #   ./setup.sh
 #
 # It will:
-#   1. Check prerequisites (Bun/Node)
+#   1. Check prerequisites (Node/npm)
 #   2. Install all dependencies
 #   3. Create the .env file from .env.example
 #   4. Initialize the database
@@ -45,22 +45,21 @@ echo ""
 # ─────────────────────────────────────────────────────────────────────────────
 print_status "Checking prerequisites..."
 
-# Check for Bun (preferred) or Node.js
-if command -v bun &> /dev/null; then
-  BUN_VERSION=$(bun --version)
-  print_success "Bun $BUN_VERSION found"
-  PM="bun"
-elif command -v npm &> /dev/null; then
+# Check for Node.js + npm
+if command -v npm &> /dev/null; then
   NODE_VERSION=$(node --version)
-  print_warning "Bun not found, using Node.js $NODE_VERSION + npm"
-  print_warning "  (Bun is recommended for better performance: https://bun.sh)"
+  print_success "Node.js $NODE_VERSION + npm found"
   PM="npm"
+elif command -v bun &> /dev/null; then
+  BUN_VERSION=$(bun --version)
+  print_warning "npm not found, using Bun $BUN_VERSION"
+  PM="bun"
 else
-  print_error "Neither Bun nor Node.js found!"
+  print_error "Neither Node.js/npm nor Bun found!"
   echo ""
   echo "Please install one of:"
-  echo "  • Bun:  https://bun.sh"
   echo "  • Node: https://nodejs.org"
+  echo "  • Bun:  https://bun.sh"
   exit 1
 fi
 
@@ -122,9 +121,9 @@ echo ""
 print_status "Initializing database..."
 
 if [ "$PM" = "bun" ]; then
-  bun run db:push
+  bun run db:init-sqlite
 else
-  npm run db:push
+  npm run db:init-sqlite
 fi
 
 print_success "Database initialized"
@@ -164,10 +163,14 @@ echo ""
 echo "  Then open: http://localhost:3000"
 echo ""
 echo "  Useful commands:"
-echo "    bun run lint       # check code quality"
-echo "    bun run db:push    # update database schema"
-echo "    bun run db:use-postgres  # switch to PostgreSQL"
-echo "    bun run db:use-sqlite    # switch back to SQLite"
+echo "    npm run lint             # check code quality"
+echo "    npm run typecheck        # verify TypeScript"
+echo "    npm run test             # run unit tests"
+echo "    npm run build            # production build"
+echo "    npm run smoke            # boot standalone server and check core routes"
+echo "    npm run db:seed          # add demo data for portfolio review"
+echo "    npm run db:use-postgres  # switch to PostgreSQL"
+echo "    npm run db:use-sqlite    # switch back to SQLite"
 echo ""
 echo "  Need help? See README.md or go to Settings → AI Provider in the app."
 echo ""

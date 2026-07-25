@@ -1,18 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
-import {
-  chunkMarkdown,
-  contentHash,
-  termFreq,
-  estimateTokens,
-} from "@/lib/notes"
-import { invalidateCorpusCache } from "@/lib/retrieval"
-import { extractDecisions } from "@/lib/llm"
+import { ingestNote } from "@/server/services/ingestion"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { createNoteSchema, validationError } from "@/server/validation/api"
 
 // GET /api/notes — list all notes (with chunk count, decision count)
 export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const project = req.nextUrl.searchParams.get("project")
-  const where = project ? { project } : {}
+  const where = project ? { userId: auth.user.id, project } : { userId: auth.user.id }
   const notes = await db.note.findMany({
     where,
     orderBy: [{ pinned: "desc" }, { updatedAt: "desc" }],
@@ -38,134 +36,35 @@ export async function GET(req: NextRequest) {
 
 // POST /api/notes — create/ingest a note (chunks it, extracts decisions)
 export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const body = await req.json().catch(() => ({}))
-  const { title, content, project, tags, extractDecisions: doExtract = true } = body as {
-    title?: string
-    content?: string
-    project?: string
-    tags?: string[]
-    extractDecisions?: boolean
+  const parsed = createNoteSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
 
-  if (!content || typeof content !== "string") {
-    return NextResponse.json({ error: "content is required" }, { status: 400 })
-  }
-
-  const noteTitle = title?.trim() || extractTitle(content)
-  const sourcePath = `/notes/${slugify(noteTitle)}.md`
-  const hash = await contentHash(content)
-
-  // Upsert by sourcePath — if content hash matches, skip re-chunking
-  const existing = await db.note.findUnique({ where: { sourcePath } })
-  if (existing && existing.contentHash === hash) {
-    return NextResponse.json({
-      id: existing.id,
-      title: existing.title,
-      sourcePath: existing.sourcePath,
-      chunkCount: existing.chunkCount,
-      skipped: true,
-      message: "Note unchanged (content hash match).",
-    })
-  }
-
-  if (existing) {
-    // Replace — delete old chunks + decisions, then re-ingest
-    await db.decision.deleteMany({ where: { noteId: existing.id } })
-    await db.chunk.deleteMany({ where: { noteId: existing.id } })
-  }
-
-  const note = await db.note.upsert({
-    where: { sourcePath },
-    create: {
-      title: noteTitle,
-      content,
-      sourcePath,
-      project: project || "general",
-      tags: (tags || []).join(","),
-      contentHash: hash,
-    },
-    update: {
-      title: noteTitle,
-      content,
-      project: project || "general",
-      tags: (tags || []).join(","),
-      contentHash: hash,
-      updatedAt: new Date(),
-    },
+  const result = await ingestNote({
+    userId: auth.user.id,
+    title: parsed.data.title,
+    content: parsed.data.content,
+    project: parsed.data.project || "general",
+    tags: parsed.data.tags,
+    extractDecisions: parsed.data.extractDecisions,
   })
-
-  const chunks = chunkMarkdown(content, noteTitle)
-  let decisionsExtracted = 0
-
-  for (const c of chunks) {
-    const tf = termFreq(c.text)
-    const chunk = await db.chunk.create({
-      data: {
-        noteId: note.id,
-        chunkIndex: c.chunkIndex,
-        text: c.text,
-        headingPath: c.headingPath,
-        tokens: estimateTokens(c.text),
-        termFreq: JSON.stringify(tf),
-      },
-    })
-
-    if (doExtract) {
-      try {
-        const extracted = await extractDecisions(c.text, c.headingPath)
-        for (const d of extracted) {
-          await db.decision.create({
-            data: {
-              noteId: note.id,
-              chunkId: chunk.id,
-              title: d.title,
-              decisionDate: d.decisionDate || "",
-              rationale: d.rationale,
-              alternatives: (d.alternatives || []).join("|"),
-              outcome: d.outcome || "",
-              participants: (d.participants || []).join("|"),
-              project: note.project,
-              confidence: d.confidence ?? 0.8,
-            },
-          })
-          decisionsExtracted++
-        }
-      } catch {
-        // extraction is best-effort; never block ingestion
-      }
-    }
-  }
-
-  await db.note.update({
-    where: { id: note.id },
-    data: { chunkCount: chunks.length },
-  })
-
-  invalidateCorpusCache()
 
   return NextResponse.json({
-    id: note.id,
-    title: note.title,
-    sourcePath: note.sourcePath,
-    chunkCount: chunks.length,
-    decisionsExtracted,
-    message: `Ingested ${chunks.length} chunks${
-      decisionsExtracted > 0 ? `, extracted ${decisionsExtracted} decisions` : ""
-    }.`,
+    id: result.id,
+    title: result.title,
+    sourcePath: result.sourcePath,
+    chunkCount: result.chunkCount,
+    decisionsExtracted: result.decisionsExtracted,
+    skipped: result.skipped,
+    message: result.skipped
+      ? "Note unchanged (content hash match)."
+      : `Ingested ${result.chunkCount} chunks${
+          result.decisionsExtracted > 0 ? `, extracted ${result.decisionsExtracted} decisions` : ""
+        }.`,
   })
-}
-
-function extractTitle(md: string): string {
-  const m = md.match(/^#\s+(.+)$/m)
-  if (m) return m[1].trim()
-  return md.trim().split("\n")[0].slice(0, 60) || "Untitled"
-}
-
-function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 60)
 }

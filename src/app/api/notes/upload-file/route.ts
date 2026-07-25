@@ -1,13 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
-import { db } from "@/lib/db"
-import {
-  chunkMarkdown,
-  contentHash,
-  termFreq,
-  estimateTokens,
-} from "@/lib/notes"
-import { invalidateCorpusCache } from "@/lib/retrieval"
-import { extractDecisions } from "@/lib/llm"
+import { ingestNote } from "@/server/services/ingestion"
+import { slugify } from "@/server/services/ingestion-utils"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { rateLimit } from "@/server/security/rate-limit"
+import { uploadFileSchema, validationError } from "@/server/validation/api"
 
 // Allow large file uploads (PPTX/PDF can be 10-50MB)
 export const maxDuration = 60 // 60 second timeout
@@ -18,41 +14,37 @@ export const runtime = "nodejs"
 // Supports: PDF, Word (.docx), PowerPoint (.pptx), plain text, Markdown
 // Extracts text → converts to Markdown → ingests as a note
 export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
+  const limited = await rateLimit(req, { name: "notes:upload-file", limit: 20, windowMs: 60_000, userId: auth.user.id })
+  if (limited) return limited
+
   // Read the body as text first to handle large payloads
   const bodyText = await req.text()
-  let body: any
+  let body: unknown
   try {
     body = JSON.parse(bodyText)
   } catch {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 })
   }
 
-  const {
-    fileName,
-    fileType,
-    fileBase64,
-    project = "imported",
-    tags = [],
-    extractDecisions: doExtract = true,
-  } = body as {
-    fileName?: string
-    fileType?: string
-    fileBase64?: string
-    project?: string
-    tags?: string[]
-    extractDecisions?: boolean
+  const parsed = uploadFileSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
-
-  if (!fileBase64 || !fileName) {
-    return NextResponse.json(
-      { error: "fileName and fileBase64 are required" },
-      { status: 400 }
-    )
-  }
+  const { fileName, fileType, fileBase64, project, tags, extractDecisions } = parsed.data
 
   // Decode base64
   const buffer = Buffer.from(fileBase64, "base64")
   const ext = fileName.split(".").pop()?.toLowerCase() ?? ""
+  const allowedExtensions = new Set(["pdf", "docx", "pptx", "txt", "md", "markdown"])
+  if (!allowedExtensions.has(ext)) {
+    return NextResponse.json(
+      { error: `Unsupported file format: .${ext}. Supported: PDF, DOCX, PPTX, TXT, MD` },
+      { status: 400 }
+    )
+  }
 
   // File size check (50MB max)
   const fileSizeMB = buffer.length / (1024 * 1024)
@@ -85,11 +77,6 @@ export async function POST(req: NextRequest) {
       extractedText = await withTimeout(extractFromPptx(buffer), 30000)
     } else if (ext === "txt" || ext === "md" || ext === "markdown") {
       extractedText = buffer.toString("utf-8")
-    } else {
-      return NextResponse.json(
-        { error: `Unsupported file format: .${ext}. Supported: PDF, DOCX, PPTX, TXT, MD` },
-        { status: 400 }
-      )
     }
   } catch (err: any) {
     const msg = err?.message || "Unknown error"
@@ -120,96 +107,32 @@ export async function POST(req: NextRequest) {
   const noteTitle = titleMatch ? titleMatch[1].trim() : detectedTitle
 
   const sourcePath = `/notes/uploaded/${slugify(noteTitle)}.md`
-  const hash = await contentHash(markdownContent)
   const allTags = [...tags, "file-import", ext]
 
-  // Check for existing
-  const existing = await db.note.findUnique({ where: { sourcePath } })
-  if (existing) {
-    await db.decision.deleteMany({ where: { noteId: existing.id } })
-    await db.chunk.deleteMany({ where: { noteId: existing.id } })
-  }
-
-  const note = await db.note.upsert({
-    where: { sourcePath },
-    create: {
-      title: noteTitle,
-      content: markdownContent,
-      sourcePath,
-      project: project || "imported",
-      tags: allTags.join(","),
-      contentHash: hash,
-    },
-    update: {
-      title: noteTitle,
-      content: markdownContent,
-      project: project || "imported",
-      tags: allTags.join(","),
-      contentHash: hash,
-      updatedAt: new Date(),
-    },
+  const result = await ingestNote({
+    userId: auth.user.id,
+    title: noteTitle,
+    content: markdownContent,
+    sourcePath,
+    project,
+    tags: allTags,
+    extractDecisions,
   })
-
-  const chunks = chunkMarkdown(markdownContent, noteTitle)
-  let decisionsExtracted = 0
-
-  for (const c of chunks) {
-    const tf = termFreq(c.text)
-    const chunk = await db.chunk.create({
-      data: {
-        noteId: note.id,
-        chunkIndex: c.chunkIndex,
-        text: c.text,
-        headingPath: c.headingPath,
-        tokens: estimateTokens(c.text),
-        termFreq: JSON.stringify(tf),
-      },
-    })
-
-    if (doExtract) {
-      try {
-        const extracted = await extractDecisions(c.text, c.headingPath)
-        for (const d of extracted) {
-          await db.decision.create({
-            data: {
-              noteId: note.id,
-              chunkId: chunk.id,
-              title: d.title,
-              decisionDate: d.decisionDate || "",
-              rationale: d.rationale,
-              alternatives: (d.alternatives || []).join("|"),
-              outcome: d.outcome || "",
-              participants: (d.participants || []).join("|"),
-              project: note.project,
-              confidence: d.confidence ?? 0.8,
-            },
-          })
-          decisionsExtracted++
-        }
-      } catch {
-        // best-effort
-      }
-    }
-  }
-
-  await db.note.update({
-    where: { id: note.id },
-    data: { chunkCount: chunks.length },
-  })
-
-  invalidateCorpusCache()
 
   return NextResponse.json({
-    id: note.id,
+    id: result.id,
     title: noteTitle,
-    sourcePath: note.sourcePath,
+    sourcePath: result.sourcePath,
     fileName,
     fileType: ext,
-    chunkCount: chunks.length,
-    decisionsExtracted,
-    message: `Imported "${fileName}" → ${chunks.length} chunks${
-      decisionsExtracted > 0 ? `, ${decisionsExtracted} decisions` : ""
-    }.`,
+    chunkCount: result.chunkCount,
+    decisionsExtracted: result.decisionsExtracted,
+    skipped: result.skipped,
+    message: result.skipped
+      ? `Imported "${fileName}" already matches the existing note.`
+      : `Imported "${fileName}" → ${result.chunkCount} chunks${
+          result.decisionsExtracted > 0 ? `, ${result.decisionsExtracted} decisions` : ""
+        }.`,
   })
 }
 
@@ -218,9 +141,14 @@ export async function POST(req: NextRequest) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function extractFromPdf(buffer: Buffer): Promise<string> {
-  const pdfParse = (await import("pdf-parse")).default
-  const data = await pdfParse(buffer)
-  return data.text || ""
+  const { PDFParse } = await import("pdf-parse")
+  const parser = new PDFParse({ data: buffer })
+  try {
+    const data = await parser.getText()
+    return data.text || ""
+  } finally {
+    await parser.destroy()
+  }
 }
 
 async function extractFromDocx(buffer: Buffer): Promise<string> {
@@ -391,13 +319,4 @@ function textToMarkdown(text: string, fallbackTitle: string): string {
   }
 
   return result.join("\n").trim()
-}
-
-function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 60)
 }

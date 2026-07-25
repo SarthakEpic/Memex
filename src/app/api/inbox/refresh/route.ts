@@ -1,17 +1,31 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { analyzeEmail } from "@/lib/llm"
+import { decryptSecret } from "@/server/security/encryption"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { rateLimit } from "@/server/security/rate-limit"
+import { refreshInboxSchema, validationError } from "@/server/validation/api"
 
 // POST /api/inbox/refresh
 // Syncs emails from connected account.
 // If account has real IMAP credentials (syncMode="real") → connect via IMAP
 // If account is demo mode (syncMode="demo") → generate realistic sample emails
 export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
+  const limited = await rateLimit(req, { name: "inbox:refresh", limit: 20, windowMs: 60_000, userId: auth.user.id })
+  if (limited) return limited
+
   const body = await req.json().catch(() => ({}))
-  const { count = 5 } = body as { count?: number }
+  const parsed = refreshInboxSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
+  }
+  const { count } = parsed.data
 
   const account = await db.emailAccount.findFirst({
-    where: { connected: true },
+    where: { userId: auth.user.id, connected: true },
   })
 
   if (!account) {
@@ -65,7 +79,7 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
     secure: account.imapSecure,
     auth: {
       user: account.imapUser || account.emailAddress,
-      pass: account.imapPassword,
+      pass: decryptSecret(account.imapPassword),
     },
     logger: false,
   })
@@ -86,7 +100,8 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
           const today = new Date()
           today.setHours(0, 0, 0, 0)
           const searchResult = await client.search({ since: today })
-          const recentIds = searchResult.slice(-maxCount) // Last N from today
+          const recentMessageIds = Array.isArray(searchResult) ? searchResult : []
+          const recentIds = recentMessageIds.slice(-maxCount) // Last N from today
 
           for (const msgId of recentIds) {
             const msg = await client.fetchOne(msgId, {
@@ -111,7 +126,7 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
 
             // Check if we already have this email
             const existing = await db.inboxEmail.findFirst({
-              where: { fromAddress, subject, receivedAt },
+              where: { userId: account.userId, fromAddress, subject, receivedAt },
             })
             if (existing) continue
 
@@ -119,6 +134,7 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
 
             await db.inboxEmail.create({
               data: {
+                userId: account.userId,
                 accountId: account.id,
                 fromAddress: isSent ? account.emailAddress : fromAddress,
                 fromName: isSent ? "You (sent)" : fromName,
@@ -246,6 +262,7 @@ async function syncDemoEmails(account: any, count: number): Promise<number> {
 
     await db.inboxEmail.create({
       data: {
+        userId: account.userId,
         accountId: account.id,
         fromAddress: tpl.from,
         fromName: tpl.name,

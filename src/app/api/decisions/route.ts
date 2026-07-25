@@ -1,13 +1,16 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
-import { retrieve } from "@/lib/retrieval"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/decisions?project=X&q=search
 export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const project = req.nextUrl.searchParams.get("project")
   const q = req.nextUrl.searchParams.get("q")
 
-  const where: { project?: string; OR?: any[] } = {}
+  const where: { userId: string; project?: string; OR?: any[] } = { userId: auth.user.id }
   if (project) where.project = project
   if (q) {
     where.OR = [

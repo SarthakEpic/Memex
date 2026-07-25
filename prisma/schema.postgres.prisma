@@ -22,14 +22,85 @@ datasource db {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Auth & ownership
+// ─────────────────────────────────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  name            String    @default("")
+  passwordHash    String
+  role            String    @default("user")
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions                AuthSession[]
+  emailVerificationTokens EmailVerificationToken[]
+  passwordResetTokens     PasswordResetToken[]
+  notes                   Note[]
+  chunks                  Chunk[]
+  decisions               Decision[]
+  chatSessions            ChatSession[]
+  chatMessages            ChatMessage[]
+  emails                  Email[]
+  emailTemplates          EmailTemplate[]
+  emailAccounts           EmailAccount[]
+  inboxEmails             InboxEmail[]
+  profile                 Profile?
+}
+
+model AuthSession {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash String   @unique
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model EmailVerificationToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  email      String
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model PasswordResetToken {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Notes & chunks (the atomic unit of retrieval)
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Note {
   id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   title       String
   content     String   @db.Text
-  sourcePath  String   @unique // e.g. /notes/databases.md
+  sourcePath  String   // e.g. /notes/databases.md
   project     String   @default("general")
   tags        String   @default("") // comma-separated
   contentHash String   // sha256, used for change detection
@@ -41,6 +112,8 @@ model Note {
   chunks    Chunk[]
   decisions Decision[]
 
+  @@unique([userId, sourcePath])
+  @@index([userId])
   @@index([project])
   @@index([createdAt])
   @@index([pinned])
@@ -48,6 +121,8 @@ model Note {
 
 model Chunk {
   id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   noteId       String
   note         Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
   chunkIndex   Int
@@ -61,6 +136,7 @@ model Chunk {
   decisions Decision[]
 
   @@unique([noteId, chunkIndex])
+  @@index([userId])
   @@index([noteId])
 }
 
@@ -70,6 +146,8 @@ model Chunk {
 
 model Decision {
   id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   noteId       String
   note         Note     @relation(fields: [noteId], references: [id], onDelete: Cascade)
   chunkId      String
@@ -85,6 +163,7 @@ model Decision {
   pinned       Boolean  @default(false) // user-pinned decisions sort to top
   createdAt    DateTime @default(now())
 
+  @@index([userId])
   @@index([project])
   @@index([decisionDate])
   @@index([pinned])
@@ -96,15 +175,21 @@ model Decision {
 
 model ChatSession {
   id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   title     String   @default("New chat")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   messages ChatMessage[]
+
+  @@index([userId])
 }
 
 model ChatMessage {
   id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   sessionId String
   session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   role      String   // 'user' | 'assistant'
@@ -117,6 +202,7 @@ model ChatMessage {
   emailDraft String @default("") @db.Text
   createdAt DateTime @default(now())
 
+  @@index([userId])
   @@index([sessionId])
 }
 
@@ -126,6 +212,8 @@ model ChatMessage {
 
 model Email {
   id         String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   toAddress  String
   fromName   String   @default("Memex")
   subject    String
@@ -145,6 +233,7 @@ model Email {
   attempts      Int     @default(0) // number of send attempts
   lastAttemptAt DateTime?
 
+  @@index([userId])
   @@index([status])
   @@index([sourceType])
   @@index([queuedAt])
@@ -154,12 +243,17 @@ model Email {
 
 model EmailTemplate {
   id        String   @id @default(cuid())
-  name      String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name      String
   type      String   // digest | brief | snapshot | custom
   subject   String
   bodyMarkdown String @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@unique([userId, name])
+  @@index([userId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -168,26 +262,31 @@ model EmailTemplate {
 
 model EmailAccount {
   id          String   @id @default(cuid())
-  emailAddress String  @unique
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailAddress String
   displayName String   @default("")
   // IMAP settings (for receiving)
   imapHost    String   @default("")
   imapPort    Int      @default(993)
   imapUser    String   @default("")
   imapSecure  Boolean  @default(true)
-  imapPassword String  @default("") // app-specific password (encrypt in production!)
+  imapPassword String  @default("") // encrypted app-specific password (enc:v1)
   // SMTP settings (for sending)
   smtpHost    String   @default("")
   smtpPort    Int      @default(587)
   smtpUser    String   @default("")
   smtpSecure  Boolean  @default(true)
-  smtpPassword String  @default("")
+  smtpPassword String  @default("") // encrypted app-specific password (enc:v1)
   // Status
   connected   Boolean  @default(false)
   lastSyncAt  DateTime?
   syncMode    String   @default("demo") // "demo" = simulated, "real" = real IMAP
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+
+  @@unique([userId, emailAddress])
+  @@index([userId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -196,6 +295,8 @@ model EmailAccount {
 
 model InboxEmail {
   id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   accountId    String   @default("") // reference to EmailAccount
   fromAddress  String
   fromName     String   @default("")
@@ -220,6 +321,7 @@ model InboxEmail {
   receivedAt   DateTime @default(now())
   createdAt    DateTime @default(now())
 
+  @@index([userId])
   @@index([category])
   @@index([action])
   @@index([isRead])
@@ -228,11 +330,13 @@ model InboxEmail {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Profile — single demo user + email settings
+// Profile — per-user display and email settings
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Profile {
-  id            String   @id @default("me")
+  id            String   @id @default(cuid())
+  userId        String   @unique
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   email         String   @default("you@memex.local")
   name          String   @default("Memex User")
   smtpHost      String   @default("smtp.memex.local")
@@ -246,4 +350,19 @@ model Profile {
   autoDeleteDays Int      @default(0) // 0 = never auto-delete
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Operational tables
+// ─────────────────────────────────────────────────────────────────────────────
+
+model RateLimitBucket {
+  key       String   @id
+  userId    String?
+  count     Int      @default(0)
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([resetAt])
 }

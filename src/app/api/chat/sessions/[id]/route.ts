@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/chat/sessions/[id] — full session with messages
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  const session = await db.chatSession.findUnique({
-    where: { id },
+  const session = await db.chatSession.findFirst({
+    where: { id, userId: auth.user.id },
     include: {
       messages: { orderBy: { createdAt: "asc" } },
     },
@@ -28,11 +32,14 @@ export async function GET(
 
 // DELETE /api/chat/sessions/[id]
 export async function DELETE(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  await db.chatSession.delete({ where: { id } })
+  await db.chatSession.deleteMany({ where: { id, userId: auth.user.id } })
   return NextResponse.json({ ok: true })
 }
 
@@ -41,16 +48,20 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
   const body = await req.json().catch(() => ({}))
   const { title } = body as { title?: string }
   if (!title || typeof title !== "string") {
     return NextResponse.json({ error: "title is required" }, { status: 400 })
   }
-  const session = await db.chatSession.update({
-    where: { id },
+  await db.chatSession.updateMany({
+    where: { id, userId: auth.user.id },
     data: { title: title.trim().slice(0, 120) },
   })
+  const session = await db.chatSession.findFirstOrThrow({ where: { id, userId: auth.user.id } })
   return NextResponse.json({ session: { id: session.id, title: session.title } })
 }
 

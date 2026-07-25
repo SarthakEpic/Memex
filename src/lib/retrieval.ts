@@ -10,12 +10,14 @@ import {
 } from "@/lib/notes"
 import { llmRerank, type ContextChunk } from "@/lib/llm"
 
-let cache: { ts: number; chunks: IndexedChunk[] } | null = null
+const cache = new Map<string, { ts: number; chunks: IndexedChunk[] }>()
 const CACHE_TTL = 5_000 // 5s — short so fresh ingest shows up quickly
 
-async function loadCorpus(): Promise<IndexedChunk[]> {
-  if (cache && Date.now() - cache.ts < CACHE_TTL) return cache.chunks
+async function loadCorpus(userId: string): Promise<IndexedChunk[]> {
+  const current = cache.get(userId)
+  if (current && Date.now() - current.ts < CACHE_TTL) return current.chunks
   const chunks = await db.chunk.findMany({
+    where: { userId },
     include: { note: true },
   })
   const indexed: IndexedChunk[] = chunks.map((c) => ({
@@ -28,7 +30,7 @@ async function loadCorpus(): Promise<IndexedChunk[]> {
     termFreq: safeParse(c.termFreq, {}),
     tokens: c.tokens,
   }))
-  cache = { ts: Date.now(), chunks: indexed }
+  cache.set(userId, { ts: Date.now(), chunks: indexed })
   return indexed
 }
 
@@ -42,10 +44,10 @@ function safeParse<T>(s: string, fallback: T): T {
 
 export async function retrieve(
   query: string,
-  opts: { topK?: number; rerank?: boolean } = {}
+  opts: { userId: string; topK?: number; rerank?: boolean }
 ): Promise<ContextChunk[]> {
   const topK = opts.topK ?? 6
-  const corpus = await loadCorpus()
+  const corpus = await loadCorpus(opts.userId)
   if (corpus.length === 0) return []
 
   const scored: ScoredChunk[] = bm25Score(query, corpus, Math.max(topK * 3, 15))
@@ -68,19 +70,23 @@ export async function retrieve(
 }
 
 // Invalidate cache after ingest.
-export function invalidateCorpusCache(): void {
-  cache = null
+export function invalidateCorpusCache(userId?: string): void {
+  if (userId) {
+    cache.delete(userId)
+  } else {
+    cache.clear()
+  }
 }
 
 // Stats for the dashboard / retrieval-health panel.
-export async function corpusStats(): Promise<{
+export async function corpusStats(userId: string): Promise<{
   chunkCount: number
   noteCount: number
   avgTokensPerChunk: number
   uniqueTerms: number
 }> {
-  const corpus = await loadCorpus()
-  const noteCount = await db.note.count()
+  const corpus = await loadCorpus(userId)
+  const noteCount = await db.note.count({ where: { userId } })
   const terms = new Set<string>()
   let totalTokens = 0
   for (const c of corpus) {

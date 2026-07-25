@@ -1,11 +1,16 @@
-import { NextResponse } from "next/server"
+import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { invalidateCorpusCache } from "@/lib/retrieval"
+import { ensureUserWorkspace } from "@/server/auth/defaults"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // POST /api/security/erase
-// Erases ALL user data from the database. This is irreversible.
+// Erases the signed-in user's workspace data from the database. This is irreversible.
 // Body: { confirm: string } — must be "ERASE ALL DATA" to proceed
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const body = await req.json().catch(() => ({}))
   const { confirm } = body as { confirm?: string }
 
@@ -16,38 +21,25 @@ export async function POST(req: Request) {
     )
   }
 
-  // Delete all user data in order (respecting foreign keys)
-  await db.inboxEmail.deleteMany()
-  await db.emailAccount.deleteMany()
-  await db.email.deleteMany()
-  await db.emailTemplate.deleteMany()
-  await db.chatMessage.deleteMany()
-  await db.chatSession.deleteMany()
-  await db.decision.deleteMany()
-  await db.chunk.deleteMany()
-  await db.note.deleteMany()
+  const userId = auth.user.id
 
-  // Reset profile to defaults (but keep the profile record)
-  await db.profile.update({
-    where: { id: "me" },
-    data: {
-      email: "you@memex.local",
-      name: "Memex User",
-      smtpHost: "smtp.memex.local",
-      smtpPort: 587,
-      smtpUser: "",
-      dailyDigest: true,
-      digestHour: 9,
-      dataEncryption: true,
-      llmPrivacyMode: true,
-      autoDeleteDays: 0,
-    },
-  })
+  // Delete only this user's workspace data in dependency order.
+  await db.inboxEmail.deleteMany({ where: { userId } })
+  await db.emailAccount.deleteMany({ where: { userId } })
+  await db.email.deleteMany({ where: { userId } })
+  await db.emailTemplate.deleteMany({ where: { userId } })
+  await db.chatMessage.deleteMany({ where: { userId } })
+  await db.chatSession.deleteMany({ where: { userId } })
+  await db.decision.deleteMany({ where: { userId } })
+  await db.chunk.deleteMany({ where: { userId } })
+  await db.note.deleteMany({ where: { userId } })
+  await db.profile.deleteMany({ where: { userId } })
 
-  invalidateCorpusCache()
+  await ensureUserWorkspace(auth.user)
+  invalidateCorpusCache(userId)
 
   return NextResponse.json({
     ok: true,
-    message: "All data has been erased. The database is now empty.",
+    message: "Your Memex workspace has been erased and reset.",
   })
 }

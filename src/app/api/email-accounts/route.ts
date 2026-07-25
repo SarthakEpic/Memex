@@ -1,17 +1,24 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { encryptSecret } from "@/server/security/encryption"
+import {
+  emailAccountCreateSchema,
+  emailAccountDeleteSchema,
+  validationError,
+} from "@/server/validation/api"
 
 // GET /api/email-accounts — list connected accounts
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const accounts = await db.emailAccount.findMany({
+    where: { userId: auth.user.id },
     orderBy: { createdAt: "desc" },
   })
   return NextResponse.json({
-    accounts: accounts.map((a) => ({
-      ...a,
-      imapPassword: undefined,
-      smtpPassword: undefined,
-    })),
+    accounts: accounts.map(toSafeEmailAccount),
   })
 }
 
@@ -20,22 +27,15 @@ export async function GET() {
 // If imapPassword is provided → tries to connect via IMAP to verify credentials
 // If no password → connects in demo mode (no verification needed)
 export async function POST(req: NextRequest) {
-  const body = await req.json().catch(() => ({}))
-  const {
-    emailAddress,
-    displayName,
-    imapPassword,
-    smtpPassword,
-  } = body as {
-    emailAddress?: string
-    displayName?: string
-    imapPassword?: string
-    smtpPassword?: string
-  }
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
 
-  if (!emailAddress) {
-    return NextResponse.json({ error: "Email address is required" }, { status: 400 })
+  const body = await req.json().catch(() => ({}))
+  const parsed = emailAccountCreateSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
+  const { emailAddress, displayName, imapPassword, smtpPassword } = parsed.data
 
   // Auto-detect IMAP/SMTP settings from common providers
   const domain = emailAddress.split("@")[1]?.toLowerCase() ?? ""
@@ -60,10 +60,14 @@ export async function POST(req: NextRequest) {
       await client.connect()
       await client.logout()
 
+      const encryptedImapPassword = encryptSecret(imapPassword)
+      const encryptedSmtpPassword = encryptSecret(smtpPassword || imapPassword)
+
       // Connection succeeded — save the account as "real" mode
       const account = await db.emailAccount.upsert({
-        where: { emailAddress },
+        where: { userId_emailAddress: { userId: auth.user.id, emailAddress } },
         create: {
+          userId: auth.user.id,
           emailAddress,
           displayName: displayName || emailAddress.split("@")[0],
           imapHost: defaults.imapHost,
@@ -72,8 +76,8 @@ export async function POST(req: NextRequest) {
           smtpPort: defaults.smtpPort,
           imapUser: emailAddress,
           smtpUser: emailAddress,
-          imapPassword,
-          smtpPassword: smtpPassword || imapPassword,
+          imapPassword: encryptedImapPassword,
+          smtpPassword: encryptedSmtpPassword,
           connected: true,
           syncMode: "real",
         },
@@ -83,18 +87,18 @@ export async function POST(req: NextRequest) {
           imapPort: defaults.imapPort,
           smtpHost: defaults.smtpHost,
           smtpPort: defaults.smtpPort,
-          imapPassword,
-          smtpPassword: smtpPassword || imapPassword,
+          imapPassword: encryptedImapPassword,
+          smtpPassword: encryptedSmtpPassword,
           connected: true,
           syncMode: "real",
         },
       })
 
       return NextResponse.json({
-        account: { ...account, imapPassword: undefined, smtpPassword: undefined },
+        account: toSafeEmailAccount(account),
         verified: true,
         syncMode: "real",
-        message: `✅ Verified! Connected to ${emailAddress} via IMAP. Real email sync is ready.`,
+        message: `Verified. Connected to ${emailAddress} via IMAP. Real email sync is ready.`,
       })
     } catch (err: any) {
       // IMAP connection failed — wrong password or server issue
@@ -118,8 +122,9 @@ export async function POST(req: NextRequest) {
 
   // No password → demo mode (no verification needed)
   const account = await db.emailAccount.upsert({
-    where: { emailAddress },
+    where: { userId_emailAddress: { userId: auth.user.id, emailAddress } },
     create: {
+      userId: auth.user.id,
       emailAddress,
       displayName: displayName || emailAddress.split("@")[0],
       imapHost: defaults.imapHost,
@@ -143,7 +148,7 @@ export async function POST(req: NextRequest) {
   })
 
   return NextResponse.json({
-    account: { ...account, imapPassword: undefined, smtpPassword: undefined },
+    account: toSafeEmailAccount(account),
     verified: true,
     syncMode: "demo",
     message: `Connected ${emailAddress} in demo mode. Sync will generate sample emails. Add an IMAP password for real email sync.`,
@@ -152,16 +157,19 @@ export async function POST(req: NextRequest) {
 
 // DELETE /api/email-accounts — disconnect
 export async function DELETE(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const body = await req.json().catch(() => ({}))
-  const { emailAddress } = body as { emailAddress?: string }
-  if (!emailAddress) {
-    return NextResponse.json({ error: "emailAddress is required" }, { status: 400 })
+  const parsed = emailAccountDeleteSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
-  await db.emailAccount.update({
-    where: { emailAddress },
+  await db.emailAccount.updateMany({
+    where: { userId: auth.user.id, emailAddress: parsed.data.emailAddress },
     data: { connected: false },
   })
-  return NextResponse.json({ ok: true, message: `Disconnected ${emailAddress}` })
+  return NextResponse.json({ ok: true, message: `Disconnected ${parsed.data.emailAddress}` })
 }
 
 function detectProvider(domain: string): {
@@ -179,4 +187,46 @@ function detectProvider(domain: string): {
     "live.com": { imapHost: "outlook.office365.com", imapPort: 993, smtpHost: "smtp.office365.com", smtpPort: 587 },
   }
   return providers[domain] ?? { imapHost: `imap.${domain}`, imapPort: 993, smtpHost: `smtp.${domain}`, smtpPort: 587 }
+}
+
+function toSafeEmailAccount(account: {
+  id: string
+  emailAddress: string
+  displayName: string
+  imapHost: string
+  imapPort: number
+  imapUser: string
+  imapSecure: boolean
+  imapPassword: string
+  smtpHost: string
+  smtpPort: number
+  smtpUser: string
+  smtpSecure: boolean
+  smtpPassword: string
+  connected: boolean
+  lastSyncAt: Date | null
+  syncMode: string
+  createdAt: Date
+  updatedAt: Date
+}) {
+  return {
+    id: account.id,
+    emailAddress: account.emailAddress,
+    displayName: account.displayName,
+    imapHost: account.imapHost,
+    imapPort: account.imapPort,
+    imapUser: account.imapUser,
+    imapSecure: account.imapSecure,
+    smtpHost: account.smtpHost,
+    smtpPort: account.smtpPort,
+    smtpUser: account.smtpUser,
+    smtpSecure: account.smtpSecure,
+    connected: account.connected,
+    lastSyncAt: account.lastSyncAt,
+    syncMode: account.syncMode,
+    createdAt: account.createdAt,
+    updatedAt: account.updatedAt,
+    hasImapPassword: Boolean(account.imapPassword),
+    hasSmtpPassword: Boolean(account.smtpPassword),
+  }
 }

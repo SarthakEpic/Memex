@@ -75,7 +75,8 @@ export function Chat() {
       if (e.key === "/" && section === "chat") {
         const target = e.target as Element
         const tag = target?.tagName?.toLowerCase()
-        if (tag !== "input" && tag !== "textarea" && !target?.isContentEditable) {
+        const isEditable = target instanceof HTMLElement && target.isContentEditable
+        if (tag !== "input" && tag !== "textarea" && !isEditable) {
           e.preventDefault()
           inputRef.current?.focus()
         }

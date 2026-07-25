@@ -522,6 +522,7 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
   const openEmail = useMemex((s) => s.openEmailComposer)
   const [openEdit, setOpenEdit] = useState(false)
   const [viewMode, setViewMode] = useState<"preview" | "source">("preview")
+  const { isMobile } = useDevice()
   const { data, isLoading } = useQuery<{ note: NoteDetail }>({
     queryKey: ["note", noteId],
     queryFn: async () => {
@@ -1351,4 +1352,3 @@ function EditNoteDialog({
     </Dialog>
   )
 }
-

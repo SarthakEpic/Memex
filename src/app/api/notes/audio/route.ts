@@ -1,14 +1,7 @@
 import { NextRequest, NextResponse } from "next/server"
-import { db } from "@/lib/db"
-import {
-  chunkMarkdown,
-  contentHash,
-  termFreq,
-  estimateTokens,
-} from "@/lib/notes"
-import { invalidateCorpusCache } from "@/lib/retrieval"
-import { extractDecisions, withRetry } from "@/lib/llm"
-import { reingestNote } from "@/lib/ingest"
+import { ingestNote } from "@/server/services/ingestion"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { rateLimit } from "@/server/security/rate-limit"
 import { chatComplete, transcribeAudio } from "@/lib/ai-client"
 
 // POST /api/notes/audio
@@ -18,6 +11,12 @@ import { chatComplete, transcribeAudio } from "@/lib/ai-client"
 // 3. Use LLM to structure the raw transcription into a well-formatted Markdown note
 // 4. Ingest the structured note (chunk + extract decisions)
 export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
+  const limited = await rateLimit(req, { name: "notes:audio", limit: 10, windowMs: 60_000, userId: auth.user.id })
+  if (limited) return limited
+
   const body = await req.json().catch(() => ({}))
   const {
     audio,
@@ -111,96 +110,30 @@ Return ONLY the Markdown note, no explanations.`
 
   // Step 4: Ingest the structured note
   const sourcePath = `/notes/voice/${slugify(noteTitle)}.md`
-  const hash = await contentHash(structuredContent)
   const allTags = [...tags, "voice-note", language === "hi" ? "hinglish" : "english"]
 
-  // Check for existing
-  const existing = await db.note.findUnique({ where: { sourcePath } })
-  if (existing) {
-    await db.decision.deleteMany({ where: { noteId: existing.id } })
-    await db.chunk.deleteMany({ where: { noteId: existing.id } })
-  }
-
-  const note = await db.note.upsert({
-    where: { sourcePath },
-    create: {
-      title: noteTitle,
-      content: structuredContent,
-      sourcePath,
-      project: project || "voice",
-      tags: allTags.join(","),
-      contentHash: hash,
-    },
-    update: {
-      title: noteTitle,
-      content: structuredContent,
-      project: project || "voice",
-      tags: allTags.join(","),
-      contentHash: hash,
-      updatedAt: new Date(),
-    },
+  const result = await ingestNote({
+    userId: auth.user.id,
+    title: noteTitle,
+    content: structuredContent,
+    sourcePath,
+    project: project || "voice",
+    tags: allTags,
+    extractDecisions: doExtract,
   })
-
-  const chunks = chunkMarkdown(structuredContent, noteTitle)
-  let decisionsExtracted = 0
-
-  for (const c of chunks) {
-    const tf = termFreq(c.text)
-    const chunk = await db.chunk.create({
-      data: {
-        noteId: note.id,
-        chunkIndex: c.chunkIndex,
-        text: c.text,
-        headingPath: c.headingPath,
-        tokens: estimateTokens(c.text),
-        termFreq: JSON.stringify(tf),
-      },
-    })
-
-    if (doExtract) {
-      try {
-        const extracted = await extractDecisions(c.text, c.headingPath)
-        for (const d of extracted) {
-          await db.decision.create({
-            data: {
-              noteId: note.id,
-              chunkId: chunk.id,
-              title: d.title,
-              decisionDate: d.decisionDate || "",
-              rationale: d.rationale,
-              alternatives: (d.alternatives || []).join("|"),
-              outcome: d.outcome || "",
-              participants: (d.participants || []).join("|"),
-              project: note.project,
-              confidence: d.confidence ?? 0.8,
-            },
-          })
-          decisionsExtracted++
-        }
-      } catch {
-        // best-effort
-      }
-    }
-  }
-
-  await db.note.update({
-    where: { id: note.id },
-    data: { chunkCount: chunks.length },
-  })
-
-  invalidateCorpusCache()
 
   return NextResponse.json({
-    id: note.id,
+    id: result.id,
     title: noteTitle,
-    sourcePath: note.sourcePath,
+    sourcePath: result.sourcePath,
     rawTranscription,
     structuredContent,
-    chunkCount: chunks.length,
-    decisionsExtracted,
+    chunkCount: result.chunkCount,
+    decisionsExtracted: result.decisionsExtracted,
     language: language === "hi" ? "hinglish" : "english",
-    message: `Voice note transcribed and structured → ${chunks.length} chunks${
-      decisionsExtracted > 0 ? `, ${decisionsExtracted} decisions` : ""
+    skipped: result.skipped,
+    message: `Voice note transcribed and structured → ${result.chunkCount} chunks${
+      result.decisionsExtracted > 0 ? `, ${result.decisionsExtracted} decisions` : ""
     }.`,
   })
 }

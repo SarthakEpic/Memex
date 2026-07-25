@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // PATCH /api/chat/sessions/[id]/messages/[messageId]
 // Body: { emailDraft?: EmailDraftPayload }
@@ -11,6 +12,9 @@ export async function PATCH(
   req: NextRequest,
   { params }: { params: Promise<{ id: string; messageId: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id, messageId } = await params
   const body = await req.json().catch(() => ({}))
   const { emailDraft } = body as { emailDraft?: unknown }
@@ -22,9 +26,9 @@ export async function PATCH(
   // Verify the message belongs to the session
   const existing = await db.chatMessage.findUnique({
     where: { id: messageId },
-    select: { sessionId: true },
+    select: { sessionId: true, userId: true },
   })
-  if (!existing || existing.sessionId !== id) {
+  if (!existing || existing.sessionId !== id || existing.userId !== auth.user.id) {
     return NextResponse.json({ error: "Message not found in this session" }, { status: 404 })
   }
 

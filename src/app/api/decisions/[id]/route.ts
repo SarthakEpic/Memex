@@ -1,14 +1,18 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/decisions/[id] — single decision with full source chunk
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  const decision = await db.decision.findUnique({
-    where: { id },
+  const decision = await db.decision.findFirst({
+    where: { id, userId: auth.user.id },
     include: { note: true, chunk: true },
   })
   if (!decision) return NextResponse.json({ error: "Not found" }, { status: 404 })

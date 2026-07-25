@@ -1,11 +1,15 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/timeline?project=X
 // Returns chronological events: notes (by createdAt) + decisions (by createdAt)
 export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const project = req.nextUrl.searchParams.get("project")
-  const where = project ? { project } : {}
+  const where = project ? { userId: auth.user.id, project } : { userId: auth.user.id }
 
   const [notes, decisions] = await Promise.all([
     db.note.findMany({
@@ -46,7 +50,7 @@ export async function GET(req: NextRequest) {
       }
 
   const events: Event[] = [
-    ...notes.map<Event>((n) => ({
+    ...notes.map((n): Event => ({
       type: "note",
       id: n.id,
       timestamp: n.createdAt.toISOString(),
@@ -56,7 +60,7 @@ export async function GET(req: NextRequest) {
       chunkCount: n.chunkCount,
       decisionCount: 0,
     })),
-    ...decisions.map<Event>((d) => ({
+    ...decisions.map((d): Event => ({
       type: "decision",
       id: d.id,
       timestamp: d.createdAt.toISOString(),

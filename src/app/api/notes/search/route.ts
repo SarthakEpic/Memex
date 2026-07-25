@@ -1,16 +1,21 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/notes/search?q=text
 // Full-text search across note titles, content, and tags.
 // Returns matching notes with highlighted snippets.
 export async function GET(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const q = req.nextUrl.searchParams.get("q")?.trim()
   if (!q) return NextResponse.json({ results: [] })
 
   const lower = q.toLowerCase()
   const notes = await db.note.findMany({
     where: {
+      userId: auth.user.id,
       OR: [
         { title: { contains: q } },
         { content: { contains: q } },

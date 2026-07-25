@@ -25,7 +25,7 @@ async function main() {
   // Skip notes that already have decisions
   let total = 0
   for (const note of notes) {
-    const existing = await db.decision.count({ where: { noteId: note.id } })
+    const existing = await db.decision.count({ where: { noteId: note.id, userId: note.userId } })
     if (existing > 0) {
       console.log(`  ~ ${note.title}: already has ${existing}, skip`)
       continue
@@ -41,6 +41,7 @@ async function main() {
       for (const d of ds) {
         await db.decision.create({
           data: {
+            userId: note.userId,
             noteId: note.id,
             chunkId: c.id,
             title: d.title,

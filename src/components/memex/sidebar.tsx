@@ -19,6 +19,8 @@ import {
   Send,
   ChevronDown,
   ChevronRight,
+  LogOut,
+  UserCircle,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Badge } from "@/components/ui/badge"
@@ -60,7 +62,21 @@ export function Sidebar() {
     },
   })
 
+  const { data: auth } = useQuery<{ user: { name: string; email: string } | null }>({
+    queryKey: ["auth-user"],
+    queryFn: async () => {
+      const r = await fetch("/api/auth/me")
+      if (!r.ok) return { user: null }
+      return r.json()
+    },
+  })
+
   const emailBadge = stats?.counts.emails ?? 0
+
+  const logout = async () => {
+    await fetch("/api/auth/logout", { method: "POST" })
+    window.location.href = "/login"
+  }
 
   return (
     <aside className={`${isMobile ? "hidden" : "flex"} w-60 shrink-0 flex-col border-r border-border bg-sidebar/50 backdrop-blur-sm`}>
@@ -213,6 +229,24 @@ export function Sidebar() {
 
       {/* Footer */}
       <div className="p-3 border-t border-border space-y-2">
+        <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-2">
+          <UserCircle className="h-4 w-4 text-muted-foreground shrink-0" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-xs font-medium">
+              {auth?.user?.name || "Memex user"}
+            </div>
+            <div className="truncate text-[10px] text-muted-foreground">
+              {auth?.user?.email || "Private workspace"}
+            </div>
+          </div>
+          <button
+            onClick={logout}
+            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+            title="Sign out"
+          >
+            <LogOut className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <Button
           variant="default"
           size="sm"
@@ -232,7 +266,9 @@ export function Sidebar() {
             <span>Loading…</span>
           )}
           <div className="flex items-center gap-1 shrink-0">
-            <Shield className="h-3 w-3 text-emerald-500" title="Data encrypted locally" />
+            <span title="Data encrypted locally">
+              <Shield className="h-3 w-3 text-emerald-500" />
+            </span>
             <button
               onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "?" }))}
               className="inline-flex items-center justify-center h-5 w-5 rounded border border-border bg-muted hover:bg-accent transition-colors font-mono font-medium"

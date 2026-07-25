@@ -11,6 +11,98 @@ Memex is a comprehensive AI-powered personal knowledge management system that co
 
 ---
 
+## Portfolio Review Path
+
+If you are reviewing Memex as a portfolio project, start here:
+
+```bash
+npm install
+cp .env.example .env
+npx prisma generate
+npm run db:init-sqlite
+npm run db:seed
+npm run dev
+```
+
+If you prefer Prisma-managed schema changes locally, `npm run db:migrate` is available. If Prisma's schema engine exits without a useful error on Windows, use the committed SQLite fallback:
+
+```bash
+npm run db:init-sqlite
+```
+
+Open [http://localhost:3000](http://localhost:3000). If you seeded demo data,
+sign in with `you@memex.local` / `memex-demo-password`. If you skipped the seed,
+create your own account from the signup page.
+
+For a zero-cost online portfolio deployment, see [docs/free-deployment.md](docs/free-deployment.md).
+
+Quality gates:
+
+```bash
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+npm run smoke
+```
+
+The project also includes a GitHub Actions workflow at `.github/workflows/ci.yml` that runs linting, typechecking, tests, production build, and a standalone server smoke test.
+
+## Why This Project Is Technically Interesting
+
+Memex is not a generic CRUD dashboard. The core engineering problem is **trustworthy personal RAG**:
+
+- **Citation-first answers**: note answers must cite source chunks or explicitly refuse.
+- **No vector DB required**: retrieval uses a local BM25 index over chunk term frequencies.
+- **Reusable ingestion pipeline**: manual notes, file uploads, and URL imports share the same chunking and decision-extraction service.
+- **Multi-provider AI adapter**: Gemini, Groq, OpenRouter, OpenAI, Ollama, and compatible APIs are supported.
+- **Email workflow depth**: email account verification, inbox sync, AI categorization, reply drafting, scheduling, verification, and resend flows.
+- **Production-minded safety**: account sessions, per-user data ownership, encrypted stored email credentials, request validation, rate limiting on expensive routes, and SSRF-aware URL import.
+
+## Architecture Snapshot
+
+```txt
+src/app/api/*                  Thin HTTP route handlers
+src/server/validation/*        Zod request schemas and API boundary validation
+src/server/services/*          Business workflows: ingestion, public web fetching
+src/server/security/*          Encryption, rate limiting, URL safety
+src/server/observability/*     Structured logs and API error IDs
+src/lib/notes.ts               Chunking, token estimation, BM25 scoring
+src/lib/retrieval.ts           Corpus loading, retrieval, dashboard corpus stats
+src/lib/llm.ts                 Citation-first answer generation and extraction prompts
+src/lib/email.ts               Email creation, SMTP delivery, verification, scheduling
+prisma/schema.prisma           Local SQLite data model
+prisma/schema.postgres.prisma  Production Postgres-compatible data model
+prisma/migrations/*            Initial SQLite migration history
+```
+
+The API routes intentionally stay small: they parse input, call a service, and return a typed response. The important behavior lives in auditable modules that can be tested without a browser.
+
+## Production Readiness Notes
+
+- Set `ENCRYPTION_KEY` to a long random secret before using real email credentials.
+- Memex uses first-party email/password accounts with HttpOnly session cookies. All personal tables are scoped by `userId`.
+- Password reset and email verification routes are available. Configure `AUTH_SMTP_*` and `APP_BASE_URL` in production before requiring email verification.
+- `/api/cron/scheduled` processes due scheduled emails, daily digests, and expired auth tokens. `vercel.json` wires this to Vercel Cron.
+- `/api/health` checks database connectivity for deployment smoke checks.
+- Use HTTPS in production so session cookies are transmitted securely.
+- Email app passwords are stored with an `enc:v1` AES-GCM envelope. Legacy plaintext values are still readable for migration compatibility.
+- URL import blocks localhost, private IP ranges, link-local addresses, and redirect chains into private networks.
+- Expensive routes such as chat, file upload, URL import, inbox refresh, and email send/update have throttling. Local development uses memory; production can set `RATE_LIMIT_BACKEND=database` to share limits through Prisma.
+- API failures return short error IDs and write structured logs, so deployed issues can be traced without leaking stack traces to the browser.
+- SQLite is the default local database. Use `prisma/schema.postgres.prisma` for production deployments.
+- SQLite is fine for local development. Use PostgreSQL plus `RATE_LIMIT_BACKEND=database` for hosted multi-user deployments.
+- Run `npm run production-check` with production env vars before launch.
+
+## Tradeoffs
+
+- BM25 was chosen over embeddings to keep the app local-first and cheap to run. Embeddings can be added later as a reranking layer.
+- Decision extraction is best-effort and intentionally does not block note ingestion.
+- Demo email mode exists so reviewers can evaluate the workflow without connecting a real inbox.
+- The in-memory retrieval cache favors freshness over maximum performance with a short TTL.
+
+---
+
 ## 📋 Table of Contents
 
 1. [Features](#-features)
@@ -142,7 +234,7 @@ Memex is a comprehensive AI-powered personal knowledge management system that co
 
 ### Database
 - **[Prisma ORM](https://www.prisma.io/)** with **SQLite** (local dev) or **PostgreSQL** (production)
-- Switch between them with one command: `bun run db:use-postgres` / `bun run db:use-sqlite`
+- Switch between them with one command: `npm run db:use-postgres` / `npm run db:use-sqlite`
 
 ### AI / LLM
 - **[OpenAI SDK](https://www.npmjs.com/package/openai)** as universal client (OpenAI-compatible API format)
@@ -177,7 +269,7 @@ Memex is a comprehensive AI-powered personal knowledge management system that co
 - **[Framer Motion](https://www.framer.com/motion/)** for animations
 
 ### Runtime
-- **[Bun](https://bun.sh/)** as the JavaScript runtime and package manager
+- **Node.js 22+ with npm** as the verified runtime. Bun-compatible scripts are no longer required for the main workflow.
 
 ---
 
@@ -232,7 +324,7 @@ Memex is a comprehensive AI-powered personal knowledge management system that co
 ## 🚀 Quick Start (5 minutes)
 
 ### Prerequisites
-- **[Bun](https://bun.sh/)** installed (or Node.js 18+ with npm)
+- **Node.js 22+** with npm
 - A free AI provider API key (recommended: **Google Gemini** — [get one here](https://aistudio.google.com/app/apikey))
 
 ### Steps
@@ -243,7 +335,7 @@ git clone https://github.com/YOUR_USERNAME/memex.git
 cd memex
 
 # 2. Install dependencies
-bun install
+npm install
 
 # 3. Copy the environment template
 cp .env.example .env
@@ -253,13 +345,25 @@ cp .env.example .env
 nano .env
 
 # 5. Initialize the database
-bun run db:push
+npm run db:init-sqlite
+
+# Optional: add realistic demo data for portfolio review
+npm run db:seed
 
 # 6. Start the development server
-bun run dev
+npm run dev
 ```
 
 Open **http://localhost:3000** in your browser. You're done! 🎉
+
+If you ran `npm run db:seed`, use:
+
+```txt
+Email: you@memex.local
+Password: memex-demo-password
+```
+
+If you did not seed the database, click **Create account** and start with a private empty workspace.
 
 > **Note:** If you skip step 4 (no AI key), the app will still run but AI features won't work. The Settings page will show you exactly what to configure.
 
@@ -413,11 +517,11 @@ AI_MODEL=your-model-name
 
 ## 🗄 Database Configuration (SQLite / PostgreSQL)
 
-Memex supports both SQLite (for local development) and PostgreSQL (for production). The schemas are identical — only the connection string and provider change.
+Memex supports SQLite for local development and PostgreSQL for hosted production. The data model is equivalent; the PostgreSQL schema adds native long-text annotations for better hosted database behavior.
 
 ### SQLite (Default — Local Development)
 
-No setup needed. The database file is created automatically at `db/custom.db`.
+No external database is needed. The database file is created automatically at `prisma/db/custom.db`.
 
 Your `.env`:
 ```
@@ -426,50 +530,48 @@ DATABASE_URL="file:./db/custom.db"
 
 ### PostgreSQL (Production / Cloud Deployment)
 
-1. **Switch the schema**:
-   ```bash
-   bun run db:use-postgres
-   ```
-
-2. **Set the connection string** in your `.env`:
+1. **Set the connection string** in your `.env`:
    ```
    DATABASE_URL="postgresql://user:password@host:5432/memex"
    ```
 
+2. **Switch the schema**:
+   ```bash
+   npm run db:use-postgres
+   ```
+
 3. **Push the schema to create tables**:
    ```bash
-   bun run db:push
+   npm run db:push
    ```
 
 #### Getting a Free PostgreSQL Database
 
-- **[Neon](https://neon.tech/)** — 0.5GB free, serverless, instant setup
-- **[Supabase](https://supabase.com/)** — 500MB free, includes auth
-- **[Railway](https://railway.app/)** — $5 free credit, simple setup
-- **[Render](https://render.com/)** — 90 days free PostgreSQL
+- **[Neon](https://neon.tech/)** is the recommended zero-cost portfolio database for this project.
+- Other hosted PostgreSQL providers can work, but check their current limits and billing rules before relying on them.
 
 #### Switching Back to SQLite
 
 ```bash
-bun run db:use-sqlite
+npm run db:use-sqlite
 ```
 
 ---
 
 ## 🚢 Deployment Guide
 
-### Option 1: Vercel (Recommended for easy deployment)
+### Option 1: Vercel + Neon (Recommended free portfolio deployment)
 
 > Note: Vercel's filesystem is read-only, so you MUST use PostgreSQL (not SQLite).
 
-1. Push your code to GitHub
-2. Go to [vercel.com](https://vercel.com) → Import your repo
-3. Add environment variables:
-   - `DATABASE_URL` — your PostgreSQL connection string
-   - `AI_PROVIDER` — `gemini` (or your choice)
-   - `GEMINI_API_KEY` — your API key
-4. Deploy
-5. Run `bun run db:push` once (via Vercel's terminal or locally with the same DATABASE_URL)
+Use the full zero-cost walkthrough in [docs/free-deployment.md](docs/free-deployment.md). The important Vercel settings are:
+
+- Install command: `npm install`
+- Build command: `npm run db:use-postgres && npx prisma db push && npm run build`
+- Required env vars: `DATABASE_URL`, `ENCRYPTION_KEY`, `APP_BASE_URL`, `RATE_LIMIT_BACKEND=database`, and one AI provider key.
+- Optional env vars: `AUTH_SMTP_*` plus `APP_EMAIL_FROM` if you enable `REQUIRE_EMAIL_VERIFICATION=true`.
+
+After deployment, open `/api/health`, create a test account, add a note, and ask one chat question.
 
 ### Option 2: Railway
 
@@ -477,7 +579,7 @@ bun run db:use-sqlite
 2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
 3. Add a PostgreSQL database add-on
 4. Set environment variables (same as Vercel)
-5. Railway automatically runs `bun install` and `bun run build`
+5. Railway automatically runs `npm install` and `npm run build`
 
 ### Option 3: Your Own VPS (DigitalOcean, Hetzner, AWS EC2)
 
@@ -485,17 +587,17 @@ bun run db:use-sqlite
 # On your server:
 git clone https://github.com/YOUR_USERNAME/memex.git
 cd memex
-bun install
+npm install
 cp .env.example .env
 # Edit .env with your settings
-bun run db:use-postgres  # if using PostgreSQL
-bun run db:push
-bun run build
-bun run start   # starts production server on port 3000
+npm run db:use-postgres  # if using PostgreSQL
+npm run db:push
+npm run build
+npm run start   # starts production server on port 3000
 
 # Use PM2 to keep it running:
 npm install -g pm2
-pm2 start "bun run start" --name memex
+pm2 start "npm run start" --name memex
 pm2 save && pm2 startup
 ```
 
@@ -503,25 +605,26 @@ pm2 save && pm2 startup
 
 Create a `Dockerfile`:
 ```dockerfile
-FROM oven/bun:1 as deps
+FROM node:22-alpine AS deps
 WORKDIR /app
-COPY package.json bun.lockb ./
-RUN bun install --frozen-lockfile
+COPY package.json package-lock.json ./
+RUN npm ci
 
-FROM oven/bun:1 as builder
+FROM node:22-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-RUN bun run build
+RUN npm run build
 
-FROM oven/bun:1 as runner
+FROM node:22-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
+ENV PORT=3000
 COPY --from=builder /app/.next/standalone ./
 COPY --from=builder /app/.next/static ./.next/static
 COPY --from=builder /app/public ./public
 EXPOSE 3000
-CMD ["bun", "server.js"]
+CMD ["node", "-r", "dotenv/config", "server.js"]
 ```
 
 Then:
@@ -627,7 +730,7 @@ memex/
 2. Check if your provider is "Ready" or "Not configured"
 3. If not configured, follow the on-screen instructions
 4. Make sure your `.env` file has the correct variables
-5. Restart the dev server: `bun run dev`
+5. Restart the dev server: `npm run dev`
 
 ### "Rate limited" errors
 
@@ -639,7 +742,7 @@ memex/
 
 - **SQLite**: Make sure `db/` directory exists and is writable
 - **PostgreSQL**: Check your `DATABASE_URL` format: `postgresql://user:pass@host:5432/dbname`
-- Run `bun run db:push` to create tables
+- Run `npm run db:init-sqlite` locally, or `npm run db:push` for Prisma-managed databases.
 
 ### "Email sending failed"
 
@@ -659,7 +762,7 @@ memex/
 # Find and kill the process using port 3000
 lsof -ti:3000 | xargs kill -9
 # Or use a different port
-PORT=3001 bun run dev
+PORT=3001 npm run dev
 ```
 
 ---
@@ -723,18 +826,19 @@ They just need to:
 ```bash
 git clone https://github.com/YOUR_USERNAME/memex.git
 cd memex
-bun install          # installs all dependencies from package.json
+npm install          # installs all dependencies from package.json
 cp .env.example .env # create env file
 # edit .env with their API keys
-bun run db:push      # create database tables
-bun run dev          # start the server
+npm run db:init-sqlite
+npm run db:seed      # optional reviewer demo data
+npm run dev          # start the server
 ```
 
 ---
 
 ## 📦 Dependencies
 
-All dependencies are listed in `package.json`. When someone runs `bun install`, they all get installed automatically. Key dependencies:
+All dependencies are listed in `package.json`. When someone runs `npm install`, they all get installed automatically. Key dependencies:
 
 - `next` — the web framework
 - `react` / `react-dom` — UI library
@@ -753,12 +857,12 @@ All dependencies are listed in `package.json`. When someone runs `bun install`, 
 
 To update all dependencies:
 ```bash
-bun update
+npm update
 ```
 
 To add a new dependency:
 ```bash
-bun add package-name
+npm install package-name
 ```
 
 ---

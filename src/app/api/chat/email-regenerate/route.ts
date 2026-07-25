@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { regenerateEmailDraft, type EmailDraftResult } from "@/lib/llm"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // POST /api/chat/email-regenerate
 // Body: { instruction: string, previousDraft: EmailDraftResult, feedback: string }
@@ -9,6 +10,9 @@ import { regenerateEmailDraft, type EmailDraftResult } from "@/lib/llm"
 // "more formal", etc.). The body of the returned draft is EXACTLY what will
 // be sent — no chat history, no preamble.
 export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const body = await req.json().catch(() => ({}))
   const { instruction, previousDraft, feedback } = body as {
     instruction?: string

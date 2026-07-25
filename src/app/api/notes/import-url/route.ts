@@ -1,14 +1,10 @@
 import { NextRequest, NextResponse } from "next/server"
-import { db } from "@/lib/db"
-import {
-  chunkMarkdown,
-  contentHash,
-  termFreq,
-  estimateTokens,
-} from "@/lib/notes"
-import { invalidateCorpusCache } from "@/lib/retrieval"
-import { extractDecisions } from "@/lib/llm"
-import { fetchWebPageContent } from "@/lib/ai-client"
+import { ingestNote } from "@/server/services/ingestion"
+import { slugify } from "@/server/services/ingestion-utils"
+import { fetchPublicWebPageContent } from "@/server/services/web-page"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { rateLimit } from "@/server/security/rate-limit"
+import { importUrlSchema, validationError } from "@/server/validation/api"
 
 // Convert HTML to Markdown (lightweight — handles common tags)
 function htmlToMarkdown(html: string): string {
@@ -59,20 +55,20 @@ function htmlToMarkdown(html: string): string {
 // Fetches the URL directly (no AI provider needed — just HTTP fetch + HTML parsing),
 // converts HTML → Markdown, and ingests it as a note (chunk + extract decisions).
 export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
+  const limited = await rateLimit(req, { name: "notes:import-url", limit: 30, windowMs: 60_000, userId: auth.user.id })
+  if (limited) return limited
+
   const body = await req.json().catch(() => ({}))
-  const { url, project, tags, extractDecisions: doExtract = true } = body as {
-    url?: string
-    project?: string
-    tags?: string[]
-    extractDecisions?: boolean
+  const parsed = importUrlSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
 
-  if (!url || typeof url !== "string" || !/^https?:\/\//.test(url)) {
-    return NextResponse.json({ error: "A valid http(s) URL is required" }, { status: 400 })
-  }
-
-  // Fetch the web page content directly — no AI provider needed for this step
-  const pageResult = await fetchWebPageContent(url)
+  // Fetch through a redirect-aware public URL guard to prevent SSRF.
+  const pageResult = await fetchPublicWebPageContent(parsed.data.url)
 
   if (!pageResult.ok) {
     const msg = pageResult.error || "Unknown error"
@@ -115,112 +111,28 @@ _Source: [${sourceUrl}](${sourceUrl})${publishedAt ? ` · Published ${publishedA
 ${markdownBody}`
 
   const sourcePath = `/notes/url/${new URL(sourceUrl).hostname}/${slugify(title)}.md`
-  const hash = await contentHash(content)
-
-  // Upsert — re-chunk if content changed
-  const existing = await db.note.findUnique({ where: { sourcePath } })
-  if (existing && existing.contentHash === hash) {
-    return NextResponse.json({
-      id: existing.id,
-      title: existing.title,
-      sourcePath: existing.sourcePath,
-      chunkCount: existing.chunkCount,
-      skipped: true,
-      message: "Note unchanged (content hash match).",
-    })
-  }
-  if (existing) {
-    await db.decision.deleteMany({ where: { noteId: existing.id } })
-    await db.chunk.deleteMany({ where: { noteId: existing.id } })
-  }
-
-  const note = await db.note.upsert({
-    where: { sourcePath },
-    create: {
-      title,
-      content,
-      sourcePath,
-      project: project || "web",
-      tags: [...(tags || []), "url-import"].join(","),
-      contentHash: hash,
-    },
-    update: {
-      title,
-      content,
-      project: project || "web",
-      tags: [...(tags || []), "url-import"].join(","),
-      contentHash: hash,
-      updatedAt: new Date(),
-    },
+  const result = await ingestNote({
+    userId: auth.user.id,
+    title,
+    content,
+    sourcePath,
+    project: parsed.data.project || "web",
+    tags: [...(parsed.data.tags || []), "url-import"],
+    extractDecisions: parsed.data.extractDecisions,
   })
-
-  const chunks = chunkMarkdown(content, title)
-  let decisionsExtracted = 0
-
-  for (const c of chunks) {
-    const tf = termFreq(c.text)
-    const chunk = await db.chunk.create({
-      data: {
-        noteId: note.id,
-        chunkIndex: c.chunkIndex,
-        text: c.text,
-        headingPath: c.headingPath,
-        tokens: estimateTokens(c.text),
-        termFreq: JSON.stringify(tf),
-      },
-    })
-
-    if (doExtract) {
-      try {
-        const extracted = await extractDecisions(c.text, c.headingPath)
-        for (const d of extracted) {
-          await db.decision.create({
-            data: {
-              noteId: note.id,
-              chunkId: chunk.id,
-              title: d.title,
-              decisionDate: d.decisionDate || "",
-              rationale: d.rationale,
-              alternatives: (d.alternatives || []).join("|"),
-              outcome: d.outcome || "",
-              participants: (d.participants || []).join("|"),
-              project: note.project,
-              confidence: d.confidence ?? 0.8,
-            },
-          })
-          decisionsExtracted++
-        }
-      } catch {
-        // best-effort
-      }
-    }
-  }
-
-  await db.note.update({
-    where: { id: note.id },
-    data: { chunkCount: chunks.length },
-  })
-
-  invalidateCorpusCache()
 
   return NextResponse.json({
-    id: note.id,
-    title: note.title,
-    sourcePath: note.sourcePath,
+    id: result.id,
+    title: result.title,
+    sourcePath: result.sourcePath,
     sourceUrl,
-    chunkCount: chunks.length,
-    decisionsExtracted,
-    message: `Imported "${title}" → ${chunks.length} chunks${
-      decisionsExtracted > 0 ? `, ${decisionsExtracted} decisions` : ""
-    }.`,
+    chunkCount: result.chunkCount,
+    decisionsExtracted: result.decisionsExtracted,
+    skipped: result.skipped,
+    message: result.skipped
+      ? "Note unchanged (content hash match)."
+      : `Imported "${title}" → ${result.chunkCount} chunks${
+          result.decisionsExtracted > 0 ? `, ${result.decisionsExtracted} decisions` : ""
+        }.`,
   })
-}
-
-function slugify(s: string): string {
-  return s
-    .toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .replace(/-+/g, "-")
-    .slice(0, 60)
 }

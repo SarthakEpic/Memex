@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { generateEmailSubject } from "@/lib/llm"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // POST /api/chat/email-subject
 // Body: { bodyMarkdown: string }
@@ -9,6 +10,9 @@ import { generateEmailSubject } from "@/lib/llm"
 // Used when the user edits the body — the subject can be auto-updated to
 // stay relevant to the new content.
 export async function POST(req: NextRequest) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const body = await req.json().catch(() => ({}))
   const { bodyMarkdown } = body as { bodyMarkdown?: string }
 

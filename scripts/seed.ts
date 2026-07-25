@@ -1,8 +1,15 @@
-// Seed script: 8 hand-written Markdown notes covering realistic engineering
-// decisions. Run with: bun run scripts/seed.ts
+// Legacy TypeScript seed: 8 hand-written Markdown notes covering realistic
+// engineering decisions. The main npm seed is scripts/seed-demo.mjs.
 
+import { randomBytes, scrypt as scryptCallback } from "node:crypto"
+import { promisify } from "node:util"
 import { db } from "../src/lib/db"
 import { chunkMarkdown, contentHash, termFreq, estimateTokens } from "../src/lib/notes"
+
+const scrypt = promisify(scryptCallback)
+const USER_ID = "demo-user"
+const DEMO_EMAIL = "you@memex.local"
+const DEMO_PASSWORD = "memex-demo-password"
 
 const NOTES: { title: string; project: string; tags: string[]; content: string }[] = [
   {
@@ -230,6 +237,10 @@ async function main() {
   console.log("Seeding Memex database…")
 
   // Reset
+  await db.authSession.deleteMany()
+  await db.rateLimitBucket.deleteMany()
+  await db.inboxEmail.deleteMany()
+  await db.emailAccount.deleteMany()
   await db.email.deleteMany()
   await db.emailTemplate.deleteMany()
   await db.chatMessage.deleteMany()
@@ -238,12 +249,24 @@ async function main() {
   await db.chunk.deleteMany()
   await db.note.deleteMany()
   await db.profile.deleteMany()
+  await db.user.deleteMany()
+
+  await db.user.create({
+    data: {
+      id: USER_ID,
+      email: DEMO_EMAIL,
+      name: "Memex User",
+      passwordHash: await hashPassword(DEMO_PASSWORD),
+      emailVerifiedAt: new Date(),
+    },
+  })
 
   // Profile + default templates
   await db.profile.create({
     data: {
       id: "me",
-      email: "you@memex.local",
+      userId: USER_ID,
+      email: DEMO_EMAIL,
       name: "Memex User",
       smtpHost: "smtp.memex.local",
       smtpPort: 587,
@@ -255,6 +278,7 @@ async function main() {
   await db.emailTemplate.createMany({
     data: [
       {
+        userId: USER_ID,
         name: "Daily Digest",
         type: "digest",
         subject: "Memex Daily Digest",
@@ -262,6 +286,7 @@ async function main() {
           "# Memex Daily Digest\n\n_Generated {{date}}_\n\n## Recent Decisions\n{{decisions}}\n\n## Recent Questions\n{{questions}}\n",
       },
       {
+        userId: USER_ID,
         name: "Decision Brief",
         type: "brief",
         subject: "Decision: {{title}}",
@@ -269,6 +294,7 @@ async function main() {
           "# {{title}}\n\n**Decided:** {{date}}\n**Rationale:** {{rationale}}\n**Alternatives:** {{alternatives}}\n\n_Source: {{source}}_\n",
       },
       {
+        userId: USER_ID,
         name: "Source Snapshot",
         type: "snapshot",
         subject: "Source: {{sourcePath}}",
@@ -284,6 +310,7 @@ async function main() {
     const hash = await contentHash(n.content)
     const note = await db.note.create({
       data: {
+        userId: USER_ID,
         title: n.title,
         content: n.content,
         sourcePath,
@@ -298,6 +325,7 @@ async function main() {
       const tf = termFreq(c.text)
       await db.chunk.create({
         data: {
+          userId: USER_ID,
           noteId: note.id,
           chunkIndex: c.chunkIndex,
           text: c.text,
@@ -315,6 +343,12 @@ async function main() {
   }
 
   console.log("Seed complete.")
+}
+
+async function hashPassword(password: string): Promise<string> {
+  const salt = randomBytes(16).toString("hex")
+  const derivedKey = (await scrypt(password, salt, 64)) as Buffer
+  return `scrypt:v1:${salt}:${Buffer.from(derivedKey).toString("hex")}`
 }
 
 main()

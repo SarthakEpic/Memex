@@ -1,21 +1,28 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
+import { decryptSecret } from "@/server/security/encryption"
+import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // POST /api/inbox/[id]/delete-from-provider
 // Deletes the email from the real email provider (Gmail/Outlook) via IMAP.
 // This is a SEPARATE action from deleting from the app's local database.
 // Requires explicit user confirmation.
 export async function POST(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
+  const auth = await requireUser(req)
+  if (isAuthFailure(auth)) return auth.response
+
   const { id } = await params
-  const email = await db.inboxEmail.findUnique({ where: { id } })
+  const email = await db.inboxEmail.findFirst({
+    where: { id, userId: auth.user.id },
+  })
   if (!email) return NextResponse.json({ error: "Not found" }, { status: 404 })
 
   // Find the connected account
   const account = await db.emailAccount.findFirst({
-    where: { connected: true, syncMode: "real" },
+    where: { userId: auth.user.id, connected: true, syncMode: "real" },
   })
 
   if (!account || !account.imapPassword) {
@@ -33,7 +40,7 @@ export async function POST(
       secure: account.imapSecure,
       auth: {
         user: account.imapUser || account.emailAddress,
-        pass: account.imapPassword,
+        pass: decryptSecret(account.imapPassword),
       },
       logger: false,
     })
@@ -48,8 +55,9 @@ export async function POST(
           from: email.fromAddress,
           subject: email.subject,
         })
+        const messageIds = Array.isArray(searchResult) ? searchResult : []
 
-        if (searchResult.length === 0) {
+        if (messageIds.length === 0) {
           return NextResponse.json({
             ok: false,
             message: "Email not found in your provider's inbox. It may have been moved or deleted already.",
@@ -57,7 +65,7 @@ export async function POST(
         }
 
         // Mark as deleted and expunge
-        for (const msgId of searchResult) {
+        for (const msgId of messageIds) {
           await client.messageDelete(msgId)
         }
         await client.mailboxClose()
@@ -69,7 +77,7 @@ export async function POST(
     }
 
     // Also remove from local database
-    await db.inboxEmail.delete({ where: { id } })
+    await db.inboxEmail.deleteMany({ where: { id, userId: auth.user.id } })
 
     return NextResponse.json({
       ok: true,
