@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { invalidateCorpusCache } from "@/lib/retrieval"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { validationError } from "@/server/validation/api"
+import { noteBulkMutationSchema } from "@/server/validation/mutations"
 
 // GET /api/notes/bulk?action=export&ids=id1,id2,id3
 // Export selected notes as a single Markdown document
@@ -42,11 +44,11 @@ export async function POST(req: NextRequest) {
   if (isAuthFailure(auth)) return auth.response
 
   const body = await req.json().catch(() => ({}))
-  const { action, ids } = body as { action?: string; ids?: string[] }
-
-  if (!action || !ids || !Array.isArray(ids) || ids.length === 0) {
-    return NextResponse.json({ error: "action and ids[] are required" }, { status: 400 })
+  const parsed = noteBulkMutationSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
+  const { action, ids } = parsed.data
 
   switch (action) {
     case "delete": {

@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process"
 
-const scripts = ["db:init-sqlite", "lint", "typecheck", "test", "build", "smoke"]
+const scripts = ["db:generate", "db:init-sqlite", "lint", "typecheck", "test", "build", "smoke"]
 const npmExecPath = process.env.npm_execpath
 
 for (const script of scripts) {

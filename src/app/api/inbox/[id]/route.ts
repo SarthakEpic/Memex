@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { validationError } from "@/server/validation/api"
+import { inboxUpdateSchema } from "@/server/validation/mutations"
 
 // GET /api/inbox/[id] — single inbox email
 export async function GET(
@@ -40,18 +42,11 @@ export async function PATCH(
 
   const { id } = await params
   const body = await req.json().catch(() => ({}))
-  const { isRead, isStarred, isArchived, category } = body as {
-    isRead?: boolean
-    isStarred?: boolean
-    isArchived?: boolean
-    category?: string
+  const parsed = inboxUpdateSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
-
-  const data: any = {}
-  if (isRead !== undefined) data.isRead = isRead
-  if (isStarred !== undefined) data.isStarred = isStarred
-  if (isArchived !== undefined) data.isArchived = isArchived
-  if (category !== undefined) data.category = category
+  const data = parsed.data
 
   await db.inboxEmail.updateMany({ where: { id, userId: auth.user.id }, data })
   const email = await db.inboxEmail.findFirstOrThrow({ where: { id, userId: auth.user.id } })

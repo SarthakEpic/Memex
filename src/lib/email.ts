@@ -1,10 +1,11 @@
-// Email integration — real SMTP sending via nodemailer (when credentials available),
-// simulated delivery as fallback.
+// Email integration — real SMTP sending via nodemailer when credentials are
+// available. Without SMTP, messages remain local and are never marked delivered.
 // Enhanced with AI verification, draft support, and reliable status tracking.
 
 import { db } from "@/lib/db"
 import { markdownToHtml } from "@/lib/markdown"
 import { decryptSecret } from "@/server/security/encryption"
+import { isEmailOAuthProvider, sendOAuthEmail } from "@/server/email/oauth"
 
 export interface SendEmailInput {
   userId: string
@@ -24,6 +25,7 @@ export interface SendEmailResult {
   id: string
   status: string
   delivered: boolean
+  deliveryMode?: "smtp" | "oauth" | "local" | "unknown"
   realSend?: boolean
   error?: string
   requiresVerification?: boolean
@@ -95,10 +97,52 @@ export async function executeSend(emailId: string, userId: string): Promise<Send
 
   // Try real SMTP if an account with SMTP credentials is connected
   const account = await db.emailAccount.findFirst({
-    where: { userId, connected: true, smtpPassword: { not: "" } },
+    where: {
+      userId,
+      connected: true,
+      OR: [{ smtpPassword: { not: "" } }, { oauthRefreshToken: { not: "" } }],
+    },
+    orderBy: { updatedAt: "desc" },
   })
 
-  if (account && account.smtpHost) {
+  if (account && isEmailOAuthProvider(account.provider) && account.oauthRefreshToken) {
+    try {
+      await sendOAuthEmail(account, {
+        toAddress: email.toAddress,
+        subject: email.subject,
+        bodyMarkdown: email.bodyMarkdown,
+        bodyHtml: email.bodyHtml,
+      })
+      const now = new Date()
+      await db.email.update({
+        where: { id: emailId },
+        data: {
+          status: "delivered",
+          deliveryMode: "oauth",
+          errorMessage: "",
+          sentAt: now,
+          deliveredAt: now,
+        },
+      })
+      return { id: emailId, status: "delivered", delivered: true, deliveryMode: "oauth", realSend: true }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The email provider did not accept the message."
+      await db.email.update({
+        where: { id: emailId },
+        data: { status: "failed", deliveryMode: "oauth", errorMessage: `OAuth email error: ${message}` },
+      })
+      return {
+        id: emailId,
+        status: "failed",
+        delivered: false,
+        deliveryMode: "oauth",
+        realSend: false,
+        error: message,
+      }
+    }
+  }
+
+  if (account && account.smtpHost && account.smtpPassword) {
     try {
       const nodemailer = await import("nodemailer")
       const transporter = nodemailer.createTransport({
@@ -124,9 +168,15 @@ export async function executeSend(emailId: string, userId: string): Promise<Send
         const now = new Date()
         await db.email.update({
           where: { id: emailId },
-          data: { status: "delivered", sentAt: now, deliveredAt: now },
+          data: {
+            status: "delivered",
+            deliveryMode: "smtp",
+            errorMessage: "",
+            sentAt: now,
+            deliveredAt: now,
+          },
         })
-        return { id: emailId, status: "delivered", delivered: true, realSend: true }
+        return { id: emailId, status: "delivered", delivered: true, deliveryMode: "smtp", realSend: true }
       } else {
         throw new Error("SMTP server did not confirm delivery")
       }
@@ -136,6 +186,7 @@ export async function executeSend(emailId: string, userId: string): Promise<Send
         where: { id: emailId },
         data: {
           status: "failed",
+          deliveryMode: "smtp",
           errorMessage: `SMTP error: ${err.message}`,
         },
       })
@@ -143,37 +194,57 @@ export async function executeSend(emailId: string, userId: string): Promise<Send
         id: emailId,
         status: "failed",
         delivered: false,
+        deliveryMode: "smtp",
         realSend: false,
         error: err.message,
       }
     }
   }
 
-  // No real SMTP credentials — simulated delivery
-  // This is NOT a real send. We mark it as "delivered" but note it's simulated.
-  const now = new Date()
+  // No real SMTP credentials. Keep the message locally and report the truth:
+  // it was not sent and must not count as delivered.
+  const localOnlyMessage =
+    "No connected SMTP account. The email was saved locally and was not sent."
   await db.email.update({
     where: { id: emailId },
-    data: { status: "delivered", sentAt: now, deliveredAt: now },
+    data: {
+      status: "saved",
+      deliveryMode: "local",
+      errorMessage: localOnlyMessage,
+      sentAt: null,
+      deliveredAt: null,
+    },
   })
 
   return {
     id: emailId,
-    status: "delivered",
-    delivered: true,
+    status: "saved",
+    delivered: false,
+    deliveryMode: "local",
     realSend: false,
-    error: "No SMTP credentials — email saved locally only (not actually sent to recipient)",
+    error: localOnlyMessage,
   }
 }
 
 // Verify an email (human verification step for AI-generated emails)
 export async function verifyEmail(emailId: string, userId: string): Promise<SendEmailResult> {
-  await db.email.updateMany({
-    where: { id: emailId, userId },
+  const email = await db.email.findFirst({ where: { id: emailId, userId } })
+  if (!email) {
+    return { id: emailId, status: "failed", delivered: false, error: "Email not found" }
+  }
+
+  if (email.scheduledFor && email.scheduledFor.getTime() > Date.now()) {
+    await db.email.update({
+      where: { id: emailId },
+      data: { verified: true, status: "scheduled", errorMessage: "" },
+    })
+    return { id: emailId, status: "scheduled", delivered: false }
+  }
+
+  await db.email.update({
+    where: { id: emailId },
     data: { verified: true, status: "queued" },
   })
-
-  // Now execute the send
   return await executeSend(emailId, userId)
 }
 

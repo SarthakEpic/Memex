@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect } from "react"
+import { useQuery } from "@tanstack/react-query"
 import { toast } from "sonner"
 import { Sidebar, MobileNav } from "@/components/memex/sidebar"
 import { Dashboard } from "@/components/memex/dashboard"
@@ -19,9 +20,45 @@ import { ShortcutsHelp } from "@/components/memex/shortcuts-help"
 import { OnboardingTour } from "@/components/memex/onboarding-tour"
 import { useMemex } from "@/components/memex/store"
 import { useDevice } from "@/hooks/use-device"
+import type { InboxEmailData } from "@/components/memex/types"
 
 export default function Home() {
+  const { data: auth, isPending } = useQuery<{
+    user: { id: string; email: string; name: string; role: string } | null
+  }>({
+    queryKey: ["auth-user"],
+    queryFn: async () => {
+      const response = await fetch("/api/auth/me")
+      const body = await response.json()
+      return response.ok ? body : { user: null }
+    },
+    retry: false,
+  })
+
+  useEffect(() => {
+    if (!isPending && !auth?.user) {
+      window.location.replace("/login")
+    }
+  }, [auth, isPending])
+
+  if (isPending || !auth?.user) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-background">
+        <div
+          className="h-7 w-7 animate-spin rounded-full border-2 border-muted border-t-primary"
+          role="status"
+          aria-label="Checking your session"
+        />
+      </div>
+    )
+  }
+
+  return <AuthenticatedHome />
+}
+
+function AuthenticatedHome() {
   const section = useMemex((s) => s.section)
+  const setSection = useMemex((s) => s.setSection)
   const { isMobile } = useDevice()
 
   // Listen for cross-component toast events (e.g. from command palette actions)
@@ -40,12 +77,33 @@ export default function Home() {
     return () => window.removeEventListener("memex-toast", handler)
   }, [])
 
+  useEffect(() => {
+    const url = new URL(window.location.href)
+    const result = url.searchParams.get("email_connection")
+    if (!result) return
+
+    setSection("inbox")
+    if (result === "connected") {
+      toast.success("Email account connected", {
+        description: "Your inbox can now sync without an app password.",
+      })
+    } else if (result === "reauthenticate") {
+      toast.error("Sign in again to finish connecting your email.")
+    } else {
+      toast.error("Email account was not connected", {
+        description: "No changes were made. Start the connection again from Smart Inbox.",
+      })
+    }
+    url.searchParams.delete("email_connection")
+    url.searchParams.delete("section")
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`)
+  }, [setSection])
   // Background scheduled check — runs every 5 minutes to deliver scheduled emails
   // and check for urgent inbox emails
   useEffect(() => {
     const checkScheduled = async () => {
       try {
-        await fetch("/api/scheduled-check")
+        await fetch("/api/scheduled-check", { method: "POST" })
       } catch {
         // silent fail — background task
       }
@@ -59,39 +117,36 @@ export default function Home() {
 
   // Browser notifications for urgent emails — checks every 2 minutes
   useEffect(() => {
-    const lastNotifiedKey = "memex-last-notified-email"
+    const notifiedKey = "memex-notified-urgent-emails"
     const checkUrgentEmails = async () => {
       try {
-        const r = await fetch("/api/inbox?category=urgent&unread=true")
-        const d = await r.json()
-        const urgent = d.emails || []
+        if (!("Notification" in window) || Notification.permission !== "granted") {
+          return
+        }
+
+        const response = await fetch("/api/inbox?category=urgent&unread=true")
+        if (!response.ok) return
+
+        const data = (await response.json()) as { emails?: InboxEmailData[] }
+        const urgent = data.emails ?? []
         if (urgent.length === 0) return
 
-        // Get last notified email ID
-        const lastNotified = localStorage.getItem(lastNotifiedKey) || ""
+        const notified = new Set<string>(
+          JSON.parse(localStorage.getItem(notifiedKey) || "[]")
+        )
+        const latest = urgent.find((email) => !notified.has(email.id))
+        if (!latest) return
 
-        // Find new urgent emails we haven't notified about
-        const newUrgent = urgent.filter((e: any) => e.id !== lastNotified)
-        if (newUrgent.length === 0) return
-
-        // Request notification permission if not granted
-        if ("Notification" in window && Notification.permission === "granted") {
-          const latest = newUrgent[0]
-          new Notification("🚨 Urgent Email — " + (latest.fromName || latest.fromAddress), {
-            body: latest.subject + (latest.summary ? "\n" + latest.summary : ""),
-            icon: "/logo.svg",
-            tag: latest.id,
-          })
-          localStorage.setItem(lastNotifiedKey, latest.id)
-        }
+        new Notification(`Urgent email from ${latest.fromName || latest.fromAddress}`, {
+          body: latest.subject + (latest.summary ? `\n${latest.summary}` : ""),
+          icon: "/logo.svg",
+          tag: latest.id,
+        })
+        const nextNotified = [latest.id, ...notified].slice(0, 50)
+        localStorage.setItem(notifiedKey, JSON.stringify(nextNotified))
       } catch {
-        // silent fail
+        // Notifications are best-effort and never block the app.
       }
-    }
-
-    // Request permission on mount
-    if ("Notification" in window && Notification.permission === "default") {
-      Notification.requestPermission()
     }
 
     // Check after 10 seconds (let app load), then every 2 minutes

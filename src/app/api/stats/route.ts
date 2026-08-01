@@ -21,6 +21,10 @@ export async function GET(req: Request) {
       emailsBySource,
       decisionsByProject,
       notesByProject,
+      inbox,
+      unreadInbox,
+      urgentInbox,
+      emailAccounts,
       assistantMessages,
     ] = await Promise.all([
       db.note.count({ where: { userId: auth.user.id } }),
@@ -29,7 +33,9 @@ export async function GET(req: Request) {
       db.chatMessage.count({ where: { role: "user", userId: auth.user.id } }),
       db.email.count({ where: { userId: auth.user.id } }),
       corpusStats(auth.user.id),
-      db.email.count({ where: { status: "delivered", userId: auth.user.id } }),
+      db.email.count({
+        where: { status: "delivered", deliveryMode: { in: ["smtp", "oauth"] }, userId: auth.user.id },
+      }),
       db.email.groupBy({
         by: ["sourceType"],
         where: { userId: auth.user.id },
@@ -45,6 +51,14 @@ export async function GET(req: Request) {
         where: { userId: auth.user.id },
         _count: true,
       }),
+      db.inboxEmail.count({ where: { userId: auth.user.id, isArchived: false } }),
+      db.inboxEmail.count({
+        where: { userId: auth.user.id, isArchived: false, isRead: false },
+      }),
+      db.inboxEmail.count({
+        where: { userId: auth.user.id, isArchived: false, category: "urgent" },
+      }),
+      db.emailAccount.count({ where: { userId: auth.user.id, connected: true } }),
       db.chatMessage.findMany({
         where: { role: "assistant", userId: auth.user.id },
         select: { content: true, citations: true },
@@ -71,12 +85,11 @@ export async function GET(req: Request) {
       }
     }).length
 
-    // Citation coverage = cited note answers / total note answers
-    // If there are no note answers, coverage is 100% (nothing to cite = no problem)
+    // Empty workspaces report no citation metric instead of a misleading 100%.
     const citationCoverage =
       noteAnswers.length > 0
         ? Math.round((citedMessages / noteAnswers.length) * 100)
-        : 100
+        : null
 
     // Refusal rate = refusals / note answers (how often the AI couldn't find a source)
     const refusals = noteAnswers.filter((m) => {
@@ -89,7 +102,7 @@ export async function GET(req: Request) {
     const refusalRate =
       noteAnswers.length > 0
         ? Math.round((refusals / noteAnswers.length) * 100)
-        : 0
+        : null
 
     return NextResponse.json({
       counts: {
@@ -99,6 +112,11 @@ export async function GET(req: Request) {
         messages,
         emails,
         emailsDelivered,
+        inbox,
+        unreadInbox,
+        urgentInbox,
+        emailAccounts,
+        noteAnswers: noteAnswers.length,
       },
       corpus,
       citationCoverage,

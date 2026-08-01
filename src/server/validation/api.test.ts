@@ -4,6 +4,8 @@ import {
   createNoteSchema,
   emailAccountCreateSchema,
   importUrlSchema,
+  profileUpdateSchema,
+  refreshInboxSchema,
   requestPasswordResetSchema,
   resetPasswordSchema,
   uploadFileSchema,
@@ -28,10 +30,37 @@ describe("API validation schemas", () => {
     expect(result.success).toBe(false)
   })
 
+  it("treats a null chat session as a new conversation", () => {
+    const result = chatRequestSchema.parse({ message: "Hello", sessionId: null })
+
+    expect(result.sessionId).toBeUndefined()
+  })
+
   it("requires valid email addresses for real account connection", () => {
     const result = emailAccountCreateSchema.safeParse({ emailAddress: "not-an-email" })
 
     expect(result.success).toBe(false)
+  })
+
+  it("requires exactly one inbox sync scope", () => {
+    expect(refreshInboxSchema.parse({ scope: "period", range: "week" })).toEqual({
+      scope: "period",
+      range: "week",
+    })
+    expect(refreshInboxSchema.parse({ scope: "count", count: 100 })).toEqual({
+      scope: "count",
+      count: 100,
+    })
+    expect(refreshInboxSchema.safeParse({ scope: "period", range: "week", count: 25 }).success).toBe(false)
+    expect(refreshInboxSchema.safeParse({ scope: "count", count: 30 }).success).toBe(false)
+    expect(refreshInboxSchema.safeParse({ scope: "period", range: "all" }).success).toBe(false)
+    expect(refreshInboxSchema.safeParse({}).success).toBe(false)
+  })
+  it("accepts only supported profile settings", () => {
+    expect(profileUpdateSchema.safeParse({ name: "Aditi", digestHour: 8 }).success).toBe(true)
+    expect(profileUpdateSchema.safeParse({ digestHour: 24 }).success).toBe(false)
+    expect(profileUpdateSchema.safeParse({ smtpHost: "smtp.example.com" }).success).toBe(false)
+    expect(profileUpdateSchema.safeParse({}).success).toBe(false)
   })
 
   it("accepts upload payloads with safe defaults", () => {

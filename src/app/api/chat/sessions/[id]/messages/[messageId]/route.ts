@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { validationError } from "@/server/validation/api"
+import { chatMessageDraftUpdateSchema } from "@/server/validation/mutations"
 
 // PATCH /api/chat/sessions/[id]/messages/[messageId]
 // Body: { emailDraft?: EmailDraftPayload }
@@ -17,11 +19,11 @@ export async function PATCH(
 
   const { id, messageId } = await params
   const body = await req.json().catch(() => ({}))
-  const { emailDraft } = body as { emailDraft?: unknown }
-
-  if (emailDraft === undefined) {
-    return NextResponse.json({ error: "emailDraft is required" }, { status: 400 })
+  const parsed = chatMessageDraftUpdateSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
+  const { emailDraft } = parsed.data
 
   // Verify the message belongs to the session
   const existing = await db.chatMessage.findUnique({
@@ -35,8 +37,7 @@ export async function PATCH(
   const updated = await db.chatMessage.update({
     where: { id: messageId },
     data: {
-      emailDraft:
-        typeof emailDraft === "string" ? emailDraft : JSON.stringify(emailDraft),
+      emailDraft: JSON.stringify(emailDraft),
     },
   })
 

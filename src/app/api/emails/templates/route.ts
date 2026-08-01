@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { validationError } from "@/server/validation/api"
+import { emailTemplateCreateSchema } from "@/server/validation/mutations"
 
 // GET /api/emails/templates — list all templates
 export async function GET(req: NextRequest) {
@@ -20,17 +22,13 @@ export async function POST(req: NextRequest) {
   if (isAuthFailure(auth)) return auth.response
 
   const body = await req.json().catch(() => ({}))
-  const { name, type, subject, bodyMarkdown } = body as {
-    name?: string
-    type?: string
-    subject?: string
-    bodyMarkdown?: string
+  const parsed = emailTemplateCreateSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
-  if (!name || !subject || !bodyMarkdown) {
-    return NextResponse.json({ error: "name, subject, bodyMarkdown required" }, { status: 400 })
-  }
+  const { name, type, subject, bodyMarkdown } = parsed.data
   const template = await db.emailTemplate.create({
-    data: { userId: auth.user.id, name, type: type || "custom", subject, bodyMarkdown },
+    data: { userId: auth.user.id, name, type, subject, bodyMarkdown },
   })
   return NextResponse.json({ template })
 }

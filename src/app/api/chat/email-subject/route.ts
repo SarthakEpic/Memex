@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server"
 import { generateEmailSubject } from "@/lib/llm"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { rateLimit } from "@/server/security/rate-limit"
+import { validationError } from "@/server/validation/api"
+import { emailSubjectSchema } from "@/server/validation/mutations"
 
 // POST /api/chat/email-subject
 // Body: { bodyMarkdown: string }
@@ -13,15 +16,20 @@ export async function POST(req: NextRequest) {
   const auth = await requireUser(req)
   if (isAuthFailure(auth)) return auth.response
 
-  const body = await req.json().catch(() => ({}))
-  const { bodyMarkdown } = body as { bodyMarkdown?: string }
+  const limited = await rateLimit(req, {
+    name: "chat:email-subject",
+    limit: 30,
+    windowMs: 60_000,
+    userId: auth.user.id,
+  })
+  if (limited) return limited
 
-  if (!bodyMarkdown || typeof bodyMarkdown !== "string") {
-    return NextResponse.json(
-      { error: "bodyMarkdown is required" },
-      { status: 400 }
-    )
+  const body = await req.json().catch(() => ({}))
+  const parsed = emailSubjectSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
+  const { bodyMarkdown } = parsed.data
 
   const subject = await generateEmailSubject(bodyMarkdown)
 

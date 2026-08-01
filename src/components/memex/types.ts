@@ -92,7 +92,7 @@ export interface EmailDraftPayload {
   subject: string
   bodyMarkdown: string
   rationale: string
-  status: "draft" | "sending" | "sent" | "failed" | "scheduled" | "cancelled"
+  status: "draft" | "sending" | "saved" | "sent" | "failed" | "scheduled" | "cancelled"
   // Optional: link to the Email row once it's been sent/saved
   emailId?: string
   // Optional: error message when status === "failed"
@@ -126,7 +126,7 @@ export interface EmailData {
   subject: string
   bodyMarkdown: string
   bodyHtml: string
-  status: string // draft | pending_verification | queued | scheduled | sending | sent | delivered | failed | cancelled
+  status: string // draft | pending_verification | queued | scheduled | sending | saved | delivered | failed | cancelled
   sourceType: string
   sourceId: string
   errorMessage: string
@@ -134,6 +134,7 @@ export interface EmailData {
   scheduledFor: string | null
   sentAt: string | null
   deliveredAt: string | null
+  deliveryMode: "smtp" | "oauth" | "local" | "unknown"
   isAiGenerated: boolean
   verified: boolean
   attempts: number
@@ -156,6 +157,11 @@ export interface StatsData {
     messages: number
     emails: number
     emailsDelivered: number
+    inbox: number
+    unreadInbox: number
+    urgentInbox: number
+    emailAccounts: number
+    noteAnswers: number
   }
   corpus: {
     chunkCount: number
@@ -163,8 +169,8 @@ export interface StatsData {
     avgTokensPerChunk: number
     uniqueTerms: number
   }
-  citationCoverage: number
-  refusalRate: number
+  citationCoverage: number | null
+  refusalRate: number | null
   emailsBySource: { sourceType: string; count: number }[]
   decisionsByProject: { project: string; count: number }[]
   notesByProject: { project: string; count: number }[]
@@ -288,4 +294,9 @@ export interface EmailAccountData {
   smtpPort: number
   connected: boolean
   lastSyncAt: string | null
+  syncMode: "oauth" | "real" | "demo"
+  provider: "google" | "microsoft" | "manual" | "demo" | string
+  hasOAuthConnection: boolean
+  hasImapPassword: boolean
+  hasSmtpPassword: boolean
 }

@@ -51,6 +51,9 @@ if (!hasAiProvider) {
   warnings.push("No AI provider key is configured; non-sandbox deployments will have limited AI features")
 }
 
+if (!env("GOOGLE_OAUTH_CLIENT_ID") && !env("MICROSOFT_OAUTH_CLIENT_ID")) {
+  warnings.push("No email OAuth provider is configured; password-free Gmail and Outlook connections will be unavailable")
+}
 if (required.length > 0) {
   console.error("Production environment check failed:")
   for (const item of required) console.error(`- ${item}`)

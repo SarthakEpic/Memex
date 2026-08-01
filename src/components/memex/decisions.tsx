@@ -33,18 +33,22 @@ import {
   Pin,
 } from "lucide-react"
 import { toast } from "sonner"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
 import { useQueryClient } from "@tanstack/react-query"
 import { useMemex } from "./store"
+import { SectionError } from "./section-state"
 import { useRecentSearches } from "./use-recent-searches"
 import type { DecisionSummary } from "./types"
 
 export function Decisions() {
   const [search, setSearch] = useState("")
   const [project, setProject] = useState<string>("")
-  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [pinnedOnly, setPinnedOnly] = useState(false)
   const [minConfidence, setMinConfidence] = useState(0)
+  const selectedId = useMemex((state) => state.activeDecisionId)
+  const setSelectedId = useMemex((state) => state.setActiveDecision)
+  const openNoteComposer = useMemex((state) => state.openNoteComposer)
   const { recent, addSearch, clearSearches } = useRecentSearches("memex-decision-searches")
 
   // Listen for "open decision" events from related-decision clicks
@@ -61,13 +65,28 @@ export function Decisions() {
   if (search) params.set("q", search)
   if (project) params.set("project", project)
 
-  const { data, isLoading } = useQuery<{ decisions: DecisionSummary[] }>({
+  const {
+    data,
+    isLoading,
+    error,
+    refetch,
+  } = useQuery<{ decisions: DecisionSummary[] }>({
     queryKey: ["decisions", search, project],
-    queryFn: async () => {
-      const r = await fetch(`/api/decisions?${params.toString()}`)
-      return r.json()
-    },
+    queryFn: () =>
+      apiRequest<{ decisions: DecisionSummary[] }>(
+        `/api/decisions?${params.toString()}`
+      ),
   })
+
+  if (error) {
+    return (
+      <SectionError
+        title="Decisions could not be loaded"
+        error={error}
+        onRetry={() => void refetch()}
+      />
+    )
+  }
 
   const allDecisions = data?.decisions ?? []
   const decisions = allDecisions.filter(
@@ -207,10 +226,16 @@ export function Decisions() {
               <Brain className="h-8 w-8 text-muted-foreground/40 mx-auto" />
               <p className="text-sm font-medium">No decisions found</p>
               <p className="text-xs text-muted-foreground max-w-sm mx-auto">
-                {search
-                  ? "Try a different search term."
-                  : "Ingest notes with decision-like content and the LLM will extract decisions automatically."}
+                {search || project || pinnedOnly || minConfidence > 0
+                  ? "Adjust or clear the current filters."
+                  : "Add a note with context, a decision, and its rationale, then extract decisions from the note."}
               </p>
+              {!search && !project && !pinnedOnly && minConfidence === 0 && (
+                <Button size="sm" className="mt-2" onClick={openNoteComposer}>
+                  <FileText className="mr-1.5 h-3.5 w-3.5" />
+                  Add decision note
+                </Button>
+              )}
             </div>
           )}
           {decisions.map((d) => (
@@ -241,15 +266,17 @@ function DecisionCard({
 
   const handlePin = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    const r = await fetch("/api/pin", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type: "decision", id: decision.id }),
-    })
-    const d = await r.json()
-    if (d.pinned) toast.success("Decision pinned to top")
-    else toast.success("Decision unpinned")
-    qc.invalidateQueries({ queryKey: ["decisions"] })
+    try {
+      const d = await apiRequest<{ pinned: boolean }>("/api/pin", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ type: "decision", id: decision.id }),
+      })
+      toast.success(d.pinned ? "Decision pinned to top" : "Decision unpinned")
+      qc.invalidateQueries({ queryKey: ["decisions"] })
+    } catch (error) {
+      toast.error("Pin could not be updated", { description: getErrorMessage(error) })
+    }
   }
 
   return (
@@ -308,9 +335,7 @@ function DecisionCard({
           <FileText className="h-2.5 w-2.5" />
           <span className="truncate font-mono flex-1">{decision.note.sourcePath}</span>
           <span>· chunk #{decision.chunk.chunkIndex}</span>
-          {decision.pinned && (
-            <Pin className="h-3 w-3 text-amber-500 fill-amber-500 shrink-0" />
-          )}
+
           <button
             onClick={handlePin}
             className={`shrink-0 p-0.5 rounded hover:bg-accent transition-colors ${
@@ -349,7 +374,7 @@ function DecisionDetailDialog({
 }) {
   const openEmail = useMemex((s) => s.openEmailComposer)
   const openSource = useMemex((s) => s.openSource)
-  const { data, isLoading } = useQuery<{
+  const decisionQuery = useQuery<{
     decision: {
       id: string
       title: string
@@ -366,15 +391,13 @@ function DecisionDetailDialog({
     }
   }>({
     queryKey: ["decision", id],
-    queryFn: async () => {
-      const r = await fetch(`/api/decisions/${id}`)
-      return r.json()
-    },
+    queryFn: () => apiRequest(`/api/decisions/${id}`),
     enabled: !!id,
   })
+  const { data, isLoading } = decisionQuery
 
   // Related decisions by term overlap
-  const { data: relatedData } = useQuery<{
+  const relatedQuery = useQuery<{
     related: {
       id: string
       title: string
@@ -388,12 +411,10 @@ function DecisionDetailDialog({
     }[]
   }>({
     queryKey: ["decision-related", id],
-    queryFn: async () => {
-      const r = await fetch(`/api/decisions/${id}/related?limit=4`)
-      return r.json()
-    },
+    queryFn: () => apiRequest(`/api/decisions/${id}/related?limit=4`),
     enabled: !!id,
   })
+  const relatedData = relatedQuery.data
 
   return (
     <Dialog open={!!id} onOpenChange={(o) => !o && onClose()}>
@@ -408,6 +429,13 @@ function DecisionDetailDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {decisionQuery.isError && (
+          <SectionError
+            title="Decision could not be loaded"
+            error={decisionQuery.error}
+            onRetry={() => decisionQuery.refetch()}
+          />
+        )}
         {isLoading && (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
@@ -524,6 +552,14 @@ function DecisionDetailDialog({
               </div>
 
               {/* Related decisions */}
+              {relatedQuery.isError && (
+                <div className="flex items-center justify-between gap-2 rounded-md border border-border p-2.5 text-xs text-muted-foreground">
+                  <span>Related decisions could not be loaded.</span>
+                  <Button size="sm" variant="ghost" className="h-6 text-xs" onClick={() => relatedQuery.refetch()}>
+                    Retry
+                  </Button>
+                </div>
+              )}
               {relatedData && relatedData.related.length > 0 && (
                 <div className="space-y-2 pt-3 border-t border-border">
                   <div className="text-[10px] uppercase tracking-wide text-muted-foreground font-medium flex items-center gap-1.5">

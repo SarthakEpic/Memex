@@ -26,18 +26,28 @@ import {
 } from "lucide-react"
 import { toast } from "sonner"
 import { useMemex } from "./store"
+import { apiRequest } from "@/lib/client-api"
+import { SectionError } from "./section-state"
 import type { AnalyticsData } from "./types"
 
 export function Analytics() {
   const setSection = useMemex((s) => s.setSection)
   const openSource = useMemex((s) => s.openSource)
-  const { data, isLoading } = useQuery<AnalyticsData>({
+  const analyticsQuery = useQuery<AnalyticsData>({
     queryKey: ["analytics"],
-    queryFn: async () => {
-      const r = await fetch("/api/analytics")
-      return r.json()
-    },
+    queryFn: () => apiRequest("/api/analytics"),
   })
+  const { data, isLoading } = analyticsQuery
+
+  if (analyticsQuery.isError) {
+    return (
+      <SectionError
+        title="Analytics could not be loaded"
+        error={analyticsQuery.error}
+        onRetry={() => analyticsQuery.refetch()}
+      />
+    )
+  }
 
   if (isLoading || !data) {
     return (
@@ -218,7 +228,10 @@ export function Analytics() {
               <p className="text-sm text-muted-foreground">No projects yet.</p>
             )}
             {data.projectStats.map((p) => {
-              const maxNotes = Math.max(...data.projectStats.map((x) => x.notes), 1)
+              const maxItems = Math.max(
+                ...data.projectStats.map((item) => item.notes + item.decisions),
+                1
+              )
               return (
                 <div key={p.project} className="space-y-1">
                   <div className="flex items-center justify-between text-xs">
@@ -227,7 +240,7 @@ export function Analytics() {
                       {p.notes} notes · {p.decisions} decisions
                     </span>
                   </div>
-                  <Progress value={(p.notes / maxNotes) * 100} className="h-1.5" />
+                  <Progress value={((p.notes + p.decisions) / maxItems) * 100} className="h-1.5" />
                 </div>
               )
             })}
@@ -332,7 +345,14 @@ function exportAnalytics(data: AnalyticsData, format: "csv" | "json") {
     lines.push("rank,chunk_id,source_path,heading_path,chunk_index,citation_count")
     data.mostCitedChunks.forEach((c, i) => {
       lines.push(
-        `${i + 1},${c.chunkId},"${c.sourcePath}","${c.headingPath.replace(/"/g, '""')}",${c.chunkIndex},${c.count}`
+        [
+          i + 1,
+          c.chunkId,
+          c.sourcePath,
+          c.headingPath,
+          c.chunkIndex,
+          c.count,
+        ].map(csvCell).join(",")
       )
     })
     lines.push("")
@@ -345,20 +365,20 @@ function exportAnalytics(data: AnalyticsData, format: "csv" | "json") {
     lines.push("# Project stats")
     lines.push("project,notes,decisions")
     data.projectStats.forEach((p) => {
-      lines.push(`${p.project},${p.notes},${p.decisions}`)
+      lines.push([p.project, p.notes, p.decisions].map(csvCell).join(","))
     })
     lines.push("")
     lines.push("# Recent questions")
     lines.push("timestamp,question")
     data.recentQuestions.forEach((q) => {
-      lines.push(`${q.timestamp},"${q.question.replace(/"/g, '""')}"`)
+      lines.push([q.timestamp, q.question].map(csvCell).join(","))
     })
     content = lines.join("\n")
     mime = "text/csv"
     ext = "csv"
   }
 
-  const blob = new Blob([content], { type: mime })
+  const blob = new Blob([format === "csv" ? `\uFEFF${content}` : content], { type: mime })
   const url = URL.createObjectURL(blob)
   const a = document.createElement("a")
   a.href = url
@@ -368,5 +388,12 @@ function exportAnalytics(data: AnalyticsData, format: "csv" | "json") {
   document.body.removeChild(a)
   URL.revokeObjectURL(url)
   toast.success(`Exported as ${ext.toUpperCase()}`)
+}
+
+function csvCell(value: string | number): string {
+  let text = String(value)
+  // Prevent spreadsheet applications from evaluating exported user content as a formula.
+  if (/^[=+\-@]/.test(text.trimStart())) text = `'${text}`
+  return `"${text.replace(/"/g, '""')}"`
 }
 

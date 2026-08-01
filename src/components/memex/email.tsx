@@ -32,12 +32,15 @@ import {
 import { toast } from "sonner"
 import { useMemex } from "./store"
 import { useDevice } from "@/hooks/use-device"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
+import { SectionError } from "./section-state"
 import type { EmailData } from "./types"
 
 type Tab = "all" | "delivered" | "failed" | "pending_verification" | "scheduled" | "cancelled" | "ai"
 
 const STATUS_CONFIG: Record<string, { icon: React.ElementType; color: string; bg: string; label: string }> = {
   delivered: { icon: CheckCircle2, color: "text-emerald-600 dark:text-emerald-400", bg: "bg-emerald-500/10 border-emerald-500/30", label: "Delivered" },
+  saved: { icon: FileText, color: "text-amber-600 dark:text-amber-400", bg: "bg-amber-500/10 border-amber-500/30", label: "Saved locally" },
   sent: { icon: Send, color: "text-teal-600 dark:text-teal-400", bg: "bg-teal-500/10 border-teal-500/30", label: "Sent" },
   sending: { icon: Loader2, color: "text-blue-600 dark:text-blue-400", bg: "bg-blue-500/10 border-blue-500/30", label: "Sending..." },
   pending_verification: { icon: Shield, color: "text-amber-600 dark:text-amber-400", bg: "bg-amber-500/10 border-amber-500/30", label: "Needs Verification" },
@@ -72,13 +75,11 @@ export function Email() {
   if (tab === "scheduled") params.set("status", "scheduled")
   if (tab === "cancelled") params.set("status", "cancelled")
 
-  const { data, isLoading } = useQuery<{ emails: EmailData[] }>({
+  const emailQuery = useQuery<{ emails: EmailData[] }>({
     queryKey: ["emails", tab],
-    queryFn: async () => {
-      const r = await fetch(`/api/emails?${params.toString()}`)
-      return r.json()
-    },
+    queryFn: () => apiRequest(`/api/emails?${params.toString()}`),
   })
+  const { data, isLoading } = emailQuery
 
   const allEmails = data?.emails ?? []
   const emails = search
@@ -94,83 +95,104 @@ export function Email() {
 
   const handleDigest = async () => {
     try {
-      const r = await fetch("/api/emails/digest", {
+      const d = await apiRequest<{
+        skipped?: boolean
+        delivered?: boolean
+        subject?: string
+        message?: string
+      }>("/api/emails/digest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ force: false }),
       })
-      const d = await r.json()
       if (d.skipped) {
         toast.info("No new activity", { description: "Nothing to digest from the last 24 hours." })
-      } else {
+      } else if (d.delivered) {
         toast.success("Digest delivered", { description: d.subject })
-        qc.invalidateQueries({ queryKey: ["emails"] })
+      } else {
+        toast.info("Digest saved locally", {
+          description: d.message || "Connect an SMTP account to deliver it.",
+        })
       }
-    } catch {
-      toast.error("Digest failed")
+      qc.invalidateQueries({ queryKey: ["emails"] })
+    } catch (error) {
+      toast.error("Digest failed", { description: getErrorMessage(error) })
     }
+  }
+
+  if (emailQuery.isError) {
+    return (
+      <SectionError
+        title="Sent mail could not be loaded"
+        error={emailQuery.error}
+        onRetry={() => emailQuery.refetch()}
+      />
+    )
   }
 
   return (
     <div className="flex h-full">
       {/* List — hidden when no emails at all (empty state takes full width) */}
-      <div className={`${allEmails.length === 0 && !selectedId ? "hidden" : selectedId && isMobile ? "hidden" : "flex"} w-full lg:w-[380px] shrink-0 flex-col border-r border-border`}>
-        {/* Toolbar */}
-        <div className="p-4 border-b border-border space-y-3">
+      <div className={`${allEmails.length === 0 && !selectedId ? "hidden" : selectedId && isMobile ? "hidden" : "flex"} w-full lg:w-[400px] shrink-0 flex-col border-r border-border`}>
+        {/* Stable Sent sidebar controls. */}
+        <div className="border-b border-border p-3 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="text-sm font-semibold flex items-center gap-2">
-              <Send className="h-4 w-4 text-primary" />
-              Sent
-            </h2>
-            <div className="flex gap-1">
-              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={handleDigest} title="Generate daily digest">
-                <RefreshCw className="h-3 w-3 mr-1" />
-                Digest
+            <div className="flex min-w-0 items-center gap-2">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10">
+                <Send className="h-4 w-4 text-primary" />
+              </div>
+              <div className="min-w-0">
+                <h2 className="truncate text-sm font-semibold">Sent &amp; scheduled</h2>
+                <p className="text-[10px] text-muted-foreground">Delivery activity and drafts</p>
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-1">
+              <Button size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={handleDigest} title="Generate daily digest">
+                <RefreshCw className="h-3.5 w-3.5" />
+                <span className="ml-1">Digest</span>
               </Button>
-              <Button size="sm" onClick={() => openEmail({ sourceType: "manual" as const })}>
-                <Plus className="h-3.5 w-3.5 mr-1" />
-                Compose
+              <Button size="sm" className="h-8 px-2 text-xs" onClick={() => openEmail({ sourceType: "manual" as const })}>
+                <Plus className="h-3.5 w-3.5" />
+                <span className="ml-1">Compose</span>
               </Button>
             </div>
           </div>
 
-          {/* Status dashboard mini-stats */}
           <div className="grid grid-cols-4 gap-1.5">
-            <StatPill label="Delivered" count={allEmails.filter((e) => e.status === "delivered").length} color="emerald" />
-            <StatPill label="Failed" count={allEmails.filter((e) => e.status === "failed").length} color="red" />
-            <StatPill label="Pending" count={allEmails.filter((e) => e.status === "pending_verification").length} color="amber" />
-            <StatPill label="Scheduled" count={allEmails.filter((e) => e.status === "scheduled").length} color="purple" />
+            <StatPill label="Delivered" count={allEmails.filter((email) => email.status === "delivered").length} color="emerald" />
+            <StatPill label="Failed" count={allEmails.filter((email) => email.status === "failed").length} color="red" />
+            <StatPill label="Pending" count={allEmails.filter((email) => email.status === "pending_verification").length} color="amber" />
+            <StatPill label="Scheduled" count={allEmails.filter((email) => email.status === "scheduled").length} color="purple" />
           </div>
 
-          {/* Tabs */}
-          <div className="flex gap-1 text-xs flex-wrap">
-            {(["all", "delivered", "failed", "pending_verification", "scheduled", "cancelled", "ai"] as Tab[]).map((t) => (
+          <div className="grid grid-cols-4 gap-1" aria-label="Sent email filters">
+            {(["all", "delivered", "failed", "pending_verification", "scheduled", "cancelled", "ai"] as Tab[]).map((status) => (
               <button
-                key={t}
-                onClick={() => setTab(t)}
-                className={`px-2 py-0.5 rounded-md font-medium capitalize transition-colors ${
-                  tab === t
-                    ? "bg-accent text-accent-foreground"
-                    : "text-muted-foreground hover:bg-accent/50"
+                key={status}
+                onClick={() => setTab(status)}
+                className={`h-7 min-w-0 rounded-md px-1 text-[10px] font-medium transition-colors ${
+                  tab === status
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
                 }`}
               >
-                {t === "ai" ? "AI Drafts" : t === "pending_verification" ? "Verify" : t}
+                <span className="block truncate">
+                  {status === "ai" ? "AI drafts" : status === "pending_verification" ? "Verify" : status}
+                </span>
               </button>
             ))}
           </div>
 
-          {/* Search */}
           <div className="relative">
-            <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
+            <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
             <input
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(event) => setSearch(event.target.value)}
               placeholder="Search sent emails..."
-              className="w-full text-xs pl-7 pr-2 h-7 rounded-md border border-border bg-background outline-none focus:border-primary/40"
+              className="h-8 w-full rounded-md border border-border bg-muted/30 pl-8 pr-3 text-xs outline-none transition-colors focus:border-primary/40 focus:bg-background"
             />
           </div>
         </div>
-
         {/* Email list */}
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full thin-scroll">
@@ -194,11 +216,16 @@ export function Email() {
                 active={selectedId === e.id}
                 onClick={() => setSelectedId(e.id)}
                 onDelete={async () => {
-                  await fetch(`/api/emails/${e.id}`, { method: "DELETE" })
-                  toast.success("Email deleted")
-                  if (selectedId === e.id) setSelectedId(null)
-                  qc.invalidateQueries({ queryKey: ["emails"] })
-                  qc.invalidateQueries({ queryKey: ["stats"] })
+                  if (!window.confirm("Delete this email record? This cannot be undone.")) return
+                  try {
+                    await apiRequest(`/api/emails/${e.id}`, { method: "DELETE" })
+                    toast.success("Email record deleted")
+                    if (selectedId === e.id) setSelectedId(null)
+                    qc.invalidateQueries({ queryKey: ["emails"] })
+                    qc.invalidateQueries({ queryKey: ["stats"] })
+                  } catch (error) {
+                    toast.error("Email could not be deleted", { description: getErrorMessage(error) })
+                  }
                 }}
               />
             ))}
@@ -220,15 +247,15 @@ export function Email() {
             <EmailDetailPanel id={selectedId} />
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-3">
+          <div className="flex h-full w-full flex-col items-center justify-start overflow-auto px-6 pt-14 text-center space-y-3">
             <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
               <Send className="h-7 w-7 text-primary" />
             </div>
             <div className="space-y-1">
-              <h3 className="text-sm font-medium">Sent Emails</h3>
+              <h3 className="text-sm font-medium">Email activity</h3>
               <p className="text-xs text-muted-foreground max-w-sm">
-                All emails sent from Memex appear here. AI-generated emails require
-                human verification before sending. Failed emails can be resent.
+                Delivered, scheduled, failed, and locally saved messages appear here.
+                Connect Google, Microsoft, or a verified SMTP account before relying on delivery.
               </p>
             </div>
             <div className="flex gap-2">
@@ -300,7 +327,9 @@ function EmailListItem({
             To: {email.toAddress}
           </div>
           {email.errorMessage && (
-            <div className="text-[10px] text-red-500 truncate mt-0.5">⚠ {email.errorMessage}</div>
+            <div className={`text-[10px] truncate mt-0.5 ${email.status === "saved" ? "text-amber-600 dark:text-amber-400" : "text-red-500"}`}>
+              {email.status === "saved" ? "Not sent: " : "Error: "}{email.errorMessage}
+            </div>
           )}
           <div className="flex items-center gap-1 mt-1">
             <Badge variant="outline" className={`text-[9px] h-4 ${cat.bg} ${cat.color} border-0`}>
@@ -334,13 +363,21 @@ function EmailDetailPanel({ id }: { id: string }) {
   const [verifying, setVerifying] = useState(false)
   const [resending, setResending] = useState(false)
 
-  const { data, isLoading } = useQuery<{ email: EmailData }>({
+  const detailQuery = useQuery<{ email: EmailData }>({
     queryKey: ["email", id],
-    queryFn: async () => {
-      const r = await fetch(`/api/emails/${id}`)
-      return r.json()
-    },
+    queryFn: () => apiRequest(`/api/emails/${id}`),
   })
+  const { data, isLoading } = detailQuery
+
+  if (detailQuery.isError) {
+    return (
+      <SectionError
+        title="Email details could not be loaded"
+        error={detailQuery.error}
+        onRetry={() => detailQuery.refetch()}
+      />
+    )
+  }
 
   if (isLoading || !data) {
     return (
@@ -357,17 +394,23 @@ function EmailDetailPanel({ id }: { id: string }) {
   const handleVerify = async () => {
     setVerifying(true)
     try {
-      const r = await fetch(`/api/emails/${id}/verify`, { method: "POST" })
-      const d = await r.json()
-      if (r.ok && d.delivered) {
-        toast.success(d.message || "Email sent and verified ✓")
+      const d = await apiRequest<{ delivered?: boolean; status?: string; message?: string }>(
+        `/api/emails/${id}/verify`,
+        { method: "POST" }
+      )
+      if (d.delivered) {
+        toast.success(d.message || "Email sent")
+      } else if (d.status === "scheduled") {
+        toast.success("Email verified and scheduled", { description: d.message })
       } else {
-        toast.error(d.message || d.error || "Verification/send failed")
+        toast.info("Email saved locally", {
+          description: d.message || "Connect SMTP before trying to send it.",
+        })
       }
       qc.invalidateQueries({ queryKey: ["email", id] })
       qc.invalidateQueries({ queryKey: ["emails"] })
-    } catch (e: any) {
-      toast.error(e.message || "Verification failed")
+    } catch (error) {
+      toast.error("Verification failed", { description: getErrorMessage(error) })
     } finally {
       setVerifying(false)
     }
@@ -376,31 +419,36 @@ function EmailDetailPanel({ id }: { id: string }) {
   const handleResend = async () => {
     setResending(true)
     try {
-      const r = await fetch(`/api/emails/${id}/resend`, { method: "POST" })
-      const d = await r.json()
-      if (r.ok && d.delivered) {
-        toast.success(d.message || "Email resent ✓")
+      const d = await apiRequest<{ delivered?: boolean; message?: string }>(
+        `/api/emails/${id}/resend`,
+        { method: "POST" }
+      )
+      if (d.delivered) {
+        toast.success(d.message || "Email sent")
       } else {
-        toast.error(d.message || d.error || "Resend failed")
+        toast.info("Email remains local", {
+          description: d.message || "Connect SMTP before trying again.",
+        })
       }
       qc.invalidateQueries({ queryKey: ["email", id] })
       qc.invalidateQueries({ queryKey: ["emails"] })
-    } catch (e: any) {
-      toast.error(e.message || "Resend failed")
+    } catch (error) {
+      toast.error("Resend failed", { description: getErrorMessage(error) })
     } finally {
       setResending(false)
     }
   }
 
   const handleCancel = async () => {
-    const r = await fetch(`/api/emails/${id}/cancel`, { method: "POST" })
-    const d = await r.json()
-    if (r.ok) {
+    try {
+      const d = await apiRequest<{ message?: string }>(`/api/emails/${id}/cancel`, {
+        method: "POST",
+      })
       toast.success(d.message || "Email cancelled")
       qc.invalidateQueries({ queryKey: ["email", id] })
       qc.invalidateQueries({ queryKey: ["emails"] })
-    } else {
-      toast.error(d.error || "Cancel failed")
+    } catch (error) {
+      toast.error("Cancel failed", { description: getErrorMessage(error) })
     }
   }
 
@@ -454,11 +502,13 @@ function EmailDetailPanel({ id }: { id: string }) {
 
         {/* Error message */}
         {e.errorMessage && (
-          <div className="rounded-md border border-red-500/30 bg-red-500/5 p-3">
+          <div className={`rounded-md border p-3 ${e.status === "saved" ? "border-amber-500/30 bg-amber-500/5" : "border-red-500/30 bg-red-500/5"}`}>
             <div className="flex items-start gap-2">
-              <AlertTriangle className="h-4 w-4 text-red-500 shrink-0 mt-0.5" />
+              <AlertTriangle className={`h-4 w-4 shrink-0 mt-0.5 ${e.status === "saved" ? "text-amber-500" : "text-red-500"}`} />
               <div>
-                <div className="text-xs font-medium text-red-500">Error</div>
+                <div className={`text-xs font-medium ${e.status === "saved" ? "text-amber-600 dark:text-amber-400" : "text-red-500"}`}>
+                  {e.status === "saved" ? "Not sent" : "Delivery error"}
+                </div>
                 <p className="text-xs text-muted-foreground mt-0.5">{e.errorMessage}</p>
               </div>
             </div>
@@ -524,7 +574,7 @@ function EmailDetailPanel({ id }: { id: string }) {
 
         {/* Quick actions */}
         <div className="flex flex-wrap gap-2">
-          {(e.status === "failed" || e.status === "cancelled") && (
+          {(e.status === "failed" || e.status === "cancelled" || e.status === "saved") && (
             <Button size="sm" variant="outline" onClick={handleResend} disabled={resending}>
               {resending ? <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" /> : <RotateCw className="h-3.5 w-3.5 mr-1" />}
               Resend

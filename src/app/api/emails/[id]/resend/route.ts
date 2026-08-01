@@ -14,12 +14,12 @@ export async function POST(
   const { id } = await params
   const result = await executeSend(id, auth.user.id)
 
-  if (result.delivered) {
+  if (result.delivered || result.status === "saved") {
     return NextResponse.json({
       ...result,
-      message: result.realSend
-        ? "Email resent successfully ✓"
-        : "Email saved locally (no SMTP credentials)",
+      message: result.delivered
+        ? "Email accepted by the connected SMTP server."
+        : "No mail provider is connected. The email remains saved locally and was not sent.",
     })
   } else {
     return NextResponse.json({

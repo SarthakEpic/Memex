@@ -21,23 +21,32 @@ import {
   ChevronRight,
   LogOut,
   UserCircle,
+  MoreHorizontal,
 } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { toast } from "sonner"
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { useMemex } from "./store"
 import { ThemeToggle } from "./theme-toggle"
 import { useDevice } from "@/hooks/use-device"
-import type { Section, StatsData, EmailAccountData } from "./types"
+import type { Section, StatsData } from "./types"
 
 // Top-level nav (non-email sections)
 const TOP_NAV: { id: Section; label: string; icon: React.ElementType; desc: string }[] = [
-  { id: "dashboard", label: "Dashboard", icon: LayoutDashboard, desc: "Retrieval health" },
-  { id: "chat", label: "Chat", icon: MessageSquare, desc: "Smart assistant" },
-  { id: "notes", label: "Notes", icon: FileText, desc: "Markdown ingestion" },
-  { id: "decisions", label: "Decisions", icon: Brain, desc: "Extracted rationale" },
-  { id: "timeline", label: "Timeline", icon: ScrollText, desc: "Chronological view" },
-  { id: "analytics", label: "Analytics", icon: BarChart3, desc: "Citation insights" },
+  { id: "dashboard", label: "Home", icon: LayoutDashboard, desc: "Workspace overview" },
+  { id: "chat", label: "Chat", icon: MessageSquare, desc: "Source-backed assistant" },
+  { id: "notes", label: "Notes", icon: FileText, desc: "Knowledge base" },
+  { id: "decisions", label: "Decisions", icon: Brain, desc: "Recorded rationale" },
+  { id: "timeline", label: "Timeline", icon: ScrollText, desc: "Activity history" },
+  { id: "analytics", label: "Analytics", icon: BarChart3, desc: "Usage insights" },
 ]
 
 // Email sub-sections (under "Email" parent)
@@ -56,10 +65,7 @@ export function Sidebar() {
 
   const { data: stats } = useQuery<StatsData>({
     queryKey: ["stats"],
-    queryFn: async () => {
-      const r = await fetch("/api/stats")
-      return r.json()
-    },
+    queryFn: () => apiRequest("/api/stats"),
   })
 
   const { data: auth } = useQuery<{ user: { name: string; email: string } | null }>({
@@ -71,11 +77,15 @@ export function Sidebar() {
     },
   })
 
-  const emailBadge = stats?.counts.emails ?? 0
+  const emailBadge = stats?.counts?.unreadInbox ?? 0
 
   const logout = async () => {
-    await fetch("/api/auth/logout", { method: "POST" })
-    window.location.href = "/login"
+    try {
+      await apiRequest("/api/auth/logout", { method: "POST" })
+      window.location.href = "/login"
+    } catch (error) {
+      toast.error("Could not sign out", { description: getErrorMessage(error) })
+    }
   }
 
   return (
@@ -266,7 +276,7 @@ export function Sidebar() {
             <span>Loading…</span>
           )}
           <div className="flex items-center gap-1 shrink-0">
-            <span title="Data encrypted locally">
+            <span title="Email credentials encrypted at rest">
               <Shield className="h-3 w-3 text-emerald-500" />
             </span>
             <button
@@ -292,14 +302,21 @@ export function MobileNav() {
   // Don't render anything on desktop/tablet — they use the sidebar
   if (!isMobile) return null
 
-  // Primary nav items — "Email" label instead of "Inbox" on mobile
   const MOBILE_NAV = [
     { id: "dashboard" as Section, icon: LayoutDashboard, label: "Home" },
     { id: "chat" as Section, icon: MessageSquare, label: "Chat" },
     { id: "notes" as Section, icon: FileText, label: "Notes" },
     { id: "inbox" as Section, icon: Inbox, label: "Email" },
-    { id: "settings" as Section, icon: Settings, label: "More" },
   ]
+
+  const MORE_NAV = [
+    { id: "decisions" as Section, icon: Brain, label: "Decisions" },
+    { id: "timeline" as Section, icon: ScrollText, label: "Timeline" },
+    { id: "analytics" as Section, icon: BarChart3, label: "Analytics" },
+    { id: "email" as Section, icon: Send, label: "Sent" },
+    { id: "settings" as Section, icon: Settings, label: "Settings" },
+  ]
+  const moreActive = MORE_NAV.some((item) => item.id === section)
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-50 border-t border-border bg-background/95 backdrop-blur-lg safe-area-pb">
@@ -323,6 +340,35 @@ export function MobileNav() {
             </button>
           )
         })}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              className={cn(
+                "flex min-w-[56px] flex-col items-center gap-0.5 rounded-md px-2 py-1 transition-colors",
+                moreActive ? "text-primary" : "text-muted-foreground"
+              )}
+              aria-label="More sections"
+            >
+              <MoreHorizontal className="h-5 w-5" />
+              <span className="text-[9px] font-medium">More</span>
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" side="top" className="mb-2 w-44">
+            {MORE_NAV.map((item) => {
+              const Icon = item.icon
+              return (
+                <DropdownMenuItem
+                  key={item.id}
+                  onClick={() => setSection(item.id)}
+                  className="cursor-pointer"
+                >
+                  <Icon className="mr-2 h-4 w-4" />
+                  {item.label}
+                </DropdownMenuItem>
+              )
+            })}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </div>
   )

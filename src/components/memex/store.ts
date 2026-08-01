@@ -16,6 +16,19 @@ interface MemexState {
   section: Section
   setSection: (s: Section) => void
 
+  // Notes
+  activeNoteId: string | null
+  setActiveNote: (id: string | null) => void
+  openNote: (id: string) => void
+  noteComposerOpen: boolean
+  openNoteComposer: () => void
+  closeNoteComposer: () => void
+
+  // Decisions
+  activeDecisionId: string | null
+  setActiveDecision: (id: string | null) => void
+  openDecision: (id: string) => void
+
   // Source panel (chunk viewer)
   sourceChunkId: string | null
   openSource: (chunkId: string) => void
@@ -43,6 +56,17 @@ interface MemexState {
 export const useMemex = create<MemexState>((set) => ({
   section: "dashboard",
   setSection: (s) => set({ section: s }),
+
+  activeNoteId: null,
+  setActiveNote: (id) => set({ activeNoteId: id }),
+  openNote: (id) => set({ section: "notes", activeNoteId: id }),
+  noteComposerOpen: false,
+  openNoteComposer: () => set({ section: "notes", noteComposerOpen: true }),
+  closeNoteComposer: () => set({ noteComposerOpen: false }),
+
+  activeDecisionId: null,
+  setActiveDecision: (id) => set({ activeDecisionId: id }),
+  openDecision: (id) => set({ section: "decisions", activeDecisionId: id }),
 
   sourceChunkId: null,
   openSource: (chunkId) => set({ sourceChunkId: chunkId }),

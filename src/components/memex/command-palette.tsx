@@ -28,6 +28,7 @@ import {
 } from "lucide-react"
 import { useTheme } from "next-themes"
 import { useQuery } from "@tanstack/react-query"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
 import { useMemex } from "./store"
 import type { NoteSummary, DecisionSummary, Section } from "./types"
 
@@ -48,6 +49,8 @@ export function CommandPalette() {
   const setSection = useMemex((s) => s.setSection)
   const openEmail = useMemex((s) => s.openEmailComposer)
   const setActiveSession = useMemex((s) => s.setActiveSession)
+  const openNote = useMemex((s) => s.openNote)
+  const openDecision = useMemex((s) => s.openDecision)
 
   // Cmd+K / Ctrl+K to toggle
   useEffect(() => {
@@ -64,18 +67,13 @@ export function CommandPalette() {
   // Load notes + decisions for search (only when open)
   const { data: notesData } = useQuery<{ notes: NoteSummary[] }>({
     queryKey: ["notes"],
-    queryFn: async () => {
-      const r = await fetch("/api/notes")
-      return r.json()
-    },
+    queryFn: () => apiRequest<{ notes: NoteSummary[] }>("/api/notes"),
     enabled: open,
   })
   const { data: decisionsData } = useQuery<{ decisions: DecisionSummary[] }>({
     queryKey: ["decisions-all"],
-    queryFn: async () => {
-      const r = await fetch("/api/decisions")
-      return r.json()
-    },
+    queryFn: () =>
+      apiRequest<{ decisions: DecisionSummary[] }>("/api/decisions"),
     enabled: open,
   })
 
@@ -85,7 +83,7 @@ export function CommandPalette() {
   }
 
   const navItems: CommandItemDef[] = [
-    { id: "nav-dash", label: "Dashboard", hint: "Retrieval health", icon: LayoutDashboard, group: "navigation", action: () => navTo("dashboard"), keywords: "home overview stats" },
+    { id: "nav-dash", label: "Home", hint: "Workspace overview", icon: LayoutDashboard, group: "navigation", action: () => navTo("dashboard"), keywords: "home overview stats" },
     { id: "nav-chat", label: "Chat", hint: "Smart assistant", icon: MessageSquare, group: "navigation", action: () => { setActiveSession(null); navTo("chat") }, keywords: "ask question answer" },
     { id: "nav-notes", label: "Notes", hint: "Markdown ingestion", icon: FileText, group: "navigation", action: () => navTo("notes"), keywords: "documents markdown" },
     { id: "nav-decisions", label: "Decisions", hint: "Extracted rationale", icon: Brain, group: "navigation", action: () => navTo("decisions"), keywords: "why rationale alternatives" },
@@ -117,19 +115,25 @@ export function CommandPalette() {
       action: async () => {
         setOpen(false)
         try {
-          const r = await fetch("/api/emails/digest", {
+          const d = await apiRequest<{
+            skipped?: boolean
+            delivered?: boolean
+            subject?: string
+            message?: string
+          }>("/api/emails/digest", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ force: false }),
           })
-          const d = await r.json()
           if (d.skipped) {
             window.dispatchEvent(new CustomEvent("memex-toast", { detail: { type: "info", title: "No new activity", desc: "Nothing to digest from the last 24 hours." } }))
-          } else {
+          } else if (d.delivered) {
             window.dispatchEvent(new CustomEvent("memex-toast", { detail: { type: "success", title: "Digest delivered", desc: d.subject } }))
+          } else {
+            window.dispatchEvent(new CustomEvent("memex-toast", { detail: { type: "info", title: "Digest saved locally", desc: d.message || "Connect SMTP to deliver it." } }))
           }
-        } catch {
-          window.dispatchEvent(new CustomEvent("memex-toast", { detail: { type: "error", title: "Digest failed" } }))
+        } catch (error) {
+          window.dispatchEvent(new CustomEvent("memex-toast", { detail: { type: "error", title: "Digest failed", desc: getErrorMessage(error) } }))
         }
       },
       keywords: "digest daily summary",
@@ -148,7 +152,7 @@ export function CommandPalette() {
     hint: n.project,
     icon: FileText,
     group: "notes" as const,
-    action: () => navTo("notes"),
+    action: () => { openNote(n.id); setOpen(false) },
     keywords: n.tags.join(" "),
   }))
 
@@ -159,7 +163,7 @@ export function CommandPalette() {
     hint: d.project,
     icon: Brain,
     group: "decisions" as const,
-    action: () => navTo("decisions"),
+    action: () => { openDecision(d.id); setOpen(false) },
     keywords: d.rationale.slice(0, 80),
   }))
 

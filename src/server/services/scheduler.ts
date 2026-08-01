@@ -1,6 +1,7 @@
 import { db } from "@/lib/db"
 import { buildDigestBody, executeSend, sendEmail } from "@/lib/email"
 import { deleteExpiredAuthTokens } from "@/server/auth/tokens"
+import { processInboxAnalysisQueue } from "@/server/email/analysis-pipeline"
 
 function startOfToday(): Date {
   const date = new Date()
@@ -99,13 +100,15 @@ export async function processDailyDigestsForAllUsers(): Promise<{
 export async function runProductionScheduler(): Promise<{
   scheduledEmails: Awaited<ReturnType<typeof processDueScheduledEmailsForAllUsers>>
   dailyDigests: Awaited<ReturnType<typeof processDailyDigestsForAllUsers>>
+  inboxAnalysis: Awaited<ReturnType<typeof processInboxAnalysisQueue>>
   expiredAuthTokensDeleted: number
 }> {
-  const [scheduledEmails, dailyDigests, expiredAuthTokensDeleted] = await Promise.all([
+  const [scheduledEmails, dailyDigests, inboxAnalysis, expiredAuthTokensDeleted] = await Promise.all([
     processDueScheduledEmailsForAllUsers(),
     processDailyDigestsForAllUsers(),
+    processInboxAnalysisQueue({ maxBatches: 1 }),
     deleteExpiredAuthTokens(),
   ])
 
-  return { scheduledEmails, dailyDigests, expiredAuthTokensDeleted }
+  return { scheduledEmails, dailyDigests, inboxAnalysis, expiredAuthTokensDeleted }
 }

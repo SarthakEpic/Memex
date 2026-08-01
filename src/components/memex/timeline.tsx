@@ -14,8 +14,12 @@ import {
   Mail,
   Loader2,
   Inbox,
+  ArrowRight,
+  Plus,
 } from "lucide-react"
+import { apiRequest } from "@/lib/client-api"
 import { useMemex } from "./store"
+import { SectionError } from "./section-state"
 import type { TimelineEvent } from "./types"
 
 export function Timeline() {
@@ -23,19 +27,35 @@ export function Timeline() {
   const [dateFrom, setDateFrom] = useState<string>("")
   const [dateTo, setDateTo] = useState<string>("")
   const [showDateFilter, setShowDateFilter] = useState(false)
-  const setSection = useMemex((s) => s.setSection)
-  const openSource = useMemex((s) => s.openSource)
+  const openNote = useMemex((state) => state.openNote)
+  const openDecision = useMemex((state) => state.openDecision)
+  const openNoteComposer = useMemex((state) => state.openNoteComposer)
 
   const params = new URLSearchParams()
   if (project) params.set("project", project)
 
-  const { data, isLoading } = useQuery<{ events: TimelineEvent[] }>({
+  const {
+    data,
+    isLoading,
+    error,
+    refetch,
+  } = useQuery<{ events: TimelineEvent[] }>({
     queryKey: ["timeline", project],
-    queryFn: async () => {
-      const r = await fetch(`/api/timeline?${params.toString()}`)
-      return r.json()
-    },
+    queryFn: () =>
+      apiRequest<{ events: TimelineEvent[] }>(
+        `/api/timeline?${params.toString()}`
+      ),
   })
+
+  if (error) {
+    return (
+      <SectionError
+        title="Timeline could not be loaded"
+        error={error}
+        onRetry={() => void refetch()}
+      />
+    )
+  }
 
   const allEvents = data?.events ?? []
   const projects = Array.from(new Set(allEvents.map((e) => e.project)))
@@ -45,7 +65,7 @@ export function Timeline() {
     if (!dateFrom && !dateTo) return true
     const eventDate = new Date(e.timestamp).getTime()
     if (dateFrom && eventDate < new Date(dateFrom).getTime()) return false
-    if (dateTo && eventDate > new Date(dateTo).getTime() + 86400000) return false // include full day
+    if (dateTo && eventDate >= new Date(dateTo).getTime() + 86400000) return false // include full day
     return true
   })
 
@@ -59,7 +79,7 @@ export function Timeline() {
         <div className="flex items-center justify-between gap-2">
           <h2 className="text-sm font-semibold flex items-center gap-2">
             <Calendar className="h-4 w-4 text-primary" />
-            Decision timeline
+            Activity timeline
           </h2>
           <div className="flex items-center gap-2">
             <Button
@@ -141,8 +161,12 @@ export function Timeline() {
               <Inbox className="h-8 w-8 text-muted-foreground/40 mx-auto" />
               <p className="text-sm font-medium">No timeline events</p>
               <p className="text-xs text-muted-foreground">
-                Ingest notes to populate the timeline.
+                Add a note to start your workspace history.
               </p>
+              <Button size="sm" className="mt-2" onClick={openNoteComposer}>
+                <Plus className="mr-1.5 h-3.5 w-3.5" />
+                Add note
+              </Button>
             </div>
           )}
 
@@ -159,10 +183,9 @@ export function Timeline() {
                     <TimelineEventCard
                       key={`${e.type}-${e.id}`}
                       event={e}
-                      onOpenSource={() => {
-                        // For decisions we don't have chunkId directly; navigate to decisions
-                        setSection("decisions")
-                      }}
+                      onOpen={() =>
+                        e.type === "note" ? openNote(e.id) : openDecision(e.id)
+                      }
                     />
                   ))}
                 </div>
@@ -178,10 +201,10 @@ export function Timeline() {
 
 function TimelineEventCard({
   event,
-  onOpenSource,
+  onOpen,
 }: {
   event: TimelineEvent
-  onOpenSource: () => void
+  onOpen: () => void
 }) {
   const openEmail = useMemex((s) => s.openEmailComposer)
   const isDecision = event.type === "decision"
@@ -251,12 +274,22 @@ function TimelineEventCard({
               )}
             </div>
 
-            <Button
-              size="sm"
-              variant="ghost"
-              className="h-7 text-[10px] shrink-0"
-              onClick={() =>
-                openEmail({
+            <div className="flex shrink-0 items-center gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-[10px]"
+                onClick={onOpen}
+              >
+                Open
+                <ArrowRight className="ml-1 h-3 w-3" />
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 text-[10px]"
+                onClick={() =>
+                  openEmail({
                   subject: isDecision
                     ? `Decision: ${event.title}`
                     : `Note: ${event.title}`,
@@ -266,10 +299,11 @@ function TimelineEventCard({
                   sourceType: isDecision ? "decision" : "note",
                   sourceId: event.id,
                 })
-              }
-            >
-              <Mail className="h-3 w-3" />
-            </Button>
+                }
+              >
+                <Mail className="h-3 w-3" />
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>

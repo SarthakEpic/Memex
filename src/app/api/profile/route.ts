@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { ensureUserWorkspace } from "@/server/auth/defaults"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { profileUpdateSchema, validationError } from "@/server/validation/api"
 
 // GET /api/profile — current user profile + email settings + security settings
 export async function GET(req: NextRequest) {
@@ -23,48 +24,18 @@ export async function PATCH(req: NextRequest) {
   if (isAuthFailure(auth)) return auth.response
 
   const body = await req.json().catch(() => ({}))
-  const {
-    email,
-    name,
-    smtpHost,
-    smtpPort,
-    smtpUser,
-    dailyDigest,
-    digestHour,
-    dataEncryption,
-    llmPrivacyMode,
-    autoDeleteDays,
-  } = body as {
-    email?: string
-    name?: string
-    smtpHost?: string
-    smtpPort?: number
-    smtpUser?: string
-    dailyDigest?: boolean
-    digestHour?: number
-    dataEncryption?: boolean
-    llmPrivacyMode?: boolean
-    autoDeleteDays?: number
+  const parsed = profileUpdateSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
-
-  const data: any = {}
-  if (email !== undefined) data.email = email
-  if (name !== undefined) data.name = name
-  if (smtpHost !== undefined) data.smtpHost = smtpHost
-  if (smtpPort !== undefined) data.smtpPort = smtpPort
-  if (smtpUser !== undefined) data.smtpUser = smtpUser
-  if (dailyDigest !== undefined) data.dailyDigest = dailyDigest
-  if (digestHour !== undefined) data.digestHour = digestHour
-  if (dataEncryption !== undefined) data.dataEncryption = dataEncryption
-  if (llmPrivacyMode !== undefined) data.llmPrivacyMode = llmPrivacyMode
-  if (autoDeleteDays !== undefined) data.autoDeleteDays = autoDeleteDays
+  const data = parsed.data
 
   const profile = await db.profile.upsert({
     where: { userId: auth.user.id },
     create: {
       userId: auth.user.id,
-      email: email || auth.user.email,
-      name: name || auth.user.name || "Memex User",
+      email: auth.user.email,
+      name: data.name || auth.user.name || "Memex User",
       ...data,
     },
     update: data,

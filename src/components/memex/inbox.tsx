@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useDeferredValue, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Card, CardContent } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
@@ -10,6 +10,18 @@ import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover"
 import {
   Dialog,
   DialogContent,
@@ -45,6 +57,8 @@ import {
 import { toast } from "sonner"
 import { useMemex } from "./store"
 import { useDevice } from "@/hooks/use-device"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
+import { SectionError } from "./section-state"
 import type { InboxEmailData, EmailAccountData } from "./types"
 
 const CATEGORY_CONFIG: Record<
@@ -59,17 +73,44 @@ const CATEGORY_CONFIG: Record<
 }
 
 type InboxTab = "all" | "urgent" | "important" | "normal" | "newsletter" | "unread"
+type InboxSyncMode = "period" | "count"
+type InboxSyncRange = "day" | "week" | "month" | "year"
+
+const SYNC_RANGE_OPTIONS: Array<{ value: InboxSyncRange; label: string }> = [
+  { value: "day", label: "Past 24 hours" },
+  { value: "week", label: "Past 7 days" },
+  { value: "month", label: "Past 30 days" },
+  { value: "year", label: "Past 12 months" },
+]
+
+const SYNC_COUNT_OPTIONS = [25, 50, 100] as const
+
+type InboxThread = {
+  threadId: string
+  emails: InboxEmailData[]
+  count: number
+}
+
+type InboxResponse = {
+  emails: InboxEmailData[]
+  threads?: InboxThread[]
+  analysis?: Record<string, number>
+}
 
 export function Inbox_() {
   const [tab, setTab] = useState<InboxTab>("all")
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const { isMobile } = useDevice()
   const [syncing, setSyncing] = useState(false)
+  const [syncMode, setSyncMode] = useState<InboxSyncMode>("period")
+  const [syncRange, setSyncRange] = useState<InboxSyncRange>("week")
+  const [syncCount, setSyncCount] = useState<number>(25)
   const [connectOpen, setConnectOpen] = useState(false)
   const [manageOpen, setManageOpen] = useState(false)
   const [briefingOpen, setBriefingOpen] = useState(false)
   const [search, setSearch] = useState("")
   const [threaded, setThreaded] = useState(false)
+  const deferredSearch = useDeferredValue(search)
   const qc = useQueryClient()
 
   const params = new URLSearchParams()
@@ -78,184 +119,272 @@ export function Inbox_() {
   if (tab === "normal") params.set("category", "normal")
   if (tab === "newsletter") params.set("category", "newsletter")
   if (tab === "unread") params.set("unread", "true")
-  if (search) params.set("q", search)
+  if (deferredSearch) params.set("q", deferredSearch)
   if (threaded) params.set("threaded", "true")
 
-  const { data: inboxData, isLoading } = useQuery<{ emails: InboxEmailData[]; threads?: any[] }>({
-    queryKey: ["inbox", tab, search, threaded],
-    queryFn: async () => {
-      const r = await fetch(`/api/inbox?${params.toString()}`)
-      return r.json()
-    },
+  const inboxQuery = useQuery<InboxResponse>({
+    queryKey: ["inbox", tab, deferredSearch, threaded],
+    queryFn: () => apiRequest(`/api/inbox?${params.toString()}`),
   })
+  const { data: inboxData, isLoading } = inboxQuery
 
-  const { data: accountsData } = useQuery<{ accounts: EmailAccountData[] }>({
+  const accountsQuery = useQuery<{ accounts: EmailAccountData[] }>({
     queryKey: ["email-accounts"],
-    queryFn: async () => {
-      const r = await fetch("/api/email-accounts")
-      return r.json()
-    },
+    queryFn: () => apiRequest("/api/email-accounts"),
   })
 
-  const accounts = accountsData?.accounts ?? []
+  const accounts = accountsQuery.data?.accounts ?? []
   const connectedAccounts = accounts.filter((a) => a.connected)
-  const emails = inboxData?.emails ?? []
-  // Check if any account is in real mode (not demo)
-  const hasRealAccount = connectedAccounts.some((a) => (a as any).syncMode === "real")
-  const isDemoMode = connectedAccounts.length > 0 && !hasRealAccount
+  const rawEmails = inboxData?.emails ?? []
+  const pendingAnalysis = (inboxData?.analysis?.queued ?? 0) + (inboxData?.analysis?.processing ?? 0) + (inboxData?.analysis?.deferred ?? 0)
+  const threads = inboxData?.threads ?? []
+  const emails = threaded
+    ? threads.map((thread) => thread.emails[0]).filter((email): email is InboxEmailData => Boolean(email))
+    : rawEmails
+  const threadCounts = new Map(
+    threads
+      .filter((thread) => thread.emails[0])
+      .map((thread) => [thread.emails[0].id, thread.count])
+  )
+  const liveConnectedAccounts = connectedAccounts.filter((account) => account.syncMode === "real" || account.syncMode === "oauth")
+  const hasRealAccount = liveConnectedAccounts.length > 0
+  const hasLegacyDemoAccount = connectedAccounts.some((account) => account.syncMode === "demo")
+  const syncRangeLabel = SYNC_RANGE_OPTIONS.find((option) => option.value === syncRange)?.label ?? "selected range"
+  const lastSyncAt = liveConnectedAccounts
+    .map((account) => account.lastSyncAt ? new Date(account.lastSyncAt) : null)
+    .filter((date): date is Date => date !== null && !Number.isNaN(date.getTime()))
+    .sort((a, b) => b.getTime() - a.getTime())[0]
 
   const handleSync = async () => {
-    if (connectedAccounts.length === 0) {
+    if (!hasRealAccount) {
       setConnectOpen(true)
       return
     }
     setSyncing(true)
     try {
-      const r = await fetch("/api/inbox/refresh", {
+      const d = await apiRequest<{
+        added: number
+        message?: string
+        warning?: string
+        analysisQueued?: number
+      }>("/api/inbox/refresh", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ count: 5 }),
+        body: JSON.stringify(
+          syncMode === "period"
+            ? { scope: "period", range: syncRange }
+            : { scope: "count", count: syncCount }
+        ),
       })
-      const d = await r.json()
-      if (d.added > 0) {
-        toast.success(d.message)
+      if (d.warning) {
+        toast.warning(d.warning, { description: d.message })
+      } else if (d.added > 0) {
+        toast.success(d.message || `Synced ${d.added} new emails.`)
       } else {
-        toast.info("No new emails found.")
+        toast.info(d.message || "Inbox is up to date.")
       }
       qc.invalidateQueries({ queryKey: ["inbox"] })
-    } catch {
-      toast.error("Sync failed")
+      qc.invalidateQueries({ queryKey: ["email-accounts"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+      if ((d.analysisQueued ?? 0) > 0) {
+        window.setTimeout(() => qc.invalidateQueries({ queryKey: ["inbox"] }), 4_000)
+      }
+    } catch (error) {
+      toast.error("Sync failed", { description: getErrorMessage(error) })
     } finally {
       setSyncing(false)
     }
   }
 
+  if (inboxQuery.isError || accountsQuery.isError) {
+    const failedQuery = inboxQuery.isError ? inboxQuery : accountsQuery
+    return (
+      <SectionError
+        title="Inbox could not be loaded"
+        error={failedQuery.error}
+        onRetry={() => {
+          inboxQuery.refetch()
+          accountsQuery.refetch()
+        }}
+      />
+    )
+  }
+
   return (
     <div className="flex h-full">
       {/* List — hidden entirely when no emails and no account (empty state takes full width) */}
-      <div className={`${(emails.length === 0 && connectedAccounts.length === 0) ? "hidden" : selectedId && isMobile ? "hidden" : "flex"} w-full lg:w-96 shrink-0 flex-col border-r border-border`}>
-        {/* Header — clean, well-spaced */}
-        <div className="p-4 border-b border-border space-y-3">
+      <div className={`${(emails.length === 0 && connectedAccounts.length === 0) ? "hidden" : selectedId && isMobile ? "hidden" : "flex"} w-full lg:w-[420px] xl:w-[440px] shrink-0 flex-col border-r border-border`}>
+        {/* Stable sidebar controls: title, categories, sync scope, then search. */}
+        <div className="border-b border-border p-3 space-y-3">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2.5">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary/10">
+            <div className="flex min-w-0 items-center gap-2.5">
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10">
                 <Inbox className="h-4 w-4 text-primary" />
               </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <h2 className="text-sm font-semibold">Smart Inbox</h2>
-                  {isDemoMode && (
-                    <Badge className="text-[9px] gap-0.5 bg-amber-500 hover:bg-amber-500" title="Demo mode — sample emails">
-                      <Sparkles className="h-2.5 w-2.5" />
-                      Demo
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <h2 className="truncate text-sm font-semibold">Smart Inbox</h2>
+                  {hasLegacyDemoAccount && (
+                    <Badge className="h-4 gap-0.5 bg-amber-500 text-[9px] hover:bg-amber-500" title="Reconnect this legacy sample account using OAuth or advanced IMAP.">
+                      <AlertCircle className="h-2.5 w-2.5" />
+                      Reconnect
                     </Badge>
                   )}
                   {hasRealAccount && (
-                    <Badge className="text-[9px] gap-0.5 bg-emerald-600 hover:bg-emerald-600" title="Real IMAP connected">
+                    <Badge className="h-4 gap-0.5 bg-emerald-600 text-[9px] hover:bg-emerald-600" title="Live email account connected">
                       <Wifi className="h-2.5 w-2.5" />
                       Live
                     </Badge>
                   )}
+                  {pendingAnalysis > 0 && (
+                    <Badge variant="secondary" className="h-4 gap-0.5 text-[9px]" title="Messages waiting for paced AI organization">
+                      <Loader2 className="h-2.5 w-2.5 animate-spin" />
+                      AI {pendingAnalysis}
+                    </Badge>
+                  )}
                 </div>
-                <p className="text-[10px] text-muted-foreground">
-                  {connectedAccounts.length > 0
-                    ? `${connectedAccounts.length} account${connectedAccounts.length !== 1 ? "s" : ""} connected · AI-analyzed`
-                    : "No account connected"}
+                <p className="truncate text-[10px] text-muted-foreground">
+                  {hasRealAccount
+                    ? `${liveConnectedAccounts.length} live account${liveConnectedAccounts.length !== 1 ? "s" : ""}`
+                    : hasLegacyDemoAccount
+                      ? "Reconnect a legacy sample account"
+                      : "No account connected"}
                 </p>
               </div>
             </div>
-            <div className="flex gap-1">
+            <div className="flex shrink-0 items-center gap-0.5">
               {connectedAccounts.length > 0 && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-xs"
-                  onClick={() => setManageOpen(true)}
-                  title="Manage connected accounts"
-                >
+                <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setManageOpen(true)} title="Manage connected accounts" aria-label="Manage connected accounts">
                   <Wifi className="h-3.5 w-3.5" />
                 </Button>
               )}
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs"
-                onClick={() => setConnectOpen(true)}
-                title="Connect email account"
-              >
+              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setConnectOpen(true)} title="Connect email account" aria-label="Connect email account">
                 <Plus className="h-3.5 w-3.5" />
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-xs"
-                onClick={() => setBriefingOpen(true)}
-                title="Daily AI email briefing"
-              >
+              <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => setBriefingOpen(true)} title="Daily AI email briefing" aria-label="Daily AI email briefing">
                 <Sparkles className="h-3.5 w-3.5" />
               </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-7 text-xs"
-                onClick={handleSync}
-                disabled={syncing}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-5 gap-1" aria-label="Inbox categories">
+            {(["all", "urgent", "important", "unread", "newsletter"] as InboxTab[]).map((category) => (
+              <button
+                key={category}
+                onClick={() => setTab(category)}
+                className={`h-7 min-w-0 rounded-md px-1 text-[10px] font-medium capitalize transition-colors ${
+                  tab === category
+                    ? "bg-primary text-primary-foreground"
+                    : "text-muted-foreground hover:bg-accent hover:text-foreground"
+                }`}
               >
-                {syncing ? (
-                  <Loader2 className="h-3.5 w-3.5 mr-1 animate-spin" />
-                ) : (
-                  <RefreshCw className="h-3.5 w-3.5 mr-1" />
-                )}
-                Sync
-              </Button>
-            </div>
+                <span className="block truncate">{category}</span>
+              </button>
+            ))}
           </div>
 
-          {/* Category tabs + search + threads — compact row */}
-          <div className="flex items-center gap-2 flex-wrap">
-            <div className="flex gap-1 text-[11px] flex-1 min-w-0 overflow-x-auto thin-scroll">
-              {(["all", "urgent", "important", "unread", "newsletter"] as InboxTab[]).map((t) => (
-                <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`px-2.5 py-1 rounded-md font-medium capitalize shrink-0 transition-colors ${
-                    tab === t
-                      ? "bg-primary text-primary-foreground"
-                      : "text-muted-foreground hover:bg-accent hover:text-foreground"
-                  }`}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Search + Thread toggle */}
-          <div className="flex items-center gap-2">
-            <div className="relative flex-1">
+          <div className="flex items-center gap-1.5">
+            <div className="relative min-w-0 flex-1">
               <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
               <input
                 value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                onChange={(event) => setSearch(event.target.value)}
                 placeholder="Search inbox..."
-                className="w-full text-xs pl-8 pr-3 h-8 rounded-md border border-border bg-muted/30 outline-none focus:border-primary/40 focus:bg-background transition-colors"
+                className="h-8 w-full rounded-md border border-border bg-muted/30 pl-8 pr-3 text-xs outline-none transition-colors focus:border-primary/40 focus:bg-background"
               />
             </div>
             <button
               onClick={() => setThreaded(!threaded)}
-              className={`flex items-center gap-1 text-[10px] px-2.5 py-1.5 rounded-md border transition-colors shrink-0 ${
+              className={`flex h-8 shrink-0 items-center gap-1 rounded-md border px-2 text-[10px] transition-colors ${
                 threaded
-                  ? "bg-primary text-primary-foreground border-primary"
-                  : "border-border text-muted-foreground hover:text-foreground hover:bg-accent"
+                  ? "border-primary bg-primary text-primary-foreground"
+                  : "border-border text-muted-foreground hover:bg-accent hover:text-foreground"
               }`}
               title="Group emails by conversation"
+              aria-label="Group emails by conversation"
             >
               <Mail className="h-3 w-3" />
               Threads
             </button>
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 shrink-0 gap-1.5 px-2.5 text-[10px]"
+                  aria-label="Open inbox sync options"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                  Sync
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="end" className="w-80 space-y-3 p-3">
+                <div className="space-y-0.5">
+                  <p className="text-xs font-semibold">Sync inbox</p>
+                  <p className="text-[10px] leading-4 text-muted-foreground">
+                    Choose one method. AI organization continues after messages are imported.
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 gap-1 rounded-md bg-muted p-1" aria-label="Sync method">
+                  {(["period", "count"] as InboxSyncMode[]).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => setSyncMode(mode)}
+                      className={`h-7 rounded px-2 text-[10px] font-medium transition-colors ${
+                        syncMode === mode
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      {mode === "period" ? "By period" : "By amount"}
+                    </button>
+                  ))}
+                </div>
+                {syncMode === "period" ? (
+                  <Select value={syncRange} onValueChange={(value) => setSyncRange(value as InboxSyncRange)}>
+                    <SelectTrigger className="h-9 w-full text-xs" aria-label="Email sync period">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SYNC_RANGE_OPTIONS.map((option) => (
+                        <SelectItem key={option.value} value={option.value} className="text-xs">
+                          {option.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <Select value={String(syncCount)} onValueChange={(value) => setSyncCount(Number(value))}>
+                    <SelectTrigger className="h-9 w-full text-xs" aria-label="Number of newest emails to sync">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SYNC_COUNT_OPTIONS.map((count) => (
+                        <SelectItem key={count} value={String(count)} className="text-xs">
+                          Latest {count}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+                <div className="space-y-2">
+                  <p className="text-[10px] leading-4 text-muted-foreground">
+                    {syncMode === "period"
+                      ? `Import new mail received in ${syncRangeLabel.toLowerCase()}.`
+                      : `Import the latest ${syncCount} new messages, regardless of date.`}
+                  </p>
+                  <Button className="h-9 w-full text-xs" onClick={handleSync} disabled={syncing}>
+                    {syncing ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="h-3.5 w-3.5" />}
+                    <span className="ml-1.5">
+                      {syncMode === "period" ? "Sync this period" : `Sync latest ${syncCount}`}
+                    </span>
+                  </Button>
+                </div>
+              </PopoverContent>
+            </Popover>
           </div>
         </div>
-
         {/* Email list */}
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full thin-scroll">
@@ -282,6 +411,7 @@ export function Inbox_() {
                 email={e}
                 active={selectedId === e.id}
                 onClick={() => setSelectedId(e.id)}
+                threadCount={threadCounts.get(e.id)}
               />
             ))}
           </div>
@@ -299,29 +429,38 @@ export function Inbox_() {
             >
               ← Back to inbox
             </button>
-            <InboxDetailPanel id={selectedId} />
+            <InboxDetailPanel id={selectedId} onRemoved={() => setSelectedId(null)} />
           </div>
         ) : (
-          <div className="flex flex-col items-center justify-center h-full text-center p-6 space-y-3">
-            <div className="flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
-              <Sparkles className="h-7 w-7 text-primary" />
-            </div>
-            <div className="space-y-2 max-w-md">
-              <h3 className="text-base font-semibold">Connect Your Email to Get Started</h3>
-              <p className="text-sm text-muted-foreground leading-relaxed">
-                Memex reads, categorizes, and prioritizes your emails with AI.
-                Get a daily briefing, AI summaries, and smart reply drafts.
-              </p>
-            </div>
-            <div className="flex gap-2">
-              <Button size="sm" onClick={() => setConnectOpen(true)}>
-                <Plus className="h-3.5 w-3.5 mr-1.5" />
-                Connect Email
-              </Button>
-              {connectedAccounts.length > 0 && (
-                <Button size="sm" variant="outline" onClick={handleSync} disabled={syncing}>
-                  <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
-                  Sync Now
+          <div className="flex h-full w-full items-center justify-center overflow-auto px-6 py-8 text-center">
+            <div className="flex max-w-sm flex-col items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-full border border-border bg-muted/40">
+                <MailOpen className="h-5 w-5 text-muted-foreground" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold">
+                  {connectedAccounts.length > 0 ? "No message selected" : "Connect an email account"}
+                </h3>
+                <p className="text-xs leading-5 text-muted-foreground">
+                  {connectedAccounts.length > 0
+                    ? "Choose an email from the inbox to read, reply, archive, or turn it into a note."
+                    : "Connect Google or Microsoft for password-free live mail, or use advanced IMAP/SMTP."}
+                </p>
+              </div>
+              {connectedAccounts.length > 0 ? (
+                <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[10px] text-muted-foreground">
+                  <span>{emails.length} message{emails.length === 1 ? "" : "s"} in this view</span>
+                  {lastSyncAt && (
+                    <>
+                      <span aria-hidden="true">·</span>
+                      <span>Last synced {lastSyncAt.toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span>
+                    </>
+                  )}
+                </div>
+              ) : (
+                <Button size="sm" onClick={() => setConnectOpen(true)}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  Connect email
                 </Button>
               )}
             </div>
@@ -340,10 +479,12 @@ function InboxListItem({
   email,
   active,
   onClick,
+  threadCount,
 }: {
   email: InboxEmailData
   active: boolean
   onClick: () => void
+  threadCount?: number
 }) {
   const cat = CATEGORY_CONFIG[email.category] ?? CATEGORY_CONFIG.normal
   const CatIcon = cat.icon
@@ -351,23 +492,31 @@ function InboxListItem({
 
   const handleStar = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    await fetch(`/api/inbox/${email.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isStarred: !email.isStarred }),
-    })
-    qc.invalidateQueries({ queryKey: ["inbox"] })
+    try {
+      await apiRequest(`/api/inbox/${email.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isStarred: !email.isStarred }),
+      })
+      qc.invalidateQueries({ queryKey: ["inbox"] })
+    } catch (error) {
+      toast.error("Star could not be updated", { description: getErrorMessage(error) })
+    }
   }
 
   const handleArchive = async (e: React.MouseEvent) => {
     e.stopPropagation()
-    await fetch(`/api/inbox/${email.id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isArchived: true }),
-    })
-    toast.success("Email archived")
-    qc.invalidateQueries({ queryKey: ["inbox"] })
+    try {
+      await apiRequest(`/api/inbox/${email.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isArchived: true }),
+      })
+      toast.success("Email archived")
+      qc.invalidateQueries({ queryKey: ["inbox"] })
+    } catch (error) {
+      toast.error("Email could not be archived", { description: getErrorMessage(error) })
+    }
   }
 
   return (
@@ -403,6 +552,11 @@ function InboxListItem({
             <Badge variant="outline" className={`text-[9px] h-4 ${cat.bg} ${cat.color} border-0`}>
               {cat.label}
             </Badge>
+            {threadCount && threadCount > 1 && (
+              <Badge variant="outline" className="text-[9px] h-4">
+                {threadCount} messages
+              </Badge>
+            )}
             {email.action === "reply_needed" && (
               <Badge className="text-[9px] h-4 bg-red-600 hover:bg-red-600 gap-0.5">
                 <Reply className="h-2 w-2" />
@@ -435,19 +589,26 @@ function InboxListItem({
   )
 }
 
-function InboxDetailPanel({ id }: { id: string }) {
+function InboxDetailPanel({ id, onRemoved }: { id: string; onRemoved: () => void }) {
   const qc = useQueryClient()
   const openEmail = useMemex((s) => s.openEmailComposer)
   const [replyOpen, setReplyOpen] = useState(false)
-  const [drafting, setDrafting] = useState(false)
 
-  const { data, isLoading } = useQuery<{ email: InboxEmailData }>({
+  const detailQuery = useQuery<{ email: InboxEmailData }>({
     queryKey: ["inbox-email", id],
-    queryFn: async () => {
-      const r = await fetch(`/api/inbox/${id}`)
-      return r.json()
-    },
+    queryFn: () => apiRequest(`/api/inbox/${id}`),
   })
+  const { data, isLoading } = detailQuery
+
+  if (detailQuery.isError) {
+    return (
+      <SectionError
+        title="Message could not be loaded"
+        error={detailQuery.error}
+        onRetry={() => detailQuery.refetch()}
+      />
+    )
+  }
 
   if (isLoading || !data) {
     return (
@@ -462,12 +623,18 @@ function InboxDetailPanel({ id }: { id: string }) {
   const CatIcon = cat.icon
 
   const handleDelete = async () => {
-    // Only deletes from the app's local database — does NOT touch the original email in Gmail/Outlook
-    await fetch(`/api/inbox/${id}`, { method: "DELETE" })
-    toast.success("Email removed from Memex", {
-      description: "The original email is still in your email provider.",
-    })
-    qc.invalidateQueries({ queryKey: ["inbox"] })
+    if (!window.confirm("Remove this message from Memex? The original remains with your email provider.")) return
+    try {
+      await apiRequest(`/api/inbox/${id}`, { method: "DELETE" })
+      toast.success("Email removed from Memex", {
+        description: "The original email is still in your email provider.",
+      })
+      onRemoved()
+      qc.invalidateQueries({ queryKey: ["inbox"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+    } catch (error) {
+      toast.error("Email could not be removed", { description: getErrorMessage(error) })
+    }
   }
 
   const handleDeleteFromProvider = async () => {
@@ -479,24 +646,31 @@ function InboxDetailPanel({ id }: { id: string }) {
     if (!confirmed) return
 
     try {
-      const r = await fetch(`/api/inbox/${id}/delete-from-provider`, { method: "POST" })
-      const d = await r.json()
-      if (!r.ok) throw new Error(d.error || d.message)
+      const d = await apiRequest<{ message?: string }>(
+        `/api/inbox/${id}/delete-from-provider`,
+        { method: "POST" }
+      )
       toast.success(d.message || "Email deleted from provider")
+      onRemoved()
       qc.invalidateQueries({ queryKey: ["inbox"] })
-    } catch (e: any) {
-      toast.error(e.message || "Failed to delete from provider")
+      qc.invalidateQueries({ queryKey: ["stats"] })
+    } catch (error) {
+      toast.error("Provider deletion failed", { description: getErrorMessage(error) })
     }
   }
 
   const handleStar = async () => {
-    await fetch(`/api/inbox/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ isStarred: !e.isStarred }),
-    })
-    qc.invalidateQueries({ queryKey: ["inbox"] })
-    qc.invalidateQueries({ queryKey: ["inbox-email", id] })
+    try {
+      await apiRequest(`/api/inbox/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isStarred: !e.isStarred }),
+      })
+      qc.invalidateQueries({ queryKey: ["inbox"] })
+      qc.invalidateQueries({ queryKey: ["inbox-email", id] })
+    } catch (error) {
+      toast.error("Star could not be updated", { description: getErrorMessage(error) })
+    }
   }
 
   return (
@@ -553,13 +727,14 @@ function InboxDetailPanel({ id }: { id: string }) {
                 className="h-7 px-2"
                 onClick={async () => {
                   try {
-                    const r = await fetch(`/api/inbox/${id}/to-note`, { method: "POST" })
-                    const d = await r.json()
-                    if (!r.ok) throw new Error(d.error)
+                    const d = await apiRequest<{ message?: string }>(
+                      `/api/inbox/${id}/to-note`,
+                      { method: "POST" }
+                    )
                     toast.success(d.message || "Email converted to note")
                     window.dispatchEvent(new CustomEvent("memex-notes-updated"))
-                  } catch (e: any) {
-                    toast.error(e.message || "Conversion failed")
+                  } catch (error) {
+                    toast.error("Conversion failed", { description: getErrorMessage(error) })
                   }
                 }}
                 title="Convert email to note"
@@ -701,15 +876,14 @@ function ReplyGenerator({
     if (!instruction.trim()) return
     setLoading(true)
     try {
-      const r = await fetch(`/api/inbox/${emailId}/reply`, {
+      const d = await apiRequest<{ draft: string }>(`/api/inbox/${emailId}/reply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ instruction }),
       })
-      const d = await r.json()
       setDraft(d.draft)
-    } catch {
-      toast.error("Failed to generate draft")
+    } catch (error) {
+      toast.error("Failed to generate draft", { description: getErrorMessage(error) })
     } finally {
       setLoading(false)
     }
@@ -757,25 +931,29 @@ function ManageAccountsDialog({
   onOpenChange: (o: boolean) => void
 }) {
   const qc = useQueryClient()
-  const { data, isLoading } = useQuery<{ accounts: EmailAccountData[] }>({
+  const accountsQuery = useQuery<{ accounts: EmailAccountData[] }>({
     queryKey: ["email-accounts"],
-    queryFn: async () => {
-      const r = await fetch("/api/email-accounts")
-      return r.json()
-    },
+    queryFn: () => apiRequest("/api/email-accounts"),
     enabled: open,
   })
+  const { data, isLoading } = accountsQuery
 
   const accounts = (data?.accounts ?? []).filter((a) => a.connected)
 
   const handleDisconnect = async (emailAddress: string) => {
-    await fetch("/api/email-accounts", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ emailAddress }),
-    })
-    toast.success(`Disconnected ${emailAddress}`)
-    qc.invalidateQueries({ queryKey: ["email-accounts"] })
+    if (!window.confirm(`Disconnect ${emailAddress}? Existing imported messages stay in Memex.`)) return
+    try {
+      await apiRequest("/api/email-accounts", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailAddress }),
+      })
+      toast.success(`Disconnected ${emailAddress}`)
+      qc.invalidateQueries({ queryKey: ["email-accounts"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+    } catch (error) {
+      toast.error("Account could not be disconnected", { description: getErrorMessage(error) })
+    }
   }
 
   return (
@@ -796,7 +974,14 @@ function ManageAccountsDialog({
               <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             </div>
           )}
-          {!isLoading && accounts.length === 0 && (
+          {accountsQuery.isError && (
+            <SectionError
+              title="Accounts could not be loaded"
+              error={accountsQuery.error}
+              onRetry={() => accountsQuery.refetch()}
+            />
+          )}
+          {!isLoading && !accountsQuery.isError && accounts.length === 0 && (
             <p className="text-sm text-muted-foreground text-center py-4">
               No accounts connected yet.
             </p>
@@ -807,12 +992,17 @@ function ManageAccountsDialog({
               className="flex items-center justify-between rounded-md border border-border p-2.5"
             >
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-medium truncate">{a.displayName}</div>
+                <div className="flex items-center gap-2">
+                  <div className="text-sm font-medium truncate">{a.displayName}</div>
+                  <Badge variant={a.syncMode === "demo" ? "secondary" : "default"} className="text-[9px] h-4">
+                    {a.syncMode === "oauth" ? (a.provider === "google" ? "Google" : "Microsoft") : a.syncMode === "real" ? "IMAP" : "Legacy demo"}
+                  </Badge>
+                </div>
                 <div className="text-[10px] text-muted-foreground font-mono truncate">
                   {a.emailAddress}
                 </div>
                 <div className="text-[10px] text-muted-foreground mt-0.5">
-                  IMAP: {a.imapHost}:{a.imapPort} · SMTP: {a.smtpHost}:{a.smtpPort}
+                  {a.syncMode === "oauth" ? `OAuth: ${a.provider === "google" ? "Google" : "Microsoft"}` : `IMAP: ${a.imapHost}:${a.imapPort} · SMTP: ${a.smtpHost}:${a.smtpPort}`}
                 </div>
                 {a.lastSyncAt && (
                   <div className="text-[10px] text-muted-foreground">
@@ -832,12 +1022,10 @@ function ManageAccountsDialog({
             </div>
           ))}
         </div>
-        <div className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 flex items-start gap-2">
-          <Sparkles className="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" />
+        <div className="rounded-md border border-border bg-muted/30 p-2.5 flex items-start gap-2">
+          <Info className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
           <p className="text-[11px] text-muted-foreground leading-relaxed">
-            <strong className="text-foreground">Demo Mode:</strong> Inbox sync generates
-            simulated sample emails to showcase the AI categorization features.
-            Real IMAP connection will be added in a future update.
+            Google and Microsoft accounts sync and send through their provider APIs. Advanced accounts use verified IMAP and SMTP. Legacy demo accounts must be reconnected before syncing.
           </p>
         </div>
       </DialogContent>
@@ -858,45 +1046,57 @@ function ConnectAccountDialog({
   const [imapPassword, setImapPassword] = useState("")
   const [showPassword, setShowPassword] = useState(false)
   const [connecting, setConnecting] = useState(false)
-  const [verifying, setVerifying] = useState(false)
   const [error, setError] = useState("")
+  const oauthStatusQuery = useQuery<{
+    providers: { google: boolean; microsoft: boolean }
+  }>({
+    queryKey: ["email-oauth-status"],
+    queryFn: () => apiRequest("/api/email-accounts/oauth/status"),
+    enabled: open,
+  })
+  const providers = oauthStatusQuery.data?.providers
 
-  const handleConnect = async () => {
-    if (!emailAddress.trim()) {
-      setError("Email address is required")
+  const startOAuth = (provider: "google" | "microsoft") => {
+    if (!providers?.[provider]) {
+      setError(
+        `${provider === "google" ? "Google" : "Microsoft"} connection is not configured by this Memex administrator yet.`
+      )
+      return
+    }
+    window.location.assign(`/api/email-accounts/oauth/${provider}`)
+  }
+
+  const handleAdvancedConnect = async () => {
+    if (!emailAddress.trim() || !imapPassword.trim()) {
+      setError("Enter an email address and app password for the advanced connection.")
       return
     }
     setError("")
     setConnecting(true)
-    setVerifying(!!imapPassword.trim()) // Show "verifying" if password provided
-
     try {
-      const r = await fetch("/api/email-accounts", {
+      const data = await apiRequest<{
+        message?: string
+        verified: boolean
+        syncMode: "real"
+      }>("/api/email-accounts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           emailAddress: emailAddress.trim(),
           displayName: displayName.trim() || undefined,
-          imapPassword: imapPassword.trim() || undefined,
+          imapPassword: imapPassword.trim(),
         }),
       })
-      const d = await r.json()
-      if (!r.ok) {
-        setError(d.error || d.detail || "Connection failed")
-        setVerifying(false)
-        return
-      }
-      toast.success(d.message || "Account connected", {
-        description: d.verified ? "IMAP verified ✓" : "Demo mode",
+      toast.success(data.message || "Advanced email account connected", {
+        description: "IMAP and SMTP were verified.",
       })
       setEmailAddress("")
       setDisplayName("")
       setImapPassword("")
-      setError("")
       onOpenChange(false)
       qc.invalidateQueries({ queryKey: ["email-accounts"] })
-    } catch (e: any) {
-      setError(e.message || "Connection failed")
+    } catch (requestError) {
+      setError(getErrorMessage(requestError))
     } finally {
       setConnecting(false)
     }
@@ -908,78 +1108,96 @@ function ConnectAccountDialog({
         <DialogHeader>
           <DialogTitle className="text-base flex items-center gap-2">
             <Wifi className="h-4 w-4 text-primary" />
-            Connect Email Account
+            Connect email account
           </DialogTitle>
           <DialogDescription>
-            Connect your email to let Memex read, categorize, and prioritize
-            your inbox. IMAP/SMTP settings are auto-detected for common providers
-            (Gmail, Outlook, Yahoo, iCloud).
+            Sign in with your provider to connect inbox sync and sending without sharing an email password with Memex.
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-3 py-2">
-          <div className="space-y-1">
-            <Label className="text-xs">Email address</Label>
-            <Input
-              value={emailAddress}
-              onChange={(e) => setEmailAddress(e.target.value)}
-              placeholder="you@gmail.com"
-              className="text-sm"
-              autoFocus
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">Display name (optional)</Label>
-            <Input
-              value={displayName}
-              onChange={(e) => setDisplayName(e.target.value)}
-              placeholder="John Doe"
-              className="text-sm"
-            />
-          </div>
-          <div className="space-y-1">
-            <Label className="text-xs">
-              IMAP app password{" "}
-              <span className="text-muted-foreground">
-                (for real inbox sync — leave empty for demo mode)
-              </span>
-            </Label>
-            <Input
-              type={showPassword ? "text" : "password"}
-              value={imapPassword}
-              onChange={(e) => setImapPassword(e.target.value)}
-              placeholder="App-specific password"
-              className="text-sm"
-            />
-            <button
-              onClick={() => setShowPassword(!showPassword)}
-              className="text-[10px] text-muted-foreground hover:text-foreground transition-colors"
+          <div className="grid gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11 justify-start gap-3"
+              onClick={() => startOAuth("google")}
+              disabled={oauthStatusQuery.isLoading || providers?.google === false}
+              title={providers?.google === false ? "Google OAuth must be configured by the application owner." : undefined}
             >
-              {showPassword ? "Hide" : "Show"} password
-            </button>
-            <p className="text-[10px] text-muted-foreground leading-relaxed mt-1">
-              For Gmail: use an{" "}
-              <a
-                href="https://myaccount.google.com/apppasswords"
-                target="_blank"
-                rel="noreferrer"
-                className="text-primary underline"
-              >
-                App Password
-              </a>
-              , not your regular password. Without a password, sync runs in demo mode with sample emails.
-            </p>
+              <span className="flex h-5 w-5 items-center justify-center rounded-sm border text-xs font-semibold text-red-500">G</span>
+              Continue with Google
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              className="h-11 justify-start gap-3"
+              onClick={() => startOAuth("microsoft")}
+              disabled={oauthStatusQuery.isLoading || providers?.microsoft === false}
+              title={providers?.microsoft === false ? "Microsoft OAuth must be configured by the application owner." : undefined}
+            >
+              <span className="flex h-5 w-5 items-center justify-center rounded-sm border text-xs font-semibold text-sky-600">M</span>
+              Continue with Microsoft
+            </Button>
           </div>
+
           <div className="rounded-md border border-border bg-muted/30 p-2.5 flex items-start gap-2">
             <Shield className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
             <p className="text-[11px] text-muted-foreground leading-relaxed">
-              Your credentials are stored locally and never sent to external
-              servers. Emails are analyzed by the AI to categorize importance —
-              only subject + body snippets are sent, not your full mailbox.
+              You sign in on Google or Microsoft&apos;s page. Memex stores encrypted connection tokens, never your mailbox password. AI categorization still sends the sender, subject, and up to 2,000 message characters to your configured AI provider.
             </p>
           </div>
 
-          {/* Error display */}
+          <details className="rounded-md border border-border px-3 py-2.5">
+            <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+              Advanced IMAP/SMTP connection
+            </summary>
+            <div className="mt-3 space-y-3">
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Use this only for providers without OAuth support in Memex, such as a custom, Yahoo, or iCloud mailbox. Use an app-specific password, never your regular password.
+              </p>
+              <div className="space-y-1">
+                <Label className="text-xs">Email address</Label>
+                <Input
+                  value={emailAddress}
+                  onChange={(event) => setEmailAddress(event.target.value)}
+                  placeholder="you@example.com"
+                  className="text-sm"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">Display name (optional)</Label>
+                <Input
+                  value={displayName}
+                  onChange={(event) => setDisplayName(event.target.value)}
+                  placeholder="Your name"
+                  className="text-sm"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label className="text-xs">App password</Label>
+                <Input
+                  type={showPassword ? "text" : "password"}
+                  value={imapPassword}
+                  onChange={(event) => setImapPassword(event.target.value)}
+                  placeholder="App-specific password"
+                  className="text-sm"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((value) => !value)}
+                  className="text-[10px] text-muted-foreground hover:text-foreground"
+                >
+                  {showPassword ? "Hide" : "Show"} password
+                </button>
+              </div>
+              <Button type="button" size="sm" onClick={handleAdvancedConnect} disabled={connecting}>
+                {connecting ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Wifi className="mr-1 h-4 w-4" />}
+                Verify advanced connection
+              </Button>
+            </div>
+          </details>
+
           {error && (
             <div className="rounded-md border border-destructive/30 bg-destructive/5 p-2.5 flex items-start gap-2">
               <AlertCircle className="h-3.5 w-3.5 text-destructive shrink-0 mt-0.5" />
@@ -992,25 +1210,11 @@ function ConnectAccountDialog({
           <Button variant="outline" onClick={() => { onOpenChange(false); setError("") }}>
             Cancel
           </Button>
-          <Button onClick={handleConnect} disabled={connecting || !emailAddress.trim()}>
-            {connecting ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                {verifying ? "Verifying IMAP..." : "Connecting..."}
-              </>
-            ) : (
-              <>
-                <Wifi className="h-4 w-4 mr-1" />
-                {imapPassword.trim() ? "Verify & Connect" : "Connect (Demo Mode)"}
-              </>
-            )}
-          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>
   )
 }
-
 function BriefingDialog({
   open,
   onOpenChange,
@@ -1018,17 +1222,15 @@ function BriefingDialog({
   open: boolean
   onOpenChange: (o: boolean) => void
 }) {
-  const { data, isLoading } = useQuery<{
+  const briefingQuery = useQuery<{
     briefing: string
     stats: { total: number; urgent: number; important: number; needReply: number; newsletters: number }
   }>({
     queryKey: ["inbox-briefing"],
-    queryFn: async () => {
-      const r = await fetch("/api/inbox/briefing")
-      return r.json()
-    },
+    queryFn: () => apiRequest("/api/inbox/briefing"),
     enabled: open,
   })
+  const { data, isLoading } = briefingQuery
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -1049,7 +1251,14 @@ function BriefingDialog({
               <Loader2 className="h-5 w-5 animate-spin text-primary" />
             </div>
           )}
-          {!isLoading && data && (
+          {briefingQuery.isError && (
+            <SectionError
+              title="Briefing could not be generated"
+              error={briefingQuery.error}
+              onRetry={() => briefingQuery.refetch()}
+            />
+          )}
+          {!isLoading && !briefingQuery.isError && data && (
             <div className="space-y-3">
               {/* Quick stats */}
               <div className="flex flex-wrap gap-2">

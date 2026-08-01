@@ -1,20 +1,33 @@
-import { NextRequest, NextResponse } from "next/server"
+import { after, NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
-import { analyzeEmail } from "@/lib/llm"
+import { enqueueInboxAnalysis, processInboxAnalysisQueue } from "@/server/email/analysis-pipeline"
 import { decryptSecret } from "@/server/security/encryption"
+import {
+  getInboxSyncCutoff,
+  type InboxSyncRange,
+  type InboxSyncResult,
+  syncOAuthInbox,
+} from "@/server/email/oauth-inbox"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
 import { rateLimit } from "@/server/security/rate-limit"
 import { refreshInboxSchema, validationError } from "@/server/validation/api"
+import type { EmailAccount } from "@prisma/client"
+
+const PERIOD_SYNC_BATCH_SIZE = 100
 
 // POST /api/inbox/refresh
-// Syncs emails from connected account.
-// If account has real IMAP credentials (syncMode="real") → connect via IMAP
-// If account is demo mode (syncMode="demo") → generate realistic sample emails
+// Imports by one exclusive scope: a time period or a newest-message count.
+// AI analysis is deliberately deferred so provider sync returns quickly.
 export async function POST(req: NextRequest) {
   const auth = await requireUser(req)
   if (isAuthFailure(auth)) return auth.response
 
-  const limited = await rateLimit(req, { name: "inbox:refresh", limit: 20, windowMs: 60_000, userId: auth.user.id })
+  const limited = await rateLimit(req, {
+    name: "inbox:refresh",
+    limit: 20,
+    windowMs: 60_000,
+    userId: auth.user.id,
+  })
   if (limited) return limited
 
   const body = await req.json().catch(() => ({}))
@@ -22,57 +35,166 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
-  const { count } = parsed.data
+  const requestScope = parsed.data.scope
+  const maxCount = requestScope === "period" ? PERIOD_SYNC_BATCH_SIZE : parsed.data.count
+  const range: InboxSyncRange = requestScope === "period" ? parsed.data.range : "all"
 
-  const account = await db.emailAccount.findFirst({
+  const accounts = await db.emailAccount.findMany({
     where: { userId: auth.user.id, connected: true },
+    orderBy: { createdAt: "asc" },
   })
+  const liveAccounts = accounts.filter(
+    (account) => account.syncMode === "oauth" || account.syncMode === "real"
+  )
 
-  if (!account) {
-    return NextResponse.json({ error: "No connected email account" }, { status: 400 })
+  if (liveAccounts.length === 0) {
+    return NextResponse.json(
+      { error: "No live email account is connected. Reconnect Google, Microsoft, or an advanced IMAP account." },
+      { status: 400 }
+    )
   }
 
-  let added = 0
-  let syncMode = account.syncMode || "demo"
+  const results: Array<{
+    accountId: string
+    emailAddress: string
+    syncMode: string
+    added: number
+    hasMore: boolean
+    importedIds: string[]
+    ok: boolean
+    error?: string
+  }> = []
 
-  // Try real IMAP if credentials are available
-  if (account.imapPassword && account.imapHost && account.syncMode === "real") {
+  for (const account of liveAccounts) {
     try {
-      added = await syncRealImap(account, count)
-      syncMode = "real"
-    } catch (err: any) {
-      console.error("IMAP sync failed, falling back to demo:", err.message)
-      added = await syncDemoEmails(account, count)
-      syncMode = "demo"
+      const result = account.syncMode === "oauth"
+        ? await syncOAuthInbox(account, maxCount, range)
+        : await syncRealImap(account, maxCount, range)
+      await db.emailAccount.update({
+        where: { id: account.id },
+        data: { lastSyncAt: new Date() },
+      })
+      results.push({
+        accountId: account.id,
+        emailAddress: account.emailAddress,
+        syncMode: account.syncMode,
+        added: result.added,
+        hasMore: result.hasMore,
+        importedIds: result.importedIds,
+        ok: true,
+      })
+    } catch (error) {
+      console.error("Inbox sync failed", {
+        accountId: account.id,
+        syncMode: account.syncMode,
+        error: error instanceof Error ? error.message : String(error),
+      })
+      results.push({
+        accountId: account.id,
+        emailAddress: account.emailAddress,
+        syncMode: account.syncMode,
+        added: 0,
+        hasMore: false,
+        importedIds: [],
+        ok: false,
+        error: error instanceof Error ? error.message : "Inbox sync failed. Reconnect the account and try again.",
+      })
     }
-  } else {
-    // Demo mode — no real credentials
-    added = await syncDemoEmails(account, count)
-    syncMode = "demo"
   }
 
-  await db.emailAccount.update({
-    where: { id: account.id },
-    data: { lastSyncAt: new Date(), syncMode },
-  })
+  const added = results.reduce((total, result) => total + result.added, 0)
+  const importedIds = results.flatMap((result) => result.importedIds)
+  const failures = results.filter((result) => !result.ok)
+  const modes = new Set(results.map((result) => result.syncMode))
+  const syncMode = modes.size > 1 ? "mixed" : results[0].syncMode
+  const hasMore = results.some((result) => result.hasMore)
+
+  if (failures.length === results.length) {
+    return NextResponse.json(
+      {
+        error: failures[0].error || "Inbox sync failed.",
+        added: 0,
+        hasMore: false,
+        scope: requestScope,
+        syncMode,
+        results: publicResults(results),
+      },
+      { status: 502 }
+    )
+  }
+
+  const analysis = importedIds.length > 0
+    ? await enqueueInboxAnalysis(auth.user.id, importedIds)
+    : { queued: 0, classifiedLocally: 0 }
+
+  if (analysis.queued > 0) {
+    after(async () => {
+      try {
+        await processInboxAnalysisQueue({ userId: auth.user.id, maxBatches: 1 })
+      } catch (error) {
+        console.error("Deferred inbox analysis failed", {
+          userId: auth.user.id,
+          count: analysis.queued,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    })
+  }
+
+  const baseMessage = added > 0
+    ? `Imported ${added} new email${added === 1 ? "" : "s"}. ${analysis.classifiedLocally > 0 ? `${analysis.classifiedLocally} were organized locally. ` : ""}${analysis.queued > 0 ? "The remaining messages are queued for careful AI review." : ""}`.trim()
+    : requestScope === "period"
+      ? "Inbox is up to date for the selected period."
+      : `No new messages were found among the latest ${parsed.data.count}.`
 
   return NextResponse.json({
     added,
+    analysisQueued: analysis.queued,
+    classifiedLocally: analysis.classifiedLocally,
+    hasMore,
+    scope: requestScope,
+    range: requestScope === "period" ? range : undefined,
+    count: requestScope === "count" ? parsed.data.count : undefined,
     syncMode,
-    message: syncMode === "real"
-      ? `Synced ${added} new email${added !== 1 ? "s" : ""} from your real inbox.`
-      : added > 0
-        ? `Synced ${added} demo email${added !== 1 ? "s" : ""} with AI analysis.`
-        : `All demo emails are already synced. Delete some from the inbox to get fresh ones, or connect with an IMAP password for real email sync.`,
+    results: publicResults(results),
+    warning:
+      failures.length > 0
+        ? `${failures.length} account${failures.length === 1 ? "" : "s"} could not be synced.`
+        : requestScope === "period" && hasMore
+          ? `This period contains more than ${PERIOD_SYNC_BATCH_SIZE} new emails. Sync again to continue this period.`
+          : undefined,
+    message: baseMessage,
   })
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Real IMAP sync using imapflow
-// ─────────────────────────────────────────────────────────────────────────────
-async function syncRealImap(account: any, maxCount: number): Promise<number> {
-  const { ImapFlow } = await import("imapflow")
+function publicResults(
+  results: Array<{
+    accountId: string
+    emailAddress: string
+    syncMode: string
+    added: number
+    hasMore: boolean
+    ok: boolean
+    error?: string
+  }>
+) {
+  return results.map(({ accountId, emailAddress, syncMode, added, hasMore, ok, error }) => ({
+    accountId,
+    emailAddress,
+    syncMode,
+    added,
+    hasMore,
+    ok,
+    error,
+  }))
+}
 
+async function syncRealImap(
+  account: EmailAccount,
+  maxCount: number,
+  range: InboxSyncRange
+): Promise<InboxSyncResult> {
+  const { ImapFlow } = await import("imapflow")
   const client = new ImapFlow({
     host: account.imapHost,
     port: account.imapPort,
@@ -85,95 +207,85 @@ async function syncRealImap(account: any, maxCount: number): Promise<number> {
   })
 
   await client.connect()
-
-  let added = 0
+  const importedIds: string[] = []
+  let hasMore = false
 
   try {
-    // Sync BOTH INBOX (received) and Sent (sent by user)
-    const mailboxes = ["INBOX", "Sent", "[Gmail]/Sent Mail", "Sent Items"]
+    const lock = await client.getMailboxLock("INBOX")
+    try {
+      const cutoff = getInboxSyncCutoff(range)
+      const searchResult = await client.search(cutoff ? { since: cutoff } : {})
+      const matchingIds = (Array.isArray(searchResult) ? searchResult : []).reverse()
 
-    for (const mailboxName of mailboxes) {
-      try {
-        const lock = await client.getMailboxLock(mailboxName)
-        try {
-          // Search for today's emails
-          const today = new Date()
-          today.setHours(0, 0, 0, 0)
-          const searchResult = await client.search({ since: today })
-          const recentMessageIds = Array.isArray(searchResult) ? searchResult : []
-          const recentIds = recentMessageIds.slice(-maxCount) // Last N from today
-
-          for (const msgId of recentIds) {
-            const msg = await client.fetchOne(msgId, {
-              envelope: true,
-              source: true,
-              bodyStructure: true,
-            })
-
-            if (!msg || !msg.envelope) continue
-
-            const from = msg.envelope.from?.[0]
-            const fromAddress = from ? `${from.address}` : "unknown@unknown.com"
-            const fromName = from ? `${from.name || from.address}` : "Unknown"
-            const subject = msg.envelope.subject || "(no subject)"
-            const receivedAt = msg.envelope.date ? new Date(msg.envelope.date) : new Date()
-            const isSent = mailboxName !== "INBOX"
-
-            const rawSource = msg.source?.toString("utf-8") || ""
-            const body = extractPlainText(rawSource)
-
-            if (!body.trim() || body.trim().length < 10) continue
-
-            // Check if we already have this email
-            const existing = await db.inboxEmail.findFirst({
-              where: { userId: account.userId, fromAddress, subject, receivedAt },
-            })
-            if (existing) continue
-
-            const analysis = await analyzeEmail(fromAddress, subject, body)
-
-            await db.inboxEmail.create({
-              data: {
-                userId: account.userId,
-                accountId: account.id,
-                fromAddress: isSent ? account.emailAddress : fromAddress,
-                fromName: isSent ? "You (sent)" : fromName,
-                toAddress: isSent ? fromAddress : account.emailAddress,
-                subject,
-                body,
-                category: isSent ? "normal" : (analysis?.category ?? "normal"),
-                action: isSent ? "archive" : (analysis?.action ?? "review"),
-                summary: isSent ? `You sent this email to ${fromName}` : (analysis?.summary ?? ""),
-                keyPoints: JSON.stringify(analysis?.keyPoints ?? []),
-                suggestedReply: isSent ? "" : (analysis?.suggestedReply ?? ""),
-                analyzed: isSent ? false : !!analysis,
-                threadId: subject.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 40),
-                receivedAt,
-              },
-            })
-            added++
-          }
-        } finally {
-          lock.release()
+      for (let index = 0; index < matchingIds.length; index++) {
+        if (importedIds.length >= maxCount) {
+          hasMore = true
+          break
         }
-      } catch (err) {
-        // Mailbox might not exist for this provider — skip silently
-        console.log(`Mailbox ${mailboxName} not available:`, (err as any)?.message)
+        const messageId = matchingIds[index]
+        const providerMessageId = `imap:${messageId}`
+        const existing = await db.inboxEmail.findFirst({
+          where: { accountId: account.id, providerMessageId },
+          select: { id: true },
+        })
+        if (existing) continue
+
+        const message = await client.fetchOne(messageId, {
+          envelope: true,
+          source: true,
+          bodyStructure: true,
+        })
+        if (!message || !message.envelope) continue
+
+        const from = message.envelope.from?.[0]
+        const fromAddress = from ? `${from.address}` : "unknown@unknown.com"
+        const fromName = from ? `${from.name || from.address}` : "Unknown"
+        const body = extractPlainText(message.source?.toString("utf-8") || "")
+        if (body.trim().length < 10) continue
+
+        const email = await db.inboxEmail.create({
+          data: {
+            userId: account.userId,
+            accountId: account.id,
+            fromAddress,
+            fromName,
+            toAddress: account.emailAddress,
+            subject: message.envelope.subject || "(no subject)",
+            body: body.slice(0, 200_000),
+            category: "normal",
+            action: "review",
+            summary: "",
+            keyPoints: "[]",
+            suggestedReply: "",
+            analyzed: false,
+            threadId: (message.envelope.subject || "")
+              .toLowerCase()
+              .replace(/[^a-z0-9]/g, "")
+              .slice(0, 40),
+            providerMessageId,
+            receivedAt: message.envelope.date ? new Date(message.envelope.date) : new Date(),
+          },
+          select: { id: true },
+        })
+        importedIds.push(email.id)
       }
+    } finally {
+      lock.release()
     }
   } finally {
     await client.logout()
   }
 
-  return added
+  return { added: importedIds.length, hasMore, importedIds }
 }
 
 function extractPlainText(raw: string): string {
   const textPartMatch = raw.match(/Content-Type:\s*text\/plain[\s\S]*?\r?\n\r?\n([\s\S]*?)(?=\r?\n--|\r?\n\.\r?\n|$)/i)
   if (textPartMatch) {
-    let text = textPartMatch[1]
-    text = text.replace(/=\r?\n/g, "").replace(/=([0-9A-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
-    return text.trim()
+    return textPartMatch[1]
+      .replace(/=\r?\n/g, "")
+      .replace(/=([0-9A-F]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+      .trim()
   }
 
   const htmlPartMatch = raw.match(/Content-Type:\s*text\/html[\s\S]*?\r?\n\r?\n([\s\S]*?)(?=\r?\n--|\r?\n\.\r?\n|$)/i)
@@ -187,100 +299,4 @@ function extractPlainText(raw: string): string {
   }
 
   return raw.slice(0, 500).replace(/<[^>]*>/g, " ").trim()
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Demo mode — generate realistic sample emails with AI analysis
-// Each sync generates emails with a unique timestamp so they're always "new"
-// ─────────────────────────────────────────────────────────────────────────────
-async function syncDemoEmails(account: any, count: number): Promise<number> {
-  const templates = [
-    {
-      from: "sarah@acme-corp.com",
-      name: "Sarah Chen",
-      subject: "URGENT: Production database migration delayed — need your input by 5pm",
-      body: "Hi team,\n\nThe Postgres 16 migration is behind schedule. We hit an issue with the connection pooler config and I need your decision on whether to proceed tonight or push to next week.\n\nThe risk of waiting: the current DB has 2 weeks of headroom left.\nThe risk of proceeding: possible 30min downtime during the cutover.\n\nCan you review the migration runbook I shared yesterday and reply by 5pm today? This is time-critical.\n\nThanks,\nSarah",
-    },
-    {
-      from: "notifications@github.com",
-      name: "GitHub",
-      subject: "[memex/memex] PR #142: Add email scheduling feature — review requested",
-      body: "A new pull request has been opened by @dev-bot.\n\nPR #142: Add email scheduling feature\n\nChanges:\n- New scheduledFor field on Email model\n- Scheduler tick in digest endpoint\n- UI for datetime picker\n\n2 files changed, 156 insertions, 12 deletions.\n\nPlease review at: https://github.com/memex/memex/pull/142",
-    },
-    {
-      from: "newsletter@techweekly.com",
-      name: "Tech Weekly",
-      subject: "🚀 This week in AI: Llama 3.2 released, vector DB benchmarks, and more",
-      body: "Tech Weekly Digest — Issue #247\n\nTop stories this week:\n1. Meta releases Llama 3.2 with vision capabilities\n2. Qdrant vs Weaviate: 2024 benchmark results\n3. The rise of local-first AI tools\n4. Why RAG is eating fine-tuning's lunch\n\nRead more at techweekly.com/issue-247",
-    },
-    {
-      from: "billing@aws.com",
-      name: "AWS Billing",
-      subject: "Your AWS bill for May 2026 is ready — $847.32",
-      body: "Dear Customer,\n\nYour AWS bill for the billing period May 2026 is now available.\n\nTotal charges: $847.32\nDue date: June 15, 2026\n\nBreakdown:\n- EC2: $412.00\n- RDS: $234.50\n- S3: $89.20\n- CloudWatch: $45.00\n- Other: $66.62",
-    },
-    {
-      from: "mike@startup-hub.com",
-      name: "Mike Rodriguez",
-      subject: "Re: Architecture review — thoughts on the new caching layer?",
-      body: "Hey,\n\nI read through your caching strategy doc and I think the Redis 7 + RQ approach is solid. A few questions:\n\n1. Have you considered Valkey as a Redis alternative?\n2. What's your eviction strategy for the result cache?\n3. Are you warming the cache on deploy or lazy-loading?\n\nHappy to jump on a call. Mike",
-    },
-    {
-      from: "no-reply@linkedin.com",
-      name: "LinkedIn",
-      subject: "You appeared in 3 searches this week — see who looked at your profile",
-      body: "Hi,\n\nYou appeared in 3 searches this week. People at these companies searched for someone like you:\n\n- Google (Senior Engineer role)\n- Stripe (Staff Engineer role)\n- Vercel (Developer Advocate role)",
-    },
-    {
-      from: "legal@vendor-partner.com",
-      name: "Legal Team",
-      subject: "ACTION REQUIRED: Updated Data Processing Agreement — signature needed by June 30",
-      body: "Dear Customer,\n\nPer our records, your Data Processing Agreement (DPA) needs to be renewed.\n\nThe updated agreement includes:\n- Revised data retention terms (90 days max)\n- New sub-processor list (3 additions)\n- Updated breach notification window (72 hours)\n\nPlease review and sign by June 30, 2026.",
-    },
-    {
-      from: "team@standup-bot.com",
-      name: "Standup Bot",
-      subject: "Daily standup summary — 3 blockers reported",
-      body: "Here's today's standup summary:\n\n✅ Completed yesterday:\n- Fixed chat retry logic\n- Merged PR #140\n\n🔄 In progress today:\n- Email inbox management\n- Security settings\n\n🚫 Blockers:\n- Waiting on DB migration approval\n- CI failing on Python tests",
-    },
-  ]
-
-  // Pick random templates — always generate NEW emails by adding a timestamp
-  // to the subject so they don't collide with existing ones
-  const selected = [...templates]
-    .sort(() => Math.random() - 0.5)
-    .slice(0, Math.min(count, templates.length))
-
-  let added = 0
-  const now = Date.now()
-
-  for (const tpl of selected) {
-    // Add a unique timestamp suffix to make each sync generate unique emails
-    const uniqueSubject = `${tpl.subject} [${new Date(now - added * 60000).toLocaleTimeString()}]`
-
-    const analysis = await analyzeEmail(tpl.from, tpl.subject, tpl.body)
-
-    await db.inboxEmail.create({
-      data: {
-        userId: account.userId,
-        accountId: account.id,
-        fromAddress: tpl.from,
-        fromName: tpl.name,
-        toAddress: account.emailAddress,
-        subject: uniqueSubject,
-        body: tpl.body,
-        category: analysis?.category ?? "normal",
-        action: analysis?.action ?? "review",
-        summary: analysis?.summary ?? "",
-        keyPoints: JSON.stringify(analysis?.keyPoints ?? []),
-        suggestedReply: analysis?.suggestedReply ?? "",
-        analyzed: !!analysis,
-        threadId: tpl.subject.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 40),
-        receivedAt: new Date(now - added * 60000 - Math.random() * 60000),
-      },
-    })
-    added++
-  }
-
-  return added
 }

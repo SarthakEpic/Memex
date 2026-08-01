@@ -119,11 +119,10 @@ You are the ultimate guide to Memex. You know every feature, every setting, ever
 - Export as CSV or JSON
 
 **Smart Inbox section:**
-- Connect your email account (Gmail, Outlook, Yahoo, iCloud)
-- For Gmail: use an App Password (go to myaccount.google.com/apppasswords), NOT your regular password
-- IMAP = Internet Message Access Protocol — it's how apps read your email. You don't need to know what it is; just provide your email + app password and Memex handles the rest
-- Without a password, inbox runs in Demo Mode (sample emails)
-- With a password, inbox syncs REAL emails from your inbox + sent folder
+- Connect Gmail or Microsoft Outlook using the provider's secure sign-in. Memex never asks for the mailbox password.
+- The connection uses OAuth: Gmail is accessed through the Gmail API and Outlook through Microsoft Graph. You can disconnect either account at any time.
+- Advanced IMAP/SMTP remains available for compatible providers such as Yahoo or iCloud, and requires an app-specific password from that provider.
+- A connected account syncs real emails from its inbox. Existing legacy demo accounts must be reconnected before they can sync.
 - AI categorizes each email: urgent (needs immediate action), important (needs response), normal, newsletter, spam
 - AI writes a short summary + key points for each email
 - AI suggests reply drafts for emails that need responses
@@ -258,6 +257,7 @@ export async function generateSmartAnswer(
     messages,
     temperature: 0.4,
     maxTokens: 800,
+    noRetry: true,
   })
 
   if (!result.ok) {
@@ -490,6 +490,7 @@ export async function draftEmailReply(
     ],
     temperature: 0.5,
     maxTokens: 400,
+    noRetry: true,
   })
 
   if (!result.ok) return "Unable to generate a draft at this time."
@@ -531,6 +532,7 @@ JSON scores:`
     ],
     temperature: 0,
     maxTokens: 200,
+    noRetry: true,
   })
 
   if (!result.ok) return chunks
@@ -684,6 +686,7 @@ JSON:`
     ],
     temperature: 0.5,
     maxTokens: 900,
+    noRetry: true,
   })
 
   if (!result.ok) return null
@@ -739,6 +742,7 @@ JSON:`,
     ],
     temperature: 0.6,
     maxTokens: 900,
+    noRetry: true,
   })
 
   if (!result.ok) return null
@@ -791,6 +795,7 @@ SUBJECT:`,
     ],
     temperature: 0.3,
     maxTokens: 60,
+    noRetry: true,
   })
 
   if (!result.ok) return null

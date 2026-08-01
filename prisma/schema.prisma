@@ -45,6 +45,7 @@ model User {
   emailTemplates          EmailTemplate[]
   emailAccounts           EmailAccount[]
   inboxEmails             InboxEmail[]
+  emailAnalysisJobs       EmailAnalysisJob[]
   profile                 Profile?
 }
 
@@ -205,7 +206,7 @@ model ChatMessage {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Email integration (simulated SMTP — stored in DB with status pipeline)
+// Email integration (real SMTP when configured, otherwise saved locally)
 // ─────────────────────────────────────────────────────────────────────────────
 
 model Email {
@@ -225,6 +226,7 @@ model Email {
   scheduledFor DateTime?
   sentAt     DateTime?
   deliveredAt DateTime?
+  deliveryMode String @default("unknown") // smtp | local | unknown
   // Enhanced tracking
   isAiGenerated Boolean @default(false) // true if AI drafted this email
   verified      Boolean @default(false) // true if human verification completed
@@ -276,10 +278,16 @@ model EmailAccount {
   smtpUser    String   @default("")
   smtpSecure  Boolean  @default(true)
   smtpPassword String  @default("") // encrypted app-specific password (enc:v1)
+  // OAuth settings (for password-free Google and Microsoft connections)
+  provider       String   @default("manual") // "google", "microsoft", "manual", or legacy "demo"
+  oauthAccessToken String @default("") // encrypted OAuth access token (enc:v1)
+  oauthRefreshToken String @default("") // encrypted OAuth refresh token (enc:v1)
+  oauthTokenExpiresAt DateTime?
+  oauthScopes String @default("")
   // Status
   connected   Boolean  @default(false)
   lastSyncAt  DateTime?
-  syncMode    String   @default("demo") // "demo" = simulated, "real" = real IMAP
+  syncMode    String   @default("demo") // "oauth", "real" (advanced IMAP), or legacy "demo"
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
@@ -309,8 +317,11 @@ model InboxEmail {
   keyPoints    String   @default("[]") // JSON array of key points
   suggestedReply String @default("") // AI draft reply
   analyzed     Boolean  @default(false)
+  analysisState String  @default("pending") // pending | queued | processing | metadata | analyzed | deferred | failed | local
+  triageScore  Int      @default(0)
   // Thread
   threadId     String   @default("") // groups emails in same conversation
+  providerMessageId String @default("") // Gmail or Microsoft message identifier
   inReplyTo    String   @default("") // message ID this replies to
   // Status
   isRead       Boolean  @default(false)
@@ -325,6 +336,28 @@ model InboxEmail {
   @@index([isRead])
   @@index([receivedAt])
   @@index([threadId])
+  @@index([analysisState])
+  @@index([triageScore])
+}
+
+model EmailAnalysisJob {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailId   String   @unique
+  stage     String   @default("metadata") // metadata | content
+  status    String   @default("queued") // queued | processing | deferred | failed | completed
+  priority  Int      @default(0)
+  attempts  Int      @default(0)
+  runAfter  DateTime @default(now())
+  lockedAt  DateTime?
+  lastError String   @default("")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status, runAfter])
+  @@index([userId, status])
+  @@index([priority, runAfter])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

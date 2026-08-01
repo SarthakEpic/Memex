@@ -1,7 +1,7 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Dialog,
   DialogContent,
@@ -24,8 +24,9 @@ import {
 import { Badge } from "@/components/ui/badge"
 import { Loader2, Mail, Send, Sparkles, Clock } from "lucide-react"
 import { toast } from "sonner"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
 import { useMemex } from "./store"
-import type { EmailTemplateData } from "./types"
+import type { EmailAccountData, EmailTemplateData } from "./types"
 
 export function EmailComposer() {
   const draft = useMemex((s) => s.emailDraft)
@@ -36,9 +37,24 @@ export function EmailComposer() {
   const [bodyMarkdown, setBodyMarkdown] = useState("")
   const [sourceType, setSourceType] = useState<string>("manual")
   const [sending, setSending] = useState(false)
-  const [templates, setTemplates] = useState<EmailTemplateData[]>([])
+  const templatesQuery = useQuery<{ templates: EmailTemplateData[] }>({
+    queryKey: ["email-templates"],
+    queryFn: () => apiRequest("/api/emails/templates"),
+  })
+  const templates = templatesQuery.data?.templates ?? []
   const [scheduleEnabled, setScheduleEnabled] = useState(false)
   const [scheduledFor, setScheduledFor] = useState("")
+  const accountsQuery = useQuery<{ accounts: EmailAccountData[] }>({
+    queryKey: ["email-accounts"],
+    queryFn: () =>
+      apiRequest<{ accounts: EmailAccountData[] }>("/api/email-accounts"),
+  })
+  const hasLiveDelivery = (accountsQuery.data?.accounts ?? []).some(
+    (account) =>
+      account.connected &&
+      ((account.syncMode === "oauth" && account.hasOAuthConnection) ||
+        (account.syncMode === "real" && account.hasSmtpPassword))
+  )
 
   useEffect(() => {
     if (draft) {
@@ -51,13 +67,6 @@ export function EmailComposer() {
     }
   }, [draft])
 
-  // Load templates once
-  useEffect(() => {
-    fetch("/api/emails/templates")
-      .then((r) => r.json())
-      .then((d) => setTemplates(d.templates || []))
-      .catch(() => {})
-  }, [])
 
   if (!draft) return null
 
@@ -76,9 +85,18 @@ export function EmailComposer() {
       toast.error("Please pick a schedule time, or disable scheduling.")
       return
     }
+    if (scheduleEnabled && new Date(scheduledFor).getTime() <= Date.now()) {
+      toast.error("Schedule time must be in the future.")
+      return
+    }
     setSending(true)
     try {
-      const res = await fetch("/api/emails", {
+      const data = await apiRequest<{
+        requiresVerification?: boolean
+        delivered?: boolean
+        realSend?: boolean
+        deliveryMode?: "smtp" | "oauth" | "local" | "unknown"
+      }>("/api/emails", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -92,8 +110,6 @@ export function EmailComposer() {
           requireVerification: sourceType === "chat", // AI emails require verification
         }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed to send")
 
       if (data.requiresVerification) {
         toast.info("Verification required", {
@@ -103,18 +119,20 @@ export function EmailComposer() {
         toast.success("Email scheduled", {
           description: `For ${new Date(scheduledFor).toLocaleString()}`,
         })
+      } else if (data.realSend && data.delivered) {
+        toast.success(data.deliveryMode === "oauth" ? "Email accepted by your mail provider" : "Email accepted by SMTP", {
+          description: `Sent to ${toAddress === "me" ? "your default recipient" : toAddress}`,
+        })
       } else {
-        toast.success(data.realSend ? "Email sent via SMTP ✓" : "Email saved locally", {
-          description: data.realSend
-            ? `Delivered to ${toAddress === "me" ? "your inbox" : toAddress} via real SMTP`
-            : `To: ${toAddress === "me" ? "your inbox" : toAddress}${data.error ? ` (${data.error})` : " (simulated — connect email for real sending)"}`,
+        toast.info("Email saved locally", {
+          description: "No connected mail provider was available, so the message was not sent.",
         })
       }
       qc.invalidateQueries({ queryKey: ["emails"] })
       qc.invalidateQueries({ queryKey: ["stats"] })
       close()
-    } catch (e: any) {
-      toast.error(e.message || "Send failed")
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Send failed."))
     } finally {
       setSending(false)
     }
@@ -135,6 +153,11 @@ export function EmailComposer() {
 
         <div className="flex-1 overflow-y-auto p-4 space-y-4">
           {/* Templates */}
+          {templatesQuery.isError && (
+            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+              Templates could not be loaded. You can still compose manually.
+            </p>
+          )}
           {templates.length > 0 && (
             <div className="space-y-2">
               <Label className="text-xs text-muted-foreground flex items-center gap-1">
@@ -212,7 +235,13 @@ export function EmailComposer() {
               {sourceType}
             </Badge>
             <span>·</span>
-            <span>Renders Markdown → HTML on send · Simulated SMTP delivery</span>
+            <span>
+              {accountsQuery.isError
+                ? "Delivery status unavailable: it will be confirmed after submission"
+                : hasLiveDelivery
+                  ? "Verified mail-provider delivery available"
+                  : "No mail provider: messages save locally"}
+            </span>
           </div>
 
           {/* Scheduling */}
@@ -276,8 +305,17 @@ export function EmailComposer() {
                     </>
                   ) : (
                     <>
-                      <Send className="h-4 w-4 mr-1" />
-                      Send email
+                      {hasLiveDelivery ? (
+                        <>
+                          <Send className="h-4 w-4 mr-1" />
+                          Send email
+                        </>
+                      ) : (
+                        <>
+                          <Mail className="h-4 w-4 mr-1" />
+                          Save locally
+                        </>
+                      )}
                     </>
                   )}
                 </>

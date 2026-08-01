@@ -344,6 +344,7 @@ export interface ChatCompleteResult {
   error?: string
   // True if the error was a rate limit (caller may want to show a specific message)
   rateLimited?: boolean
+  retryAfterMs?: number
 }
 
 const MAX_RETRIES = 4
@@ -377,12 +378,15 @@ export async function chatComplete(options: ChatCompleteOptions): Promise<ChatCo
 
   for (let attempt = 0; attempt <= (options.noRetry ? 0 : MAX_RETRIES); attempt++) {
     try {
-      const completion = await client.chat.completions.create({
-        model,
-        messages: options.messages,
-        temperature,
-        max_tokens: maxTokens,
-      })
+      const completion = await client.chat.completions.create(
+        {
+          model,
+          messages: options.messages,
+          temperature,
+          max_tokens: maxTokens,
+        },
+        options.noRetry ? { maxRetries: 0, timeout: 15_000 } : undefined
+      )
 
       // Extract the text content — handle different response shapes
       let content = ""
@@ -399,6 +403,7 @@ export async function chatComplete(options: ChatCompleteOptions): Promise<ChatCo
       return { ok: true, content: content.trim() }
     } catch (err: any) {
       lastErr = err
+      const retryAfterMs = getRetryAfterMs(err)
 
       // If no-retry mode or not a rate limit, return immediately
       if (options.noRetry || !isRateLimited(err)) {
@@ -407,6 +412,7 @@ export async function chatComplete(options: ChatCompleteOptions): Promise<ChatCo
           content: "",
           error: err?.message || String(err),
           rateLimited: isRateLimited(err),
+          retryAfterMs,
         }
       }
 
@@ -422,9 +428,17 @@ export async function chatComplete(options: ChatCompleteOptions): Promise<ChatCo
     content: "",
     error: lastErr instanceof Error ? lastErr.message : String(lastErr),
     rateLimited: true,
+    retryAfterMs: getRetryAfterMs(lastErr),
   }
 }
 
+function getRetryAfterMs(err: unknown): number | undefined {
+  const headers = (err as { headers?: { get?: (name: string) => string | null } })?.headers
+  const raw = headers?.get?.("retry-after")
+  if (!raw) return undefined
+  const seconds = Number(raw)
+  return Number.isFinite(seconds) && seconds > 0 ? Math.ceil(seconds * 1_000) : undefined
+}
 // ─────────────────────────────────────────────────────────────────────────────
 // Sandbox chat completion — uses z-ai-web-dev-sdk
 // This is the fallback that keeps the project working in the sandbox.
@@ -457,12 +471,14 @@ async function chatCompleteSandbox(options: ChatCompleteOptions): Promise<ChatCo
       return { ok: true, content: content.trim() }
     } catch (err: any) {
       lastErr = err
+      const retryAfterMs = getRetryAfterMs(err)
       if (options.noRetry || !isRateLimited(err)) {
         return {
           ok: false,
           content: "",
           error: err?.message || String(err),
           rateLimited: isRateLimited(err),
+          retryAfterMs,
         }
       }
       if (attempt === MAX_RETRIES) break
@@ -476,6 +492,7 @@ async function chatCompleteSandbox(options: ChatCompleteOptions): Promise<ChatCo
     content: "",
     error: lastErr instanceof Error ? lastErr.message : String(lastErr),
     rateLimited: true,
+    retryAfterMs: getRetryAfterMs(lastErr),
   }
 }
 

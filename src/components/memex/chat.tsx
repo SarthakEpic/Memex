@@ -31,19 +31,19 @@ import {
   Search,
 } from "lucide-react"
 import { toast } from "sonner"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
 import { useMemex } from "./store"
+import { SectionError } from "./section-state"
 import { AnswerRenderer } from "./answer-renderer"
 import { CompareDialog } from "./compare-dialog"
 import { EmailDraftCard } from "./email-draft-card"
 import { useDevice } from "@/hooks/use-device"
-import type { ChatMessageData, ChatSessionSummary, Citation, EmailDraftPayload } from "./types"
+import type { ChatMessageData, ChatSessionSummary, Citation, EmailDraftPayload, NoteSummary } from "./types"
 
-const SUGGESTED = [
-  "Why did we pick postgres?",
-  "What did we decide about caching?",
-  "Why Llama 3.1 8B and not Mistral?",
-  "How does the reranker help retrieval?",
-  "Why Keycloak over Auth0?",
+const EMPTY_WORKSPACE_SUGGESTIONS = [
+  "What can Memex help me with?",
+  "How does source-backed chat work?",
+  "Draft an email to me with a short project update",
 ]
 
 export function Chat() {
@@ -64,10 +64,18 @@ export function Chat() {
   const sessionId = useMemex((s) => s.activeSessionId)
   const setSessionId = useMemex((s) => s.setActiveSession)
   const openEmail = useMemex((s) => s.openEmailComposer)
+  const openNoteComposer = useMemex((s) => s.openNoteComposer)
   const qc = useQueryClient()
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const animationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const section = useMemex((s) => s.section)
+
+  useEffect(() => {
+    return () => {
+      if (animationTimerRef.current) clearTimeout(animationTimerRef.current)
+    }
+  }, [])
 
   // "/" focuses the chat input when on the chat section (unless already typing)
   useEffect(() => {
@@ -87,27 +95,36 @@ export function Chat() {
   }, [section])
 
   // Load messages for active session
-  const { data: sessionData } = useQuery<{
+  const sessionQuery = useQuery<{
     session: { id: string; title: string; messages: ChatMessageData[] }
   }>({
     queryKey: ["chat-session", sessionId],
-    queryFn: async () => {
-      const r = await fetch(`/api/chat/sessions/${sessionId}`)
-      return r.json()
-    },
+    queryFn: () =>
+      apiRequest<{
+        session: { id: string; title: string; messages: ChatMessageData[] }
+      }>(`/api/chat/sessions/${sessionId}`),
     enabled: !!sessionId,
   })
 
-  // Sessions list (sidebar)
-  const { data: sessionsData } = useQuery<{ sessions: ChatSessionSummary[] }>({
+  const sessionsQuery = useQuery<{ sessions: ChatSessionSummary[] }>({
     queryKey: ["chat-sessions"],
-    queryFn: async () => {
-      const r = await fetch("/api/chat/sessions")
-      return r.json()
-    },
+    queryFn: () =>
+      apiRequest<{ sessions: ChatSessionSummary[] }>("/api/chat/sessions"),
   })
 
+  const notesQuery = useQuery<{ notes: NoteSummary[] }>({
+    queryKey: ["notes"],
+    queryFn: () => apiRequest<{ notes: NoteSummary[] }>("/api/notes"),
+  })
+
+  const sessionData = sessionQuery.data
+  const sessionsData = sessionsQuery.data
+
   const messages = sessionData?.session?.messages ?? []
+  const sessions = sessionsData?.sessions ?? []
+  const notes = notesQuery.data?.notes ?? []
+
+  const loadError = sessionsQuery.error || notesQuery.error || sessionQuery.error
 
   useEffect(() => {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" })
@@ -131,7 +148,11 @@ export function Chat() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, sessionId, rerank: true }),
+        body: JSON.stringify({
+          message,
+          ...(sessionId ? { sessionId } : {}),
+          rerank: true,
+        }),
       })
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Chat failed")
@@ -148,7 +169,7 @@ export function Chat() {
           emailDraft: data.emailDraft,
         })
         // Brief delay so the user sees the assistant's intro before the card
-        setTimeout(() => {
+        animationTimerRef.current = setTimeout(() => {
           setStreamingAnswer(null)
           setSessionId(data.sessionId)
           qc.invalidateQueries({ queryKey: ["chat-session", data.sessionId] })
@@ -174,7 +195,7 @@ export function Chat() {
           emailDraft: null,
         })
         if (i < words.length) {
-          setTimeout(tick, 20)
+          animationTimerRef.current = setTimeout(tick, 20)
         } else {
           // Finalize — invalidate to load persisted message
           setStreamingAnswer(null)
@@ -186,23 +207,31 @@ export function Chat() {
         }
       }
       tick()
-    } catch (e: any) {
-      toast.error(e.message || "Chat failed")
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Chat failed."))
       setStreamingAnswer(null)
       setSending(false)
     }
   }
 
   const handleNewChat = () => {
+    if (animationTimerRef.current) clearTimeout(animationTimerRef.current)
+    animationTimerRef.current = null
+    setSending(false)
     setSessionId(null)
     setStreamingAnswer(null)
   }
 
   const handleDeleteSession = async (id: string) => {
-    await fetch(`/api/chat/sessions/${id}`, { method: "DELETE" })
-    if (sessionId === id) setSessionId(null)
-    qc.invalidateQueries({ queryKey: ["chat-sessions"] })
-    toast.success("Chat deleted")
+    if (!window.confirm("Delete this chat and all of its messages?")) return
+    try {
+      await apiRequest(`/api/chat/sessions/${id}`, { method: "DELETE" })
+      if (sessionId === id) setSessionId(null)
+      void qc.invalidateQueries({ queryKey: ["chat-sessions"] })
+      toast.success("Chat deleted")
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Chat could not be deleted."))
+    }
   }
 
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -219,7 +248,7 @@ export function Chat() {
       return
     }
     try {
-      await fetch(`/api/chat/sessions/${editingId}`, {
+      await apiRequest(`/api/chat/sessions/${editingId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: editTitle.trim() }),
@@ -235,14 +264,18 @@ export function Chat() {
     setEditingId(null)
   }
 
-  const handleEmailAnswer = (answer: string, citations: Citation[]) => {
+  const handleEmailAnswer = (
+    answer: string,
+    citations: Citation[],
+    question: string
+  ) => {
     const citeList = citations.length
       ? `\n\n## Sources\n${citations
           .map((c) => `- ${c.sourcePath}${c.headingPath ? ` › ${c.headingPath}` : ""} (chunk ${c.chunkIndex})`)
           .join("\n")}\n`
       : ""
     openEmail({
-      subject: "Memex answer: " + (messages.find((m) => m.role === "user")?.content.slice(0, 50) ?? "your question"),
+      subject: `Memex answer: ${question.slice(0, 50) || "your question"}`,
       bodyMarkdown: `${answer}${citeList}\n---\n_Sent from Memex · citation-first knowledge retrieval_\n`,
       sourceType: "chat",
     })
@@ -253,7 +286,7 @@ export function Chat() {
   const handleDraftChange = useCallback(
     async (messageId: string, updated: EmailDraftPayload) => {
       try {
-        await fetch(`/api/chat/sessions/${sessionId}/messages/${messageId}`, {
+        await apiRequest(`/api/chat/sessions/${sessionId}/messages/${messageId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ emailDraft: updated }),
@@ -274,9 +307,10 @@ export function Chat() {
             }
           }
         )
-      } catch {
-        // Silent fail — the local UI state is already correct, this is just
-        // a best-effort persistence to the server.
+      } catch (error) {
+        toast.error("Draft change could not be saved", {
+          description: getErrorMessage(error),
+        })
       }
     },
     [sessionId, qc]
@@ -311,6 +345,20 @@ export function Chat() {
     }
   }, [isDragging])
 
+  if (loadError) {
+    return (
+      <SectionError
+        title="Chat could not be loaded"
+        error={loadError}
+        onRetry={() => {
+          void sessionsQuery.refetch()
+          void notesQuery.refetch()
+          if (sessionId) void sessionQuery.refetch()
+        }}
+      />
+    )
+  }
+
   return (
     <div className="flex h-full">
       {/* Sessions sidebar — resizable */}
@@ -327,12 +375,12 @@ export function Chat() {
         <div className="flex-1 min-h-0 overflow-hidden">
           <ScrollArea className="h-full">
           <div className="p-2 space-y-0.5">
-            {sessionsData?.sessions.length === 0 && (
+            {sessions.length === 0 && (
               <p className="text-xs text-muted-foreground p-3 text-center">
                 No chats yet. Ask your first question.
               </p>
             )}
-            {sessionsData?.sessions.map((s) => (
+            {sessions.map((s) => (
               <div
                 key={s.id}
                 className={`group flex items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors cursor-pointer ${
@@ -444,7 +492,8 @@ export function Chat() {
               variant="ghost"
               className="h-7 text-xs"
               onClick={() => setCompareOpen(true)}
-              title="Compare two chat sessions side by side"
+              disabled={sessions.length < 2}
+              title={sessions.length < 2 ? "Start at least two chats to compare" : "Compare two chat sessions side by side"}
             >
               <GitCompare className="h-3.5 w-3.5 mr-1" />
               Compare
@@ -501,7 +550,11 @@ export function Chat() {
         <div ref={scrollRef} className="flex-1 overflow-y-auto thin-scroll">
           <div className="max-w-3xl mx-auto px-4 py-6 space-y-5">
             {messages.length === 0 && !streamingAnswer && (
-              <EmptyState onPick={handleSend} />
+              <EmptyState
+                onPick={handleSend}
+                notes={notes}
+                onAddNote={openNoteComposer}
+              />
             )}
 
             {messages.map((m, idx) => {
@@ -511,20 +564,21 @@ export function Chat() {
               if (!isMatch && messageSearch) return null
               // Find the preceding user message to use as the "instruction"
               // for email draft regeneration.
-              let instruction = ""
-              if (m.role === "assistant" && m.emailDraft) {
+              let precedingQuestion = ""
+              if (m.role === "assistant") {
                 for (let j = idx - 1; j >= 0; j--) {
                   if (messages[j].role === "user") {
-                    instruction = messages[j].content
+                    precedingQuestion = messages[j].content
                     break
                   }
                 }
               }
+              const instruction = m.emailDraft ? precedingQuestion : ""
               return (
                 <MessageBubble
                   key={m.id}
                   message={m}
-                  onEmail={() => handleEmailAnswer(m.content, m.citations)}
+                  onEmail={() => handleEmailAnswer(m.content, m.citations, precedingQuestion)}
                   searchTerm={messageSearch}
                   instruction={instruction}
                   onDraftChange={handleDraftChange}
@@ -546,7 +600,7 @@ export function Chat() {
                       Retrieving + reasoning…
                     </div>
                   )}
-                  {streamingAnswer.citations.length > 0 && streamingAnswer.answer === messages[0]?.content && (
+                  {streamingAnswer.citations.length > 0 && streamingAnswer.answer && (
                     <CitationStrip citations={streamingAnswer.citations} />
                   )}
                   {/* While streaming, if the server returned an emailDraft,
@@ -617,28 +671,49 @@ export function Chat() {
   )
 }
 
-function EmptyState({ onPick }: { onPick: (q: string) => void }) {
+function EmptyState({
+  onPick,
+  notes,
+  onAddNote,
+}: {
+  onPick: (question: string) => void
+  notes: NoteSummary[]
+  onAddNote: () => void
+}) {
+  const hasNotes = notes.length > 0
+  const suggestions = hasNotes
+    ? notes.slice(0, 4).map((note) => `What are the key points in ${note.title}?`)
+    : EMPTY_WORKSPACE_SUGGESTIONS
+
   return (
-    <div className="text-center py-10 space-y-6">
-      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-primary/10">
+    <div className="space-y-6 py-10 text-center">
+      <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-md bg-primary/10">
         <Sparkles className="h-7 w-7 text-primary" />
       </div>
       <div className="space-y-1.5">
-        <h3 className="text-lg font-semibold">Ask anything about your notes</h3>
-        <p className="text-sm text-muted-foreground max-w-md mx-auto">
-          Memex retrieves the most relevant chunks from your Markdown corpus and
-          generates an answer that cites them inline. If it can&apos;t find a source,
-          it says so.
+        <h3 className="text-lg font-semibold">
+          {hasNotes ? "Ask your knowledge base" : "Start with a note or a general request"}
+        </h3>
+        <p className="mx-auto max-w-md text-sm text-muted-foreground">
+          {hasNotes
+            ? "Answers about your notes include links to the exact source chunks used."
+            : "Source-backed answers need a note. General help and email drafting are available now."}
         </p>
       </div>
-      <div className="flex flex-wrap gap-2 justify-center max-w-2xl mx-auto">
-        {SUGGESTED.map((q) => (
+      {!hasNotes && (
+        <Button size="sm" onClick={onAddNote}>
+          <Plus className="mr-1.5 h-3.5 w-3.5" />
+          Add your first note
+        </Button>
+      )}
+      <div className="mx-auto flex max-w-2xl flex-wrap justify-center gap-2">
+        {suggestions.map((question) => (
           <button
-            key={q}
-            onClick={() => onPick(q)}
-            className="text-xs px-3 py-1.5 rounded-full border border-border hover:border-primary hover:bg-accent transition-colors text-muted-foreground hover:text-foreground"
+            key={question}
+            onClick={() => onPick(question)}
+            className="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground transition-colors hover:border-primary hover:bg-accent hover:text-foreground"
           >
-            {q}
+            {question}
           </button>
         ))}
       </div>

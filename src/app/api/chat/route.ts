@@ -10,6 +10,8 @@ import {
 import { rateLimit } from "@/server/security/rate-limit"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
 import { chatRequestSchema, validationError } from "@/server/validation/api"
+import { formatInboxChatAnswer, parseInboxChatQuery } from "@/server/email/inbox-chat"
+import { isInboxReviewQuestion, reviewInboxQuestion } from "@/server/email/review-inbox"
 
 // POST /api/chat
 // Body: { message: string, sessionId?: string }
@@ -31,7 +33,7 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
-  const { message, sessionId } = parsed.data
+  const { message, sessionId, rerank = true } = parsed.data
 
   // Get or create session
   let session = sessionId
@@ -48,34 +50,106 @@ export async function POST(req: NextRequest) {
     data: { userId: auth.user.id, sessionId: session.id, role: "user", content: message },
   })
 
-  // Build conversation history (last 20 messages)
-  const history = await db.chatMessage.findMany({
-    where: { userId: auth.user.id, sessionId: session.id, role: { in: ["user", "assistant"] } },
-    orderBy: { createdAt: "asc" },
-    take: 20,
-  })
-  const historyClean = history
-    .slice(0, -1) // exclude the just-stored user message
-    .map((h) => ({ role: h.role as "user" | "assistant", content: h.content }))
+  if (isInboxReviewQuestion(message)) {
+    const review = await reviewInboxQuestion(auth.user.id, message)
+    await db.chatMessage.create({
+      data: {
+        userId: auth.user.id,
+        sessionId: session.id,
+        role: "assistant",
+        content: review.answer,
+        citations: "[]",
+        emailDraft: "",
+      },
+    })
+    return NextResponse.json({
+      sessionId: session.id,
+      answer: review.answer,
+      citations: [],
+      context: [],
+      mode: "email",
+      refused: false,
+      // The local metadata result remains useful even if a bounded body review
+      // could not obtain the shared AI slot.
+      serviceError: false,
+      retrievalCount: 0,
+      inspectedBodies: review.inspectedBodies,
+    })
+  }
 
-  // Build email context from recent inbox emails (keep it SHORT)
-  let emailContext = ""
-  try {
-    const recentEmails = await db.inboxEmail.findMany({
+  const inboxQuestion = parseInboxChatQuery(message)
+
+  // Load the newest conversation history and privacy policy in parallel.
+  const [historyNewestFirst, recentEmails, profile, localInboxEmails] = await Promise.all([
+    db.chatMessage.findMany({
+      where: {
+        userId: auth.user.id,
+        sessionId: session.id,
+        role: { in: ["user", "assistant"] },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 20,
+    }),
+    db.inboxEmail.findMany({
       where: { userId: auth.user.id },
       orderBy: { receivedAt: "desc" },
       take: 3,
+    }),
+    db.profile.findUnique({ where: { userId: auth.user.id } }),
+    inboxQuestion
+      ? db.inboxEmail.findMany({
+          where: {
+            userId: auth.user.id,
+            ...(inboxQuestion.receivedAfter ? { receivedAt: { gte: inboxQuestion.receivedAfter } } : {}),
+            ...(inboxQuestion.categories ? { category: { in: inboxQuestion.categories } } : {}),
+            ...(inboxQuestion.unread ? { isRead: false } : {}),
+          },
+          orderBy: { receivedAt: "desc" },
+          take: 12,
+        })
+      : Promise.resolve([]),
+  ])
+  const history = historyNewestFirst.reverse()
+  const historyClean = history
+    .slice(0, -1) // exclude the just-stored user message
+    .map((item) => ({
+      role: item.role as "user" | "assistant",
+      content: item.content,
+    }))
+
+  // Email context contains metadata only. Full bodies are not attached to chat.
+  const emailContext = recentEmails
+    .map(
+      (email) =>
+        `[${email.category}] FROM: ${email.fromName || email.fromAddress} | SUBJECT: ${email.subject}`
+    )
+    .join("\n")
+
+  // Mailbox status questions are answered from the local inbox directly. They
+  // do not need an LLM and remain useful when an external provider is busy.
+  if (inboxQuestion) {
+    const answer = formatInboxChatAnswer(inboxQuestion, localInboxEmails)
+    await db.chatMessage.create({
+      data: {
+        userId: auth.user.id,
+        sessionId: session.id,
+        role: "assistant",
+        content: answer,
+        citations: "[]",
+        emailDraft: "",
+      },
     })
-    if (recentEmails.length > 0) {
-      emailContext = recentEmails
-        .map(
-          (e) =>
-            `[${e.category}] FROM: ${e.fromName || e.fromAddress} | SUBJECT: ${e.subject}`
-        )
-        .join("\n")
-    }
-  } catch {
-    // inboxEmail table might not exist yet
+
+    return NextResponse.json({
+      sessionId: session.id,
+      answer,
+      citations: [],
+      context: [],
+      mode: "email",
+      refused: false,
+      serviceError: false,
+      retrievalCount: 0,
+    })
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -185,9 +259,20 @@ export async function POST(req: NextRequest) {
   const hasNoteKeyword = noteKeywords.some((kw) => lowerMsg.includes(kw))
   const mightBeAboutNotes = !isGeneral && (hasQuestionMark || hasNoteKeyword || lastWasAboutNotes)
 
-  const chunks: ContextChunk[] = mightBeAboutNotes
-    ? await retrieve(message, { userId: auth.user.id, topK: 6, rerank: false })
+  const minimalContext = profile?.llmPrivacyMode ?? true
+  const retrievedChunks: ContextChunk[] = mightBeAboutNotes
+    ? await retrieve(message, {
+        userId: auth.user.id,
+        topK: minimalContext ? 3 : 6,
+        rerank,
+      })
     : []
+  const chunks = minimalContext
+    ? retrievedChunks.map((chunk) => ({
+        ...chunk,
+        text: chunk.text.slice(0, 1_200),
+      }))
+    : retrievedChunks
 
   // Generate smart answer (multi-mode)
   const { answer, mode, citedChunkIds, refused, serviceError } =
@@ -243,7 +328,7 @@ export async function POST(req: NextRequest) {
     context,
     mode: finalMode,
     refused: finalRefused,
-    serviceError: false,
+    serviceError,
     retrievalCount: chunks.length,
   })
 }

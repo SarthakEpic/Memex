@@ -27,11 +27,22 @@ export async function GET(req: NextRequest) {
     ]
   }
 
-  const emails = await db.inboxEmail.findMany({
+  const [emails, analysisGroups] = await Promise.all([
+    db.inboxEmail.findMany({
     where,
     orderBy: { receivedAt: "desc" },
     take: 100,
-  })
+    }),
+    db.inboxEmail.groupBy({
+      by: ["analysisState"],
+      where: { userId: auth.user.id, isArchived: false },
+      _count: { _all: true },
+    }),
+  ])
+  const analysis = analysisGroups.reduce<Record<string, number>>((counts, group) => {
+    counts[group.analysisState] = group._count._all
+    return counts
+  }, {})
 
   const mapped = emails.map((e) => ({
     ...e,
@@ -60,10 +71,10 @@ export async function GET(req: NextRequest) {
       }))
       .sort((a, b) => new Date(b.latestDate).getTime() - new Date(a.latestDate).getTime())
 
-    return NextResponse.json({ threads: threadArray, emails: mapped })
+    return NextResponse.json({ threads: threadArray, emails: mapped, analysis })
   }
 
-  return NextResponse.json({ emails: mapped })
+  return NextResponse.json({ emails: mapped, analysis })
 }
 
 function safeParse<T>(s: string, fallback: T): T {

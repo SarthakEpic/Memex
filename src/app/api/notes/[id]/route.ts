@@ -3,6 +3,8 @@ import { db } from "@/lib/db"
 import { invalidateCorpusCache } from "@/lib/retrieval"
 import { reingestNote } from "@/lib/ingest"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { validationError } from "@/server/validation/api"
+import { noteUpdateSchema } from "@/server/validation/mutations"
 
 // GET /api/notes/[id] — full note with chunks + decisions
 export async function GET(
@@ -40,13 +42,11 @@ export async function PATCH(
 
   const { id } = await params
   const body = await req.json().catch(() => ({}))
-  const { title, content, project, tags, extractDecisions = true } = body as {
-    title?: string
-    content?: string
-    project?: string
-    tags?: string[]
-    extractDecisions?: boolean
+  const parsed = noteUpdateSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
+  const { title, content, project, tags, extractDecisions = true } = parsed.data
 
   const existing = await db.note.findFirst({ where: { id, userId: auth.user.id } })
   if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 })

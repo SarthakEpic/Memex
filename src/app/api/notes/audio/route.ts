@@ -3,6 +3,8 @@ import { ingestNote } from "@/server/services/ingestion"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
 import { rateLimit } from "@/server/security/rate-limit"
 import { chatComplete, transcribeAudio } from "@/lib/ai-client"
+import { validationError } from "@/server/validation/api"
+import { audioNoteSchema } from "@/server/validation/mutations"
 
 // POST /api/notes/audio
 // Body: { audio: base64, language: "en" | "hi" | "auto", project?, tags?, extractDecisions? }
@@ -18,23 +20,17 @@ export async function POST(req: NextRequest) {
   if (limited) return limited
 
   const body = await req.json().catch(() => ({}))
+  const parsed = audioNoteSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
+  }
   const {
     audio,
-    language = "auto",
-    project = "voice",
-    tags = [],
-    extractDecisions: doExtract = true,
-  } = body as {
-    audio?: string
-    language?: string
-    project?: string
-    tags?: string[]
-    extractDecisions?: boolean
-  }
-
-  if (!audio || typeof audio !== "string") {
-    return NextResponse.json({ error: "Audio data (base64) is required" }, { status: 400 })
-  }
+    language,
+    project,
+    tags,
+    extractDecisions: doExtract,
+  } = parsed.data
 
   // Step 1: Transcribe audio via the AI provider's ASR service
   // (Groq Whisper is free; OpenAI Whisper is paid; Gemini/Ollama don't support ASR)

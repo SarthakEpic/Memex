@@ -3,6 +3,8 @@ import { db } from "@/lib/db"
 import { invalidateCorpusCache } from "@/lib/retrieval"
 import { ensureUserWorkspace } from "@/server/auth/defaults"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { validationError } from "@/server/validation/api"
+import { eraseWorkspaceSchema } from "@/server/validation/mutations"
 
 // POST /api/security/erase
 // Erases the signed-in user's workspace data from the database. This is irreversible.
@@ -12,13 +14,9 @@ export async function POST(req: NextRequest) {
   if (isAuthFailure(auth)) return auth.response
 
   const body = await req.json().catch(() => ({}))
-  const { confirm } = body as { confirm?: string }
-
-  if (confirm !== "ERASE ALL DATA") {
-    return NextResponse.json(
-      { error: "Confirmation string does not match. Type 'ERASE ALL DATA' to confirm." },
-      { status: 400 }
-    )
+  const parsed = eraseWorkspaceSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
 
   const userId = auth.user.id

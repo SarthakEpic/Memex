@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS "Email" (
   "scheduledFor" DATETIME,
   "sentAt" DATETIME,
   "deliveredAt" DATETIME,
+  "deliveryMode" TEXT NOT NULL DEFAULT 'unknown',
   "isAiGenerated" BOOLEAN NOT NULL DEFAULT false,
   "verified" BOOLEAN NOT NULL DEFAULT false,
   "attempts" INTEGER NOT NULL DEFAULT 0,
@@ -196,6 +197,11 @@ CREATE TABLE IF NOT EXISTS "EmailAccount" (
   "smtpUser" TEXT NOT NULL DEFAULT '',
   "smtpSecure" BOOLEAN NOT NULL DEFAULT true,
   "smtpPassword" TEXT NOT NULL DEFAULT '',
+  "provider" TEXT NOT NULL DEFAULT 'manual',
+  "oauthAccessToken" TEXT NOT NULL DEFAULT '',
+  "oauthRefreshToken" TEXT NOT NULL DEFAULT '',
+  "oauthTokenExpiresAt" DATETIME,
+  "oauthScopes" TEXT NOT NULL DEFAULT '',
   "connected" BOOLEAN NOT NULL DEFAULT false,
   "lastSyncAt" DATETIME,
   "syncMode" TEXT NOT NULL DEFAULT 'demo',
@@ -220,7 +226,10 @@ CREATE TABLE IF NOT EXISTS "InboxEmail" (
   "keyPoints" TEXT NOT NULL DEFAULT '[]',
   "suggestedReply" TEXT NOT NULL DEFAULT '',
   "analyzed" BOOLEAN NOT NULL DEFAULT false,
+  "analysisState" TEXT NOT NULL DEFAULT 'pending',
+  "triageScore" INTEGER NOT NULL DEFAULT 0,
   "threadId" TEXT NOT NULL DEFAULT '',
+  "providerMessageId" TEXT NOT NULL DEFAULT '',
   "inReplyTo" TEXT NOT NULL DEFAULT '',
   "isRead" BOOLEAN NOT NULL DEFAULT false,
   "isStarred" BOOLEAN NOT NULL DEFAULT false,
@@ -234,6 +243,22 @@ CREATE INDEX IF NOT EXISTS "InboxEmail_action_idx" ON "InboxEmail"("action");
 CREATE INDEX IF NOT EXISTS "InboxEmail_isRead_idx" ON "InboxEmail"("isRead");
 CREATE INDEX IF NOT EXISTS "InboxEmail_receivedAt_idx" ON "InboxEmail"("receivedAt");
 CREATE INDEX IF NOT EXISTS "InboxEmail_threadId_idx" ON "InboxEmail"("threadId");
+
+CREATE TABLE IF NOT EXISTS "EmailAnalysisJob" (
+  "id" TEXT NOT NULL PRIMARY KEY,
+  "userId" TEXT NOT NULL,
+  "emailId" TEXT NOT NULL,
+  "stage" TEXT NOT NULL DEFAULT 'metadata',
+  "status" TEXT NOT NULL DEFAULT 'queued',
+  "priority" INTEGER NOT NULL DEFAULT 0,
+  "attempts" INTEGER NOT NULL DEFAULT 0,
+  "runAfter" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "lockedAt" DATETIME,
+  "lastError" TEXT NOT NULL DEFAULT '',
+  "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  "updatedAt" DATETIME NOT NULL,
+  CONSTRAINT "EmailAnalysisJob_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
 
 CREATE TABLE IF NOT EXISTS "Profile" (
   "id" TEXT NOT NULL PRIMARY KEY,
@@ -286,6 +311,24 @@ for (const table of [
   db.prepare(`UPDATE "${table}" SET "userId" = 'local-user' WHERE "userId" IS NULL OR "userId" = ''`).run()
 }
 ensureColumn("RateLimitBucket", "userId", "TEXT")
+ensureColumn("Email", "deliveryMode", "TEXT NOT NULL DEFAULT 'unknown'")
+ensureColumn("InboxEmail", "providerMessageId", "TEXT NOT NULL DEFAULT ''")
+ensureColumn("InboxEmail", "analysisState", "TEXT NOT NULL DEFAULT 'pending'")
+ensureColumn("InboxEmail", "triageScore", "INTEGER NOT NULL DEFAULT 0")
+ensureColumn("EmailAccount", "provider", "TEXT NOT NULL DEFAULT 'manual'")
+ensureColumn("EmailAccount", "oauthAccessToken", "TEXT NOT NULL DEFAULT ''")
+ensureColumn("EmailAccount", "oauthRefreshToken", "TEXT NOT NULL DEFAULT ''")
+ensureColumn("EmailAccount", "oauthTokenExpiresAt", "DATETIME")
+ensureColumn("EmailAccount", "oauthScopes", "TEXT NOT NULL DEFAULT ''")
+
+db.exec(`
+CREATE INDEX IF NOT EXISTS "InboxEmail_analysisState_idx" ON "InboxEmail"("analysisState");
+CREATE INDEX IF NOT EXISTS "InboxEmail_triageScore_idx" ON "InboxEmail"("triageScore");
+CREATE UNIQUE INDEX IF NOT EXISTS "EmailAnalysisJob_emailId_key" ON "EmailAnalysisJob"("emailId");
+CREATE INDEX IF NOT EXISTS "EmailAnalysisJob_status_runAfter_idx" ON "EmailAnalysisJob"("status", "runAfter");
+CREATE INDEX IF NOT EXISTS "EmailAnalysisJob_userId_status_idx" ON "EmailAnalysisJob"("userId", "status");
+CREATE INDEX IF NOT EXISTS "EmailAnalysisJob_priority_runAfter_idx" ON "EmailAnalysisJob"("priority", "runAfter");
+`)
 
 db.exec(`
 DROP INDEX IF EXISTS "Note_sourcePath_key";

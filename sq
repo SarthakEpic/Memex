@@ -1,0 +1,4 @@
+SELECT *
+FROM STUDENT
+WHERE Email NOT LIKE '%@gmail.com'
+AND CGPA >= 9.0;

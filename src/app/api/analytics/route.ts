@@ -17,12 +17,33 @@ export async function GET(req: NextRequest) {
   const auth = await requireUser(req)
   if (isAuthFailure(auth)) return auth.response
 
-  // Gather all assistant messages with their citations
-  const assistantMessages = await db.chatMessage.findMany({
+  const [assistantMessages, userMessages, totalQuestions, totalAnswers, notesByProject, decisionsByProject] =
+    await Promise.all([
+      // Citation analytics currently read stored citation JSON because it is not normalized.
+      db.chatMessage.findMany({
     where: { role: "assistant", userId: auth.user.id },
-    select: { content: true, citations: true, createdAt: true },
-    orderBy: { createdAt: "asc" },
-  })
+        select: { citations: true },
+        orderBy: { createdAt: "asc" },
+      }),
+      db.chatMessage.findMany({
+        where: { role: "user", userId: auth.user.id },
+        select: { content: true, createdAt: true },
+        orderBy: { createdAt: "desc" },
+        take: 100,
+      }),
+      db.chatMessage.count({ where: { role: "user", userId: auth.user.id } }),
+      db.chatMessage.count({ where: { role: "assistant", userId: auth.user.id } }),
+      db.note.groupBy({
+        by: ["project"],
+        where: { userId: auth.user.id },
+        _count: true,
+      }),
+      db.decision.groupBy({
+        by: ["project"],
+        where: { userId: auth.user.id },
+        _count: true,
+      }),
+    ])
 
   // Count citation frequency per chunkId
   const citationCounts = new Map<string, number>()
@@ -46,13 +67,6 @@ export async function GET(req: NextRequest) {
     .sort((a, b) => b.count - a.count)
     .slice(0, 10)
 
-  // User messages = questions asked
-  const userMessages = await db.chatMessage.findMany({
-    where: { role: "user", userId: auth.user.id },
-    select: { content: true, createdAt: true },
-    orderBy: { createdAt: "desc" },
-    take: 100,
-  })
 
   // Recent questions (last 10)
   const recentQuestions = userMessages.slice(0, 10).map((m) => ({
@@ -80,29 +94,23 @@ export async function GET(req: NextRequest) {
     count,
   }))
 
-  // Top projects by note count + decision count
-  const notesByProject = await db.note.groupBy({
-    by: ["project"],
-    where: { userId: auth.user.id },
-    _count: true,
-  })
-  const decisionsByProject = await db.decision.groupBy({
-    by: ["project"],
-    where: { userId: auth.user.id },
-    _count: true,
-  })
-
-  const projectStats = notesByProject.map((n) => ({
-    project: n.project,
-    notes: n._count,
-    decisions: decisionsByProject.find((d) => d.project === n.project)?._count ?? 0,
-  }))
+  // Include projects that currently contain only decisions as well as note-backed projects.
+  const projects = new Set([
+    ...notesByProject.map((entry) => entry.project),
+    ...decisionsByProject.map((entry) => entry.project),
+  ])
+  const projectStats = Array.from(projects)
+    .map((project) => ({
+      project,
+      notes: notesByProject.find((entry) => entry.project === project)?._count ?? 0,
+      decisions: decisionsByProject.find((entry) => entry.project === project)?._count ?? 0,
+    }))
+    .sort((a, b) => b.notes + b.decisions - (a.notes + a.decisions))
 
   // Summary stats
   const totalCitations = Array.from(citationCounts.values()).reduce((a, b) => a + b, 0)
-  const totalQuestions = userMessages.length
-  const avgCitationsPerAnswer = assistantMessages.length > 0
-    ? Number((totalCitations / assistantMessages.length).toFixed(1))
+  const avgCitationsPerAnswer = totalAnswers > 0
+    ? Number((totalCitations / totalAnswers).toFixed(1))
     : 0
 
   return NextResponse.json({
@@ -112,7 +120,7 @@ export async function GET(req: NextRequest) {
     projectStats,
     summary: {
       totalQuestions,
-      totalAnswers: assistantMessages.length,
+      totalAnswers,
       totalCitations,
       avgCitationsPerAnswer,
       uniqueCitedChunks: citationCounts.size,

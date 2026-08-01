@@ -54,7 +54,9 @@ import {
   Check,
 } from "lucide-react"
 import { toast } from "sonner"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
 import { useMemex } from "./store"
+import { SectionError } from "./section-state"
 import { MarkdownPreview } from "./markdown-preview"
 import { NoteToc } from "./note-toc"
 import { FileUploadDialog } from "./file-upload-dialog"
@@ -66,17 +68,22 @@ import type { NoteSummary, NoteDetail } from "./types"
 export function Notes() {
   const qc = useQueryClient()
   const [search, setSearch] = useState("")
-  const [openAdd, setOpenAdd] = useState(false)
   const [openImport, setOpenImport] = useState(false)
   const [openUpload, setOpenUpload] = useState(false)
   const [openAudio, setOpenAudio] = useState(false)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
   const [searchFocused, setSearchFocused] = useState(false)
   const [activeTag, setActiveTag] = useState<string | null>(null)
   const [bulkMode, setBulkMode] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [pinnedOnly, setPinnedOnly] = useState(false)
   const { isMobile } = useDevice()
+  const selectedId = useMemex((state) => state.activeNoteId)
+  const setSelectedId = useMemex((state) => state.setActiveNote)
+  const openAdd = useMemex((state) => state.noteComposerOpen)
+  const openNoteComposer = useMemex((state) => state.openNoteComposer)
+  const closeNoteComposer = useMemex((state) => state.closeNoteComposer)
+  const setOpenAdd = (open: boolean) =>
+    open ? openNoteComposer() : closeNoteComposer()
   const { recent, addSearch, clearSearches } = useRecentSearches("memex-note-searches")
 
   // Listen for note updates from audio/file imports
@@ -91,13 +98,25 @@ export function Notes() {
     return () => window.removeEventListener("memex-notes-updated", handler)
   }, [qc])
 
-  const { data: notesData, isLoading } = useQuery<{ notes: NoteSummary[] }>({
+  const {
+    data: notesData,
+    isLoading,
+    error: notesError,
+    refetch: refetchNotes,
+  } = useQuery<{ notes: NoteSummary[] }>({
     queryKey: ["notes"],
-    queryFn: async () => {
-      const r = await fetch("/api/notes")
-      return r.json()
-    },
+    queryFn: () => apiRequest<{ notes: NoteSummary[] }>("/api/notes"),
   })
+
+  if (notesError) {
+    return (
+      <SectionError
+        title="Notes could not be loaded"
+        error={notesError}
+        onRetry={() => void refetchNotes()}
+      />
+    )
+  }
 
   // Compute available tags from all notes (sorted by frequency)
   const allTags = (() => {
@@ -301,22 +320,30 @@ export function Notes() {
                   }
                 }}
                 onDelete={async () => {
-                  await fetch(`/api/notes/${n.id}`, { method: "DELETE" })
-                  toast.success("Note deleted")
-                  if (selectedId === n.id) setSelectedId(null)
-                  qc.invalidateQueries({ queryKey: ["notes"] })
-                  qc.invalidateQueries({ queryKey: ["stats"] })
+                  if (!window.confirm(`Delete "${n.title}"? This also removes its indexed chunks.`)) return
+                  try {
+                    await apiRequest(`/api/notes/${n.id}`, { method: "DELETE" })
+                    toast.success("Note deleted")
+                    if (selectedId === n.id) setSelectedId(null)
+                    qc.invalidateQueries({ queryKey: ["notes"] })
+                    qc.invalidateQueries({ queryKey: ["stats"] })
+                    qc.invalidateQueries({ queryKey: ["timeline"] })
+                  } catch (error) {
+                    toast.error("Note could not be deleted", { description: getErrorMessage(error) })
+                  }
                 }}
                 onTogglePin={async () => {
-                  const r = await fetch("/api/pin", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ type: "note", id: n.id }),
-                  })
-                  const d = await r.json()
-                  if (d.pinned) toast.success("Note pinned to top")
-                  else toast.success("Note unpinned")
-                  qc.invalidateQueries({ queryKey: ["notes"] })
+                  try {
+                    const d = await apiRequest<{ pinned: boolean }>("/api/pin", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ type: "note", id: n.id }),
+                    })
+                    toast.success(d.pinned ? "Note pinned to top" : "Note unpinned")
+                    qc.invalidateQueries({ queryKey: ["notes"] })
+                  } catch (error) {
+                    toast.error("Pin could not be updated", { description: getErrorMessage(error) })
+                  }
                 }}
               />
             ))}
@@ -333,15 +360,19 @@ export function Notes() {
                   className="h-7 text-xs"
                   onClick={async () => {
                     const ids = Array.from(selectedIds)
-                    await fetch("/api/notes/bulk", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ action: "pin", ids }),
-                    })
-                    toast.success(`Pinned ${ids.length} notes`)
-                    setBulkMode(false)
-                    setSelectedIds(new Set())
-                    qc.invalidateQueries({ queryKey: ["notes"] })
+                    try {
+                      await apiRequest("/api/notes/bulk", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "pin", ids }),
+                      })
+                      toast.success(`Pinned ${ids.length} notes`)
+                      setBulkMode(false)
+                      setSelectedIds(new Set())
+                      qc.invalidateQueries({ queryKey: ["notes"] })
+                    } catch (error) {
+                      toast.error("Selected notes could not be pinned", { description: getErrorMessage(error) })
+                    }
                   }}
                 >
                   <Pin className="h-3 w-3 mr-1" />
@@ -366,17 +397,23 @@ export function Notes() {
                   className="h-7 text-xs text-destructive hover:text-destructive"
                   onClick={async () => {
                     const ids = Array.from(selectedIds)
-                    await fetch("/api/notes/bulk", {
-                      method: "POST",
-                      headers: { "Content-Type": "application/json" },
-                      body: JSON.stringify({ action: "delete", ids }),
-                    })
-                    toast.success(`Deleted ${ids.length} notes`)
-                    setBulkMode(false)
-                    setSelectedIds(new Set())
-                    setSelectedId(null)
-                    qc.invalidateQueries({ queryKey: ["notes"] })
-                    qc.invalidateQueries({ queryKey: ["stats"] })
+                    if (!window.confirm(`Delete ${ids.length} selected note${ids.length === 1 ? "" : "s"}? This cannot be undone.`)) return
+                    try {
+                      await apiRequest("/api/notes/bulk", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ action: "delete", ids }),
+                      })
+                      toast.success(`Deleted ${ids.length} notes`)
+                      setBulkMode(false)
+                      setSelectedIds(new Set())
+                      setSelectedId(null)
+                      qc.invalidateQueries({ queryKey: ["notes"] })
+                      qc.invalidateQueries({ queryKey: ["stats"] })
+                      qc.invalidateQueries({ queryKey: ["timeline"] })
+                    } catch (error) {
+                      toast.error("Selected notes could not be deleted", { description: getErrorMessage(error) })
+                    }
                   }}
                 >
                   <Trash2 className="h-3 w-3 mr-1" />
@@ -404,11 +441,26 @@ export function Notes() {
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-center p-6">
             <FileText className="h-10 w-10 text-muted-foreground/40 mb-3" />
-            <h3 className="text-sm font-medium">Select a note</h3>
-            <p className="text-xs text-muted-foreground mt-1 max-w-xs">
-              Pick a note from the list to view its full content, chunks, and
-              extracted decisions.
+            <h3 className="text-sm font-medium">
+              {(notesData?.notes.length ?? 0) === 0 ? "Build your knowledge base" : "Select a note"}
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1 max-w-sm leading-relaxed">
+              {(notesData?.notes.length ?? 0) === 0
+                ? "Add a note, import a trusted URL, or upload a document. Memex will make the content searchable for source-backed answers."
+                : "Pick a note from the list to view its content, searchable chunks, and extracted decisions."}
             </p>
+            {(notesData?.notes.length ?? 0) === 0 && (
+              <div className="mt-4 flex flex-wrap justify-center gap-2">
+                <Button size="sm" onClick={() => setOpenAdd(true)}>
+                  <Plus className="mr-1.5 h-3.5 w-3.5" />
+                  Write note
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => setOpenImport(true)}>
+                  <Link2 className="mr-1.5 h-3.5 w-3.5" />
+                  Import URL
+                </Button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -523,15 +575,27 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
   const [openEdit, setOpenEdit] = useState(false)
   const [viewMode, setViewMode] = useState<"preview" | "source">("preview")
   const { isMobile } = useDevice()
-  const { data, isLoading } = useQuery<{ note: NoteDetail }>({
+  const {
+    data,
+    isLoading,
+    error,
+    refetch,
+  } = useQuery<{ note: NoteDetail }>({
     queryKey: ["note", noteId],
-    queryFn: async () => {
-      const r = await fetch(`/api/notes/${noteId}`)
-      return r.json()
-    },
+    queryFn: () => apiRequest<{ note: NoteDetail }>(`/api/notes/${noteId}`),
   })
 
   const [extracting, setExtracting] = useState(false)
+
+  if (error) {
+    return (
+      <SectionError
+        title="Note could not be loaded"
+        error={error}
+        onRetry={() => void refetch()}
+      />
+    )
+  }
 
   if (isLoading || !data) {
     return (
@@ -546,18 +610,17 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
   const handleExtract = async () => {
     setExtracting(true)
     try {
-      const r = await fetch("/api/decisions/extract", {
+      const d = await apiRequest<{ extracted: number }>("/api/decisions/extract", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ noteId }),
       })
-      const d = await r.json()
       toast.success(`Extracted ${d.extracted} decisions`)
       qc.invalidateQueries({ queryKey: ["note", noteId] })
       qc.invalidateQueries({ queryKey: ["decisions"] })
       qc.invalidateQueries({ queryKey: ["stats"] })
-    } catch {
-      toast.error("Extraction failed")
+    } catch (error) {
+      toast.error("Extraction failed", { description: getErrorMessage(error) })
     } finally {
       setExtracting(false)
     }
@@ -565,7 +628,7 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
 
   const handleDuplicate = async () => {
     try {
-      const r = await fetch("/api/notes", {
+      const d = await apiRequest<{ title: string; chunkCount: number }>("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -576,15 +639,13 @@ function NoteDetailPanel({ noteId }: { noteId: string }) {
           extractDecisions: false,
         }),
       })
-      const d = await r.json()
-      if (!r.ok) throw new Error(d.error)
       toast.success(`Duplicated as "${d.title}"`, {
         description: `${d.chunkCount} chunks ingested`,
       })
       qc.invalidateQueries({ queryKey: ["notes"] })
       qc.invalidateQueries({ queryKey: ["stats"] })
-    } catch (e: any) {
-      toast.error(e.message || "Duplicate failed")
+    } catch (error) {
+      toast.error("Duplicate failed", { description: getErrorMessage(error) })
     }
   }
 
@@ -849,7 +910,7 @@ function AddNoteDialog({
     }
     setSaving(true)
     try {
-      const r = await fetch("/api/notes", {
+      const d = await apiRequest<{ message?: string }>("/api/notes", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -863,16 +924,14 @@ function AddNoteDialog({
           extractDecisions: extract,
         }),
       })
-      const d = await r.json()
-      if (!r.ok) throw new Error(d.error)
       toast.success(d.message || "Note ingested")
       reset()
       onOpenChange(false)
       qc.invalidateQueries({ queryKey: ["notes"] })
       qc.invalidateQueries({ queryKey: ["stats"] })
       qc.invalidateQueries({ queryKey: ["decisions"] })
-    } catch (e: any) {
-      toast.error(e.message || "Failed to ingest note")
+    } catch (error) {
+      toast.error("Failed to ingest note", { description: getErrorMessage(error) })
     } finally {
       setSaving(false)
     }
@@ -1059,7 +1118,7 @@ function ImportUrlDialog({
     }
     setImporting(true)
     try {
-      const r = await fetch("/api/notes/import-url", {
+      const d = await apiRequest<{ message?: string }>("/api/notes/import-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1072,8 +1131,6 @@ function ImportUrlDialog({
           extractDecisions: extract,
         }),
       })
-      const d = await r.json()
-      if (!r.ok) throw new Error(d.error || "Import failed")
       toast.success(d.message || "URL imported")
       reset()
       onOpenChange(false)
@@ -1081,8 +1138,8 @@ function ImportUrlDialog({
       qc.invalidateQueries({ queryKey: ["stats"] })
       qc.invalidateQueries({ queryKey: ["decisions"] })
       qc.invalidateQueries({ queryKey: ["timeline"] })
-    } catch (e: any) {
-      toast.error(e.message || "Failed to import URL")
+    } catch (error) {
+      toast.error("Failed to import URL", { description: getErrorMessage(error) })
     } finally {
       setImporting(false)
     }
@@ -1202,7 +1259,7 @@ function EditNoteDialog({
     }
     setSaving(true)
     try {
-      const r = await fetch(`/api/notes/${note.id}`, {
+      const d = await apiRequest<{ message?: string }>(`/api/notes/${note.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -1216,8 +1273,6 @@ function EditNoteDialog({
           extractDecisions: extract,
         }),
       })
-      const d = await r.json()
-      if (!r.ok) throw new Error(d.error)
       toast.success(d.message || "Note updated")
       onOpenChange(false)
       qc.invalidateQueries({ queryKey: ["note", note.id] })
@@ -1225,8 +1280,8 @@ function EditNoteDialog({
       qc.invalidateQueries({ queryKey: ["stats"] })
       qc.invalidateQueries({ queryKey: ["decisions"] })
       qc.invalidateQueries({ queryKey: ["timeline"] })
-    } catch (e: any) {
-      toast.error(e.message || "Failed to update note")
+    } catch (error) {
+      toast.error("Failed to update note", { description: getErrorMessage(error) })
     } finally {
       setSaving(false)
     }

@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
 import { GitCompare, Loader2, X } from "lucide-react"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
 import type { ChatMessageData, ChatSessionSummary } from "./types"
 
 interface CompareDialogProps {
@@ -33,34 +34,39 @@ export function CompareDialog({ open, onOpenChange }: CompareDialogProps) {
   const [sessionBId, setSessionBId] = useState<string>("")
 
   // Load all sessions
-  const { data: sessionsData } = useQuery<{ sessions: ChatSessionSummary[] }>({
+  const {
+    data: sessionsData,
+    isError: sessionsError,
+    error: sessionsErrorValue,
+  } = useQuery<{ sessions: ChatSessionSummary[] }>({
     queryKey: ["chat-sessions"],
-    queryFn: async () => {
-      const r = await fetch("/api/chat/sessions")
-      return r.json()
-    },
+    queryFn: () => apiRequest("/api/chat/sessions"),
     enabled: open,
   })
 
   // Load full sessions when selected
-  const { data: dataA, isLoading: loadingA } = useQuery<{
+  const {
+    data: dataA,
+    isLoading: loadingA,
+    isError: errorA,
+    error: errorAValue,
+  } = useQuery<{
     session: { id: string; title: string; messages: ChatMessageData[] }
   }>({
     queryKey: ["chat-session", sessionAId],
-    queryFn: async () => {
-      const r = await fetch(`/api/chat/sessions/${sessionAId}`)
-      return r.json()
-    },
+    queryFn: () => apiRequest(`/api/chat/sessions/${sessionAId}`),
     enabled: open && !!sessionAId,
   })
-  const { data: dataB, isLoading: loadingB } = useQuery<{
+  const {
+    data: dataB,
+    isLoading: loadingB,
+    isError: errorB,
+    error: errorBValue,
+  } = useQuery<{
     session: { id: string; title: string; messages: ChatMessageData[] }
   }>({
     queryKey: ["chat-session", sessionBId],
-    queryFn: async () => {
-      const r = await fetch(`/api/chat/sessions/${sessionBId}`)
-      return r.json()
-    },
+    queryFn: () => apiRequest(`/api/chat/sessions/${sessionBId}`),
     enabled: open && !!sessionBId,
   })
 
@@ -124,6 +130,12 @@ export function CompareDialog({ open, onOpenChange }: CompareDialogProps) {
           </div>
         </div>
 
+        {sessionsError && (
+          <p className="border-b border-border px-4 py-3 text-xs text-destructive">
+            {getErrorMessage(sessionsErrorValue)}
+          </p>
+        )}
+
         {/* Comparison area */}
         <ScrollArea className="flex-1 thin-scroll">
           <div className="p-4">
@@ -149,7 +161,12 @@ export function CompareDialog({ open, onOpenChange }: CompareDialogProps) {
                       <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                     </div>
                   )}
-                  {!loadingA && qaA.length === 0 && (
+                  {errorA && (
+                    <p className="text-xs text-destructive text-center py-4">
+                      {getErrorMessage(errorAValue)}
+                    </p>
+                  )}
+                  {!loadingA && !errorA && qaA.length === 0 && (
                     <p className="text-xs text-muted-foreground text-center py-4">
                       No Q&amp;A pairs in this session.
                     </p>
@@ -171,7 +188,12 @@ export function CompareDialog({ open, onOpenChange }: CompareDialogProps) {
                       <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                     </div>
                   )}
-                  {!loadingB && qaB.length === 0 && (
+                  {errorB && (
+                    <p className="text-xs text-destructive text-center py-4">
+                      {getErrorMessage(errorBValue)}
+                    </p>
+                  )}
+                  {!loadingB && !errorB && qaB.length === 0 && (
                     <p className="text-xs text-muted-foreground text-center py-4">
                       No Q&amp;A pairs in this session.
                     </p>

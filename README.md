@@ -70,7 +70,7 @@ src/server/observability/*     Structured logs and API error IDs
 src/lib/notes.ts               Chunking, token estimation, BM25 scoring
 src/lib/retrieval.ts           Corpus loading, retrieval, dashboard corpus stats
 src/lib/llm.ts                 Citation-first answer generation and extraction prompts
-src/lib/email.ts               Email creation, SMTP delivery, verification, scheduling
+src/lib/email.ts               Email creation, OAuth/SMTP delivery, verification, scheduling
 prisma/schema.prisma           Local SQLite data model
 prisma/schema.postgres.prisma  Production Postgres-compatible data model
 prisma/migrations/*            Initial SQLite migration history
@@ -174,9 +174,9 @@ The API routes intentionally stay small: they parse input, call a service, and r
 - Export as CSV or JSON
 
 ### 📬 Smart Inbox Section
-- **Connect your email account** (Gmail, Outlook, Yahoo, iCloud)
-- For Gmail: use an App Password (not your regular password)
-- **IMAP sync** — reads real emails from your inbox + sent folder
+- **Password-free Google and Microsoft connection** through OAuth
+- **Advanced IMAP/SMTP fallback** for other supported providers
+- **Provider sync** — Gmail API, Microsoft Graph, or verified IMAP reads real inbox mail
 - **AI categorization** — each email is tagged:
   - 🔴 Urgent (needs immediate action)
   - 🟡 Important (needs response)
@@ -194,24 +194,24 @@ The API routes intentionally stay small: they parse input, call a service, and r
 - **Browser notifications** for urgent emails
 
 ### 📤 Sent Section
-- All emails sent from Memex (composed, chat answers, decision briefs, digests)
+- Email activity from Memex (composed messages, chat answers, decision briefs, digests)
 - **Schedule emails** for future delivery
-- Status pipeline: queued → scheduled → delivered
+- Explicit statuses for scheduled, provider-accepted (OAuth or SMTP), locally saved, cancelled, and failed messages
 - **Email templates** — Daily Digest, Decision Brief, Source Snapshot
-- **Real SMTP sending** when SMTP credentials are configured (via nodemailer)
-- Without SMTP, emails are saved locally (simulated delivery)
+- **Real delivery** through Google, Microsoft, or verified SMTP
+- Without a connected mail provider, messages are saved locally and are never reported as delivered
 
 ### ⚙️ Settings Section
-- Profile: name, email, SMTP settings
+- Profile name and authenticated account identity
 - Daily digest: enable/disable, set hour
 - **AI Provider status** — shows which LLM backend is configured
 - **Security & Privacy**:
-  - Local storage indicator (all data on your device)
-  - LLM privacy mode (only relevant snippets sent to AI)
-  - Data encryption indicator
+  - Multi-user ownership isolation for notes, chat, decisions, inbox, and email records
+  - LLM privacy mode limits AI context to retrieved snippets
+  - Email provider credentials encrypted at rest with `ENCRYPTION_KEY`
+  - Clear disclosure that configured AI providers process submitted context
   - **Erase all data** (Danger Zone — type "ERASE ALL DATA" to confirm)
 - Dark mode toggle
-- Shield icon in sidebar shows data is encrypted locally
 
 ### ⌨️ Keyboard Shortcuts
 | Shortcut | Action |
@@ -400,12 +400,14 @@ Go to the **Chat** section and type your question. The AI automatically detects 
 
 ### Managing Your Inbox
 
-1. Go to **Smart Inbox** → click **Connect Account**
-2. Enter your email address and an App Password (for Gmail: [get one here](https://myaccount.google.com/apppasswords))
-3. Click **Sync** to fetch emails
-4. AI automatically categorizes each email (urgent, important, normal, newsletter, spam)
-5. Click any email to see the AI summary, key points, and suggested reply
-6. Use the **Briefing** button for a one-click AI summary of today's important emails
+1. Go to **Smart Inbox** → click **Connect Account**.
+2. Choose **Continue with Google** or **Continue with Microsoft** and approve access on the provider page.
+3. Return to Memex and click **Sync** to fetch inbox email.
+4. AI automatically categorizes each email (urgent, important, normal, newsletter, spam).
+5. Click any email to see the AI summary, key points, and suggested reply.
+6. Use **Advanced IMAP/SMTP** only for a provider without OAuth support.
+
+See [email OAuth setup](docs/email-oauth-setup.md) for the application-owner configuration required before users can connect.
 
 ### Extracting Decisions
 
@@ -708,7 +710,7 @@ memex/
 - `GET /api/inbox/[id]` — Get a single inbox email
 - `PATCH /api/inbox/[id]` — Update email (star, archive, mark read)
 - `DELETE /api/inbox/[id]` — Delete an email
-- `POST /api/inbox/refresh` — Sync emails from IMAP
+- `POST /api/inbox/refresh` — Sync through Gmail API, Microsoft Graph, or advanced IMAP
 - `GET /api/inbox/briefing` — Get AI daily briefing
 
 ### Emails (Sent)
@@ -744,11 +746,13 @@ memex/
 - **PostgreSQL**: Check your `DATABASE_URL` format: `postgresql://user:pass@host:5432/dbname`
 - Run `npm run db:init-sqlite` locally, or `npm run db:push` for Prisma-managed databases.
 
-### "Email sending failed"
+### "Email connection or sending failed"
 
-- For Gmail: use an **App Password**, not your regular password ([get one here](https://myaccount.google.com/apppasswords))
-- Check that SMTP settings are correct in Smart Inbox → Connect Account
-- Without SMTP credentials, emails are saved locally (simulated delivery)
+- Reconnect the account from **Smart Inbox**. Provider access can expire or be revoked.
+- Confirm `GOOGLE_OAUTH_*` or `MICROSOFT_OAUTH_*` and the exact redirect URL are configured by the application owner.
+- For another provider, use **Advanced IMAP/SMTP** with an app-specific password.
+- Without a connected mail provider, emails remain clearly marked as locally saved and are not sent.
+- See [email OAuth setup](docs/email-oauth-setup.md) for the provider-console steps.
 
 ### "Audio transcription not supported"
 

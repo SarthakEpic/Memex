@@ -1,7 +1,28 @@
 "use client"
 
 import { useEffect, useState } from "react"
-import { useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import {
+  AlertTriangle,
+  Bell,
+  BellOff,
+  Bot,
+  CheckCircle2,
+  Clock,
+  Database,
+  Inbox,
+  Loader2,
+  Lock,
+  Mail,
+  Save,
+  Server,
+  Shield,
+  Trash2,
+  User,
+} from "lucide-react"
+import { toast } from "sonner"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   Card,
   CardContent,
@@ -9,397 +30,337 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Switch } from "@/components/ui/switch"
-import { Separator } from "@/components/ui/separator"
-import { Badge } from "@/components/ui/badge"
 import {
   Dialog,
   DialogContent,
-  DialogHeader,
-  DialogTitle,
   DialogDescription,
   DialogFooter,
+  DialogHeader,
+  DialogTitle,
 } from "@/components/ui/dialog"
-import { Loader2, Save, User, Mail, Server, Clock, Shield, Lock, Trash2, AlertTriangle, Eye, Database } from "lucide-react"
-import { toast } from "sonner"
-import type { ProfileData } from "./types"
+import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
+import { Separator } from "@/components/ui/separator"
+import { Switch } from "@/components/ui/switch"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
+import { SectionError } from "./section-state"
+import { useMemex } from "./store"
+import type { EmailAccountData, ProfileData } from "./types"
+
+interface AiStatus {
+  provider: string
+  providerName: string
+  model: string
+  configured: boolean
+  missingEnvVar?: string
+}
 
 export function Settings() {
-  const qc = useQueryClient()
+  const queryClient = useQueryClient()
+  const setSection = useMemex((state) => state.setSection)
   const [profile, setProfile] = useState<ProfileData | null>(null)
   const [saving, setSaving] = useState(false)
   const [eraseOpen, setEraseOpen] = useState(false)
   const [eraseConfirm, setEraseConfirm] = useState("")
   const [erasing, setErasing] = useState(false)
 
+  const profileQuery = useQuery<{ profile: ProfileData }>({
+    queryKey: ["profile"],
+    queryFn: () => apiRequest<{ profile: ProfileData }>("/api/profile"),
+  })
+
   useEffect(() => {
-    fetch("/api/profile")
-      .then((r) => r.json())
-      .then((d) => setProfile(d.profile))
-      .catch(() => toast.error("Failed to load profile"))
-  }, [])
+    if (profileQuery.data?.profile) {
+      setProfile(profileQuery.data.profile)
+    }
+  }, [profileQuery.data])
 
   const handleSave = async () => {
     if (!profile) return
     setSaving(true)
     try {
-      const r = await fetch("/api/profile", {
+      const result = await apiRequest<{ profile: ProfileData }>("/api/profile", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(profile),
+        body: JSON.stringify({
+          name: profile.name,
+          email: profile.email,
+          dailyDigest: profile.dailyDigest,
+          digestHour: profile.digestHour,
+          llmPrivacyMode: profile.llmPrivacyMode,
+        }),
       })
-      if (!r.ok) throw new Error("Save failed")
+      setProfile(result.profile)
       toast.success("Settings saved")
-      qc.invalidateQueries({ queryKey: ["stats"] })
-    } catch (e: any) {
-      toast.error(e.message || "Save failed")
+      void queryClient.invalidateQueries({ queryKey: ["profile"] })
+      void queryClient.invalidateQueries({ queryKey: ["stats"] })
+    } catch (error) {
+      toast.error(getErrorMessage(error, "Settings could not be saved."))
     } finally {
       setSaving(false)
     }
   }
 
-  if (!profile) {
+  if (profileQuery.error) {
     return (
-      <div className="flex items-center justify-center h-full">
+      <SectionError
+        title="Settings could not be loaded"
+        error={profileQuery.error}
+        onRetry={() => void profileQuery.refetch()}
+      />
+    )
+  }
+
+  if (profileQuery.isLoading || !profile) {
+    return (
+      <div className="flex h-full items-center justify-center">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
       </div>
     )
   }
 
   return (
-    <div className="p-4 sm:p-6 max-w-3xl space-y-5 memex-fade-up">
+    <div className="mx-auto max-w-3xl space-y-5 p-4 sm:p-6 memex-fade-up">
       <div className="space-y-1">
         <h1 className="text-xl font-semibold tracking-tight">Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Configure your profile and the simulated SMTP pipeline. A real
-          transport (nodemailer / SES) could be dropped in behind the same
-          <code className="text-xs px-1 py-0.5 rounded bg-muted mx-1">sendEmail()</code>
-          interface without touching the rest of the app.
+          Manage your profile, delivery connections, scheduled digest, and data handling.
         </p>
       </div>
 
-      {/* Profile */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
             <User className="h-4 w-4 text-primary" />
             Profile
           </CardTitle>
-          <CardDescription>The recipient used when you address emails to &quot;me&quot;.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">Name</Label>
-              <Input
-                value={profile.name}
-                onChange={(e) => setProfile({ ...profile, name: e.target.value })}
-                className="text-sm"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Email</Label>
-              <Input
-                value={profile.email}
-                onChange={(e) => setProfile({ ...profile, email: e.target.value })}
-                className="text-sm"
-              />
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* SMTP */}
-      <Card>
-        <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
-            <Server className="h-4 w-4 text-primary" />
-            SMTP (simulated)
-          </CardTitle>
           <CardDescription>
-            These credentials are stored locally. Delivery is simulated —
-            emails are persisted with a queued → sent → delivered status pipeline.
+            The default identity and recipient used by workspace email actions.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="grid grid-cols-1 sm:grid-cols-[2fr_1fr_2fr] gap-3">
-            <div className="space-y-1">
-              <Label className="text-xs">SMTP host</Label>
-              <Input
-                value={profile.smtpHost}
-                onChange={(e) => setProfile({ ...profile, smtpHost: e.target.value })}
-                className="text-sm font-mono"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Port</Label>
-              <Input
-                type="number"
-                value={profile.smtpPort}
-                onChange={(e) =>
-                  setProfile({ ...profile, smtpPort: Number(e.target.value) || 587 })
-                }
-                className="text-sm"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label className="text-xs">SMTP user</Label>
-              <Input
-                value={profile.smtpUser}
-                onChange={(e) => setProfile({ ...profile, smtpUser: e.target.value })}
-                placeholder="optional"
-                className="text-sm font-mono"
-              />
-            </div>
+        <CardContent className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <Label htmlFor="profile-name" className="text-xs">Name</Label>
+            <Input
+              id="profile-name"
+              value={profile.name}
+              onChange={(event) =>
+                setProfile({ ...profile, name: event.target.value })
+              }
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="profile-email" className="text-xs">Default recipient email</Label>
+            <Input
+              id="profile-email"
+              type="email"
+              value={profile.email}
+              onChange={(event) =>
+                setProfile({ ...profile, email: event.target.value })
+              }
+            />
           </div>
         </CardContent>
       </Card>
 
-      {/* Digest */}
+      <EmailDeliveryCard onOpenInbox={() => setSection("inbox")} />
+
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
             <Clock className="h-4 w-4 text-primary" />
             Daily digest
           </CardTitle>
           <CardDescription>
-            A scheduled job bundles the last 24 hours of decisions and unanswered
-            questions into one email and delivers it to your address.
+            Bundles recent decisions and questions into an email at your chosen hour.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <div className="flex items-center justify-between rounded-lg border border-border p-3">
+          <div className="flex items-center justify-between gap-4 rounded-md border border-border p-3">
             <div>
               <div className="text-sm font-medium">Enable daily digest</div>
               <div className="text-xs text-muted-foreground">
-                Toggled on by default. A cron job triggers it every 15 minutes.
+                Production checks run every 10 minutes; local delivery also runs while Memex is open.
               </div>
             </div>
             <Switch
               checked={profile.dailyDigest}
-              onCheckedChange={(c) => setProfile({ ...profile, dailyDigest: c })}
+              onCheckedChange={(checked) =>
+                setProfile({ ...profile, dailyDigest: checked })
+              }
+              aria-label="Enable daily digest"
             />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
-              <Label className="text-xs">Digest hour (0-23)</Label>
+              <Label htmlFor="digest-hour" className="text-xs">Digest hour (0-23)</Label>
               <Input
+                id="digest-hour"
                 type="number"
                 min={0}
                 max={23}
                 value={profile.digestHour}
-                onChange={(e) =>
+                onChange={(event) =>
                   setProfile({
                     ...profile,
-                    digestHour: Math.min(23, Math.max(0, Number(e.target.value) || 9)),
+                    digestHour: Math.min(
+                      23,
+                      Math.max(0, Number(event.target.value) || 0)
+                    ),
                   })
                 }
-                className="text-sm"
               />
             </div>
             <div className="flex items-end">
               <Badge variant="outline" className="text-xs">
-                Next digest window: {profile.digestHour}:00 local
+                Delivery window: {String(profile.digestHour).padStart(2, "0")}:00 local
               </Badge>
             </div>
           </div>
         </CardContent>
       </Card>
 
-      {/* Save */}
-      <div className="flex justify-end gap-2 pt-2">
+      <div className="flex justify-end">
         <Button onClick={handleSave} disabled={saving}>
           {saving ? (
-            <>
-              <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-              Saving…
-            </>
+            <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
           ) : (
-            <>
-              <Save className="h-4 w-4 mr-1" />
-              Save settings
-            </>
+            <Save className="mr-1.5 h-4 w-4" />
           )}
+          Save settings
         </Button>
       </div>
 
       <Separator />
 
-      {/* Security & Privacy */}
       <Card className="border-primary/30">
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
             <Shield className="h-4 w-4 text-primary" />
-            Security &amp; Privacy
+            Security and privacy
           </CardTitle>
           <CardDescription>
-            Your notes and emails are confidential. Control how data is stored and processed.
+            What Memex protects locally and what leaves the server for AI processing.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
-          {/* Security status badges */}
           <div className="flex flex-wrap gap-2">
             <Badge className="gap-1 bg-emerald-600 hover:bg-emerald-600">
-              <Lock className="h-2.5 w-2.5" />
-              Local Storage
-            </Badge>
-            <Badge className="gap-1 bg-emerald-600 hover:bg-emerald-600">
               <Shield className="h-2.5 w-2.5" />
-              No Cloud Sync
+              Account-scoped access
             </Badge>
             <Badge className="gap-1 bg-emerald-600 hover:bg-emerald-600">
-              <Eye className="h-2.5 w-2.5" />
-              LLM Privacy Mode
+              <Lock className="h-2.5 w-2.5" />
+              Encrypted mail credentials
+            </Badge>
+            <Badge variant="outline" className="gap-1">
+              <Bot className="h-2.5 w-2.5" />
+              External AI processing
             </Badge>
           </div>
 
-          {/* Security info */}
-          <div className="space-y-2 text-xs text-muted-foreground">
-            <div className="flex items-start gap-2">
-              <Database className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
-              <div>
-                <span className="font-medium text-foreground">Data storage:</span> All notes,
-                emails, and chat history are stored in a local SQLite database on this machine.
-                Nothing is sent to external servers.
-              </div>
-            </div>
-            <div className="flex items-start gap-2">
-              <Eye className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
-              <div>
-                <span className="font-medium text-foreground">LLM processing:</span> When you ask
-                a question, only the relevant note chunks (not your entire library) are sent to
-                the AI model for analysis. Your full data never leaves your device.
-              </div>
-            </div>
-            <div className="flex items-start gap-2">
-              <Lock className="h-3.5 w-3.5 text-primary shrink-0 mt-0.5" />
-              <div>
-                <span className="font-medium text-foreground">Email credentials:</span> IMAP/SMTP
-                settings are stored locally. Email bodies are analyzed in snippets (max 2000 chars)
-                for categorization — your full mailbox is never transmitted.
-              </div>
-            </div>
+          <div className="space-y-3 text-xs leading-relaxed text-muted-foreground">
+            <DataDisclosure
+              icon={Database}
+              title="Workspace storage"
+              body="Local development uses SQLite; online deployment uses your configured database. Records are isolated by user account. Note and email content is not field-encrypted, so database access and backups must remain restricted."
+            />
+            <DataDisclosure
+              icon={Bot}
+              title="AI context"
+              body="Chat sends retrieved note chunks, not your full library. Inbox analysis sends sender, subject, and up to 2,000 characters of an email body to the configured AI provider. Provider retention settings apply."
+            />
+            <DataDisclosure
+              icon={Lock}
+              title="Email credentials"
+              body="OAuth refresh tokens and advanced IMAP/SMTP secrets are encrypted with AES-GCM before database storage and are never returned by the account API."
+            />
           </div>
 
           <Separator />
 
-          {/* Privacy toggles */}
-          <div className="space-y-3">
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div>
-                <div className="text-sm font-medium">LLM Privacy Mode</div>
-                <div className="text-xs text-muted-foreground">
-                  Only send minimal note context to the AI. Prevents accidental data exposure.
-                </div>
-              </div>
-              <Switch
-                checked={profile?.llmPrivacyMode ?? true}
-                onCheckedChange={(c) => setProfile({ ...profile!, llmPrivacyMode: c })}
-              />
-            </div>
-            <div className="flex items-center justify-between rounded-lg border border-border p-3">
-              <div>
-                <div className="text-sm font-medium">Data Encryption Indicator</div>
-                <div className="text-xs text-muted-foreground">
-                  Show encryption status badges throughout the app.
-                </div>
-              </div>
-              <Switch
-                checked={profile?.dataEncryption ?? true}
-                onCheckedChange={(c) => setProfile({ ...profile!, dataEncryption: c })}
-              />
-            </div>
-          </div>
-
-          <Separator />
-
-          {/* Danger zone */}
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-3 space-y-2">
-            <div className="flex items-start gap-2">
-              <AlertTriangle className="h-4 w-4 text-destructive shrink-0 mt-0.5" />
-              <div>
-                <div className="text-sm font-medium text-destructive">Danger Zone</div>
-                <div className="text-xs text-muted-foreground">
-                  Permanently erase ALL data — notes, emails, chat history, decisions.
-                  This cannot be undone.
-                </div>
+          <div className="flex items-center justify-between gap-4 rounded-md border border-border p-3">
+            <div>
+              <div className="text-sm font-medium">Minimal AI context</div>
+              <div className="text-xs text-muted-foreground">
+                Limit note Q&A to the three highest-ranked chunks instead of six.
               </div>
             </div>
-            <Button
-              size="sm"
-              variant="destructive"
-              className="w-full"
-              onClick={() => setEraseOpen(true)}
-            >
-              <Trash2 className="h-3.5 w-3.5 mr-1.5" />
-              Erase all data
-            </Button>
+            <Switch
+              checked={profile.llmPrivacyMode}
+              onCheckedChange={(checked) =>
+                setProfile({ ...profile, llmPrivacyMode: checked })
+              }
+              aria-label="Use minimal AI context"
+            />
           </div>
         </CardContent>
       </Card>
 
-      <Separator />
-
-      {/* AI Provider Status */}
+      <NotificationCard />
       <AiProviderCard />
 
-      <Separator />
+      <Card className="border-destructive/30">
+        <CardHeader className="pb-3">
+          <CardTitle className="flex items-center gap-2 text-sm text-destructive">
+            <AlertTriangle className="h-4 w-4" />
+            Danger zone
+          </CardTitle>
+          <CardDescription>
+            Permanently erase this account&apos;s notes, email data, chat history, and decisions.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Button variant="destructive" className="w-full" onClick={() => setEraseOpen(true)}>
+            <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+            Erase workspace data
+          </Button>
+        </CardContent>
+      </Card>
 
-      {/* About */}
       <Card>
         <CardHeader className="pb-3">
-          <CardTitle className="text-sm flex items-center gap-2">
+          <CardTitle className="flex items-center gap-2 text-sm">
             <Mail className="h-4 w-4 text-primary" />
             About Memex
           </CardTitle>
         </CardHeader>
-        <CardContent className="text-xs text-muted-foreground space-y-1.5 leading-relaxed">
-          <p>
-            <strong className="text-foreground">Memex</strong> is a citation-first
-            knowledge retrieval system for personal Markdown notes. Every claim
-            in a chat answer is hyperlinked to its source chunk — or the model
-            honestly says it can&apos;t cite one.
-          </p>
-          <p>
-            Adapted from a FastAPI + Qdrant + Postgres + Ollama spec to a
-            portable stack: Next.js 16 + Prisma (SQLite for local dev,
-            PostgreSQL for production) + OpenAI-compatible LLM provider
-            (Google Gemini / Groq / OpenAI / Ollama). BM25 retrieval replaces
-            vector search; the LLM does reranking + citation enforcement +
-            decision extraction.
-          </p>
+        <CardContent className="text-xs leading-relaxed text-muted-foreground">
+          Memex is a source-backed workspace for notes, decisions, chat, and email.
+          Chat answers link to retrieved note chunks; AI-generated email requires human review.
         </CardContent>
       </Card>
 
-      {/* Erase confirmation dialog */}
       <Dialog open={eraseOpen} onOpenChange={setEraseOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-base flex items-center gap-2 text-destructive">
+            <DialogTitle className="flex items-center gap-2 text-base text-destructive">
               <AlertTriangle className="h-4 w-4" />
-              Erase All Data
+              Erase workspace data
             </DialogTitle>
             <DialogDescription>
-              This will permanently delete ALL your notes, emails, chat history,
-              decisions, and inbox data. This action cannot be undone.
+              This permanently deletes data owned by your account. It cannot be undone.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3 py-2">
             <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-xs text-muted-foreground">
-              Type <code className="font-mono font-bold text-destructive">ERASE ALL DATA</code> below to confirm:
+              Type <code className="font-mono font-bold text-destructive">ERASE ALL DATA</code> to confirm.
             </div>
             <Input
               value={eraseConfirm}
-              onChange={(e) => setEraseConfirm(e.target.value)}
+              onChange={(event) => setEraseConfirm(event.target.value)}
               placeholder="ERASE ALL DATA"
-              className="text-sm font-mono"
+              className="font-mono text-sm"
             />
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setEraseOpen(false); setEraseConfirm("") }}>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setEraseOpen(false)
+                setEraseConfirm("")
+              }}
+            >
               Cancel
             </Button>
             <Button
@@ -408,29 +369,30 @@ export function Settings() {
               onClick={async () => {
                 setErasing(true)
                 try {
-                  const r = await fetch("/api/security/erase", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ confirm: eraseConfirm }),
-                  })
-                  const d = await r.json()
-                  if (!r.ok) throw new Error(d.error)
-                  toast.success(d.message || "All data erased")
+                  const result = await apiRequest<{ message?: string }>(
+                    "/api/security/erase",
+                    {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ confirm: eraseConfirm }),
+                    }
+                  )
+                  toast.success(result.message || "Workspace data erased")
                   setEraseOpen(false)
                   setEraseConfirm("")
-                  // Reload to reset the app state
-                  setTimeout(() => window.location.reload(), 1500)
-                } catch (e: any) {
-                  toast.error(e.message || "Erase failed")
+                  await queryClient.clear()
+                  window.location.reload()
+                } catch (error) {
+                  toast.error(getErrorMessage(error, "Erase failed."))
                 } finally {
                   setErasing(false)
                 }
               }}
             >
               {erasing ? (
-                <Loader2 className="h-4 w-4 mr-1 animate-spin" />
+                <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
               ) : (
-                <Trash2 className="h-4 w-4 mr-1" />
+                <Trash2 className="mr-1.5 h-4 w-4" />
               )}
               Erase everything
             </Button>
@@ -441,117 +403,190 @@ export function Settings() {
   )
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// AI Provider Status Card
-// Shows which LLM provider is configured and whether it's ready to use.
-// ─────────────────────────────────────────────────────────────────────────────
-
-function AiProviderCard() {
-  const [status, setStatus] = useState<{
-    provider: string
-    providerName: string
-    model: string
-    configured: boolean
-    missingEnvVar?: string
-  } | null>(null)
-
-  useEffect(() => {
-    fetch("/api/ai-status")
-      .then((r) => r.json())
-      .then(setStatus)
-      .catch(() => {})
-  }, [])
-
-  if (!status) {
-    return (
-      <Card>
-        <CardContent className="py-6 text-center text-xs text-muted-foreground">
-          <Loader2 className="h-4 w-4 animate-spin mx-auto mb-2" />
-          Checking AI provider status…
-        </CardContent>
-      </Card>
-    )
-  }
-
-  const providerColors: Record<string, string> = {
-    gemini: "bg-blue-500/15 text-blue-600 dark:text-blue-300 border-blue-500/30",
-    groq: "bg-orange-500/15 text-orange-600 dark:text-orange-300 border-orange-500/30",
-    openai: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30",
-    openrouter: "bg-purple-500/15 text-purple-600 dark:text-purple-300 border-purple-500/30",
-    ollama: "bg-zinc-500/15 text-zinc-600 dark:text-zinc-300 border-zinc-500/30",
-    custom: "bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30",
-  }
+function EmailDeliveryCard({ onOpenInbox }: { onOpenInbox: () => void }) {
+  const accountsQuery = useQuery<{ accounts: EmailAccountData[] }>({
+    queryKey: ["email-accounts"],
+    queryFn: () =>
+      apiRequest<{ accounts: EmailAccountData[] }>("/api/email-accounts"),
+  })
+  const accounts = accountsQuery.data?.accounts ?? []
+  const liveAccounts = accounts.filter(
+    (account) =>
+      account.connected &&
+      ((account.syncMode === "oauth" && account.hasOAuthConnection) ||
+        (account.syncMode === "real" && account.hasSmtpPassword))
+  )
 
   return (
     <Card>
       <CardHeader className="pb-3">
-        <CardTitle className="text-sm flex items-center gap-2">
+        <CardTitle className="flex items-center gap-2 text-sm">
           <Server className="h-4 w-4 text-primary" />
-          AI Provider
+          Email delivery
         </CardTitle>
-        <CardDescription className="text-xs">
-          The LLM backend that powers chat, email drafting, and analysis
+        <CardDescription>
+          Real sending requires a connected Google, Microsoft, or verified advanced IMAP/SMTP account.
         </CardDescription>
       </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Badge
-              variant="outline"
-              className={`text-[10px] ${providerColors[status.provider] || ""}`}
-            >
-              {status.providerName}
-            </Badge>
-            <span className="text-xs text-muted-foreground font-mono">{status.model}</span>
-          </div>
-          {status.configured ? (
-            <Badge variant="outline" className="text-[10px] bg-emerald-500/10 text-emerald-600 dark:text-emerald-300 border-emerald-500/30">
-              <Shield className="h-2.5 w-2.5 mr-1" />
-              Ready
-            </Badge>
+      <CardContent className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          {accountsQuery.isLoading ? (
+            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+          ) : liveAccounts.length > 0 ? (
+            <CheckCircle2 className="h-4 w-4 text-emerald-500" />
           ) : (
-            <Badge variant="outline" className="text-[10px] bg-red-500/10 text-red-600 dark:text-red-300 border-red-500/30">
-              <AlertTriangle className="h-2.5 w-2.5 mr-1" />
-              Not configured
-            </Badge>
+            <Inbox className="h-4 w-4 text-amber-500" />
           )}
-        </div>
-
-        {status.configured ? (
-          <p className="text-xs text-muted-foreground leading-relaxed">
-            Your AI provider is configured and ready. All AI features (chat,
-            email drafting, decision extraction, email analysis) will use{" "}
-            <strong className="text-foreground">{status.providerName}</strong> with
-            the <code className="text-[10px] px-1 py-0.5 rounded bg-muted">{status.model}</code> model.
-          </p>
-        ) : (
-          <div className="space-y-2">
-            <p className="text-xs text-red-600 dark:text-red-400 leading-relaxed">
-              The <code className="text-[10px] px-1 py-0.5 rounded bg-red-500/10">{status.missingEnvVar}</code>{" "}
-              environment variable is not set. AI features will not work until you configure it.
+          <div>
+            <p className="text-sm font-medium">
+              {liveAccounts.length > 0
+                ? `${liveAccounts.length} delivery-ready account${liveAccounts.length === 1 ? "" : "s"}`
+                : "Local save only"}
             </p>
-            <div className="rounded-md border border-border bg-muted/30 p-3 text-xs space-y-1.5">
-              <p className="font-medium text-foreground">To fix this:</p>
-              <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
-                <li>Get a free API key from the provider (see README.md)</li>
-                <li>Add it to your <code className="text-[10px]">.env</code> file:
-                  <pre className="mt-1 p-2 rounded bg-background text-[10px] overflow-x-auto">
-{status.missingEnvVar}=your-api-key-here{"\n"}
-AI_PROVIDER={status.provider}
-                  </pre>
-                </li>
-                <li>Restart the dev server</li>
-              </ol>
-            </div>
-            <p className="text-[11px] text-muted-foreground">
-              💡 <strong>Free options:</strong> Google Gemini (1500 req/day),
-              Groq (1000 req/day), or Ollama (unlimited, local). See README.md
-              for setup instructions.
+            <p className="text-xs text-muted-foreground">
+              {liveAccounts.length > 0
+                ? liveAccounts.map((account) => account.emailAddress).join(", ")
+                : "Messages are saved but never marked delivered without a connected mail provider."}
             </p>
           </div>
+        </div>
+        <Button size="sm" variant="outline" onClick={onOpenInbox}>
+          Manage
+        </Button>
+      </CardContent>
+    </Card>
+  )
+}
+
+function NotificationCard() {
+  const [permission, setPermission] = useState<NotificationPermission | "unsupported">(
+    "unsupported"
+  )
+
+  useEffect(() => {
+    setPermission("Notification" in window ? Notification.permission : "unsupported")
+  }, [])
+
+  const enabled = permission === "granted"
+  const denied = permission === "denied"
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          {enabled ? <Bell className="h-4 w-4 text-primary" /> : <BellOff className="h-4 w-4 text-primary" />}
+          Urgent email notifications
+        </CardTitle>
+        <CardDescription>
+          Browser alerts are checked while Memex is open and require your permission.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex items-center justify-between gap-4">
+        <div>
+          <p className="text-sm font-medium">
+            {enabled ? "Enabled" : denied ? "Blocked by browser" : permission === "default" ? "Not enabled" : "Not supported"}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            {denied
+              ? "Re-enable notifications in your browser site settings."
+              : enabled
+                ? "Only newly detected urgent unread messages trigger an alert."
+                : "Memex will not ask until you click Enable."}
+          </p>
+        </div>
+        {permission === "default" && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={async () => setPermission(await Notification.requestPermission())}
+          >
+            Enable
+          </Button>
         )}
       </CardContent>
     </Card>
   )
 }
 
+function AiProviderCard() {
+  const statusQuery = useQuery<AiStatus>({
+    queryKey: ["ai-status"],
+    queryFn: () => apiRequest<AiStatus>("/api/ai-status"),
+  })
+
+  if (statusQuery.error) {
+    return (
+      <Card>
+        <CardContent className="p-4 text-xs text-destructive">
+          AI status could not be checked. {getErrorMessage(statusQuery.error, "Try again.")}
+        </CardContent>
+      </Card>
+    )
+  }
+
+  if (!statusQuery.data) {
+    return (
+      <Card>
+        <CardContent className="py-6 text-center text-xs text-muted-foreground">
+          <Loader2 className="mx-auto mb-2 h-4 w-4 animate-spin" />
+          Checking AI provider status
+        </CardContent>
+      </Card>
+    )
+  }
+
+  const status = statusQuery.data
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <Bot className="h-4 w-4 text-primary" />
+          AI provider
+        </CardTitle>
+        <CardDescription>
+          Used for chat, decision extraction, email drafting, and inbox analysis.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge variant="outline">{status.providerName}</Badge>
+          <code className="text-xs text-muted-foreground">{status.model}</code>
+          <Badge
+            variant="outline"
+            className={
+              status.configured
+                ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-600"
+                : "border-destructive/30 bg-destructive/10 text-destructive"
+            }
+          >
+            {status.configured ? "Ready" : "Not configured"}
+          </Badge>
+        </div>
+        <p className="text-xs leading-relaxed text-muted-foreground">
+          {status.configured
+            ? "Memex can reach the configured provider. Retention and training controls must also be configured in that provider account."
+            : `Set ${status.missingEnvVar || "the provider API key"} in the server environment, then restart Memex.`}
+        </p>
+      </CardContent>
+    </Card>
+  )
+}
+
+function DataDisclosure({
+  icon: Icon,
+  title,
+  body,
+}: {
+  icon: React.ElementType
+  title: string
+  body: string
+}) {
+  return (
+    <div className="flex items-start gap-2">
+      <Icon className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
+      <p>
+        <span className="font-medium text-foreground">{title}:</span> {body}
+      </p>
+    </div>
+  )
+}

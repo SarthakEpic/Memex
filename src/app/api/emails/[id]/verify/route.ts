@@ -15,12 +15,14 @@ export async function POST(
   const { id } = await params
   const result = await verifyEmail(id, auth.user.id)
 
-  if (result.delivered) {
+  if (result.delivered || result.status === "saved" || result.status === "scheduled") {
     return NextResponse.json({
       ...result,
-      message: result.realSend
-        ? "Email sent and confirmed by SMTP server ✓"
-        : "Email saved locally (no SMTP credentials connected)",
+      message: result.delivered
+        ? "Email accepted by the connected SMTP server."
+        : result.status === "scheduled"
+          ? "Email verified and scheduled for its configured delivery time."
+          : "No mail provider is connected. The email remains saved locally and was not sent.",
     })
   } else {
     return NextResponse.json({

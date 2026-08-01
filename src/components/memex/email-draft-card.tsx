@@ -31,12 +31,12 @@ import {
   Inbox,
   Archive,
   Star,
-  Calendar,
   ListTodo,
   Trash2,
   Reply,
 } from "lucide-react"
 import { toast } from "sonner"
+import { apiRequest, getErrorMessage } from "@/lib/client-api"
 import type { EmailDraftPayload, EmailTimelineEvent } from "./types"
 import { MarkdownPreview } from "./markdown-preview"
 
@@ -50,6 +50,7 @@ const STATUS_CONFIG: Record<
 > = {
   draft: { label: "Draft Created", color: "bg-slate-500/15 text-slate-600 dark:text-slate-300 border-slate-500/30", icon: FileText },
   sending: { label: "Sending…", color: "bg-blue-500/15 text-blue-600 dark:text-blue-300 border-blue-500/30", icon: Loader2 },
+  saved: { label: "Saved locally", color: "bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30", icon: Save },
   sent: { label: "Sent Successfully", color: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300 border-emerald-500/30", icon: CheckCircle2 },
   failed: { label: "Failed", color: "bg-red-500/15 text-red-600 dark:text-red-300 border-red-500/30", icon: AlertCircle },
   scheduled: { label: "Scheduled", color: "bg-amber-500/15 text-amber-600 dark:text-amber-300 border-amber-500/30", icon: Clock },
@@ -183,7 +184,7 @@ export function EmailDraftCard({
         details,
       }
       setDraft((prev) => {
-        const next = { ...prev, timeline: [...prev.timeline, event] }
+        const next = { ...prev, timeline: [...prev.timeline, event].slice(-100) }
         onDraftChange(next)
         return next
       })
@@ -231,20 +232,19 @@ export function EmailDraftCard({
     if (subjectTimer.current) clearTimeout(subjectTimer.current)
     subjectTimer.current = setTimeout(async () => {
       try {
-        const res = await fetch("/api/chat/email-subject", {
+        const data = await apiRequest<{ subject?: string }>("/api/chat/email-subject", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ bodyMarkdown: body }),
         })
-        if (!res.ok) return
-        const data = await res.json()
-        if (data.subject) {
+        const generatedSubject = data.subject
+        if (generatedSubject) {
           setDraft((prev) => {
-            const next = { ...prev, subject: data.subject }
+            const next = { ...prev, subject: generatedSubject }
             onDraftChange(next)
             return next
           })
-          setSubjectInput(data.subject)
+          setSubjectInput(generatedSubject)
         }
       } catch {
         // silent fail — subject auto-update is a nice-to-have
@@ -260,7 +260,7 @@ export function EmailDraftCard({
     }
     setRegenerating(true)
     try {
-      const res = await fetch("/api/chat/email-regenerate", {
+      const data = await apiRequest<{ draft: EmailDraftPayload }>("/api/chat/email-regenerate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -274,8 +274,6 @@ export function EmailDraftCard({
           feedback: feedbackText.trim(),
         }),
       })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Regeneration failed")
       const newDraft = data.draft
       const updated: EmailDraftPayload = {
         ...draft,
@@ -301,8 +299,8 @@ export function EmailDraftCard({
       setFeedbackText("")
       setShowRegenerateBox(false)
       toast.success("Draft regenerated", { description: newDraft.rationale })
-    } catch (e: any) {
-      toast.error(e.message || "Regeneration failed")
+    } catch (error) {
+      toast.error("Regeneration failed", { description: getErrorMessage(error) })
     } finally {
       setRegenerating(false)
     }
@@ -316,55 +314,72 @@ export function EmailDraftCard({
       toast.error("Subject and body are required.")
       return
     }
-    if (schedule && !scheduleFor) {
-      toast.error("Please pick a schedule time.")
+    if (schedule && new Date(schedule).getTime() <= Date.now()) {
+      toast.error("Schedule time must be in the future.")
       return
     }
+
+    const previousStatus = draft.status
     setSending(true)
     updateDraft({ status: "sending" })
     addTimelineEvent("User Confirmed", schedule ? "Scheduled send" : "Send now")
     try {
-      const res = await fetch("/api/emails", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          toAddress: draft.recipient,
-          subject: draft.subject,
-          bodyMarkdown: draft.bodyMarkdown,
-          sourceType: "chat",
-          sourceId: messageId,
-          isAiGenerated: true,
-          requireVerification: false,
-          scheduledFor: schedule ? new Date(schedule).toISOString() : null,
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed to send email")
+      const data = !schedule && draft.emailId && (previousStatus === "saved" || previousStatus === "failed")
+        ? await apiRequest<{
+            id: string
+            status: string
+            delivered: boolean
+            realSend?: boolean
+            error?: string
+          }>(`/api/emails/${draft.emailId}/resend`, { method: "POST" })
+        : await apiRequest<{
+            id: string
+            status: string
+            delivered: boolean
+            realSend?: boolean
+            error?: string
+            requiresVerification?: boolean
+          }>("/api/emails", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              toAddress: draft.recipient,
+              subject: draft.subject,
+              bodyMarkdown: draft.bodyMarkdown,
+              sourceType: "chat",
+              sourceId: messageId,
+              isAiGenerated: true,
+              requireVerification: false,
+              scheduledFor: schedule ? new Date(schedule).toISOString() : null,
+            }),
+          })
 
-      if (schedule) {
-        updateDraft({
-          status: "scheduled",
-          emailId: data.id,
-          scheduledFor: new Date(schedule).toISOString(),
-        })
-        addTimelineEvent("Email Scheduled", new Date(schedule).toLocaleString())
+      if (data.status === "scheduled") {
+        const scheduledFor = schedule ? new Date(schedule).toISOString() : draft.scheduledFor
+        updateDraft({ status: "scheduled", emailId: data.id, scheduledFor })
+        addTimelineEvent("Email Scheduled", scheduledFor ? new Date(scheduledFor).toLocaleString() : "")
         toast.success("Email scheduled", {
-          description: `For ${new Date(schedule).toLocaleString()}`,
+          description: scheduledFor ? `For ${new Date(scheduledFor).toLocaleString()}` : undefined,
         })
         setShowScheduleBox(false)
-      } else if (data.status === "delivered") {
-        updateDraft({
-          status: "sent",
-          emailId: data.id,
-        })
+      } else if (data.delivered && data.status === "delivered") {
+        updateDraft({ status: "sent", emailId: data.id, errorMessage: undefined })
         addTimelineEvent("Email Sent", `To: ${draft.recipient === "me" ? "yourself" : draft.recipient}`)
-        addTimelineEvent("Delivery Confirmed", data.realSend ? "Real SMTP" : "Local delivery")
-        toast.success("Email sent", {
-          description: data.realSend
-            ? `Delivered to ${draft.recipient === "me" ? "your inbox" : draft.recipient} via SMTP`
-            : `Saved locally${data.error ? ` (${data.error})` : ""}`,
+        addTimelineEvent("Delivery Confirmed", "SMTP server accepted the message")
+        toast.success("Email accepted by SMTP", {
+          description: `Sent to ${draft.recipient === "me" ? "your default recipient" : draft.recipient}`,
         })
         onSent?.(data.id)
+      } else if (data.status === "saved") {
+        updateDraft({
+          status: "saved",
+          emailId: data.id,
+          errorMessage: data.error || "No mail provider is connected.",
+        })
+        addTimelineEvent("Saved Locally", "No mail provider was available; message was not sent")
+        toast.info("Email saved locally", {
+          description: "Connect a verified SMTP account, then retry from this card or Sent.",
+        })
       } else if (data.status === "failed") {
         updateDraft({
           status: "failed",
@@ -374,69 +389,31 @@ export function EmailDraftCard({
         addTimelineEvent("Send Failed", data.error || "Unknown error")
         toast.error("Email failed to send", { description: data.error })
       } else {
-        // pending_verification or other
         updateDraft({ status: "draft", emailId: data.id })
         addTimelineEvent("Awaiting Approval", data.status)
         toast.info("Verification required", {
-          description: "Go to Sent → Verify tab to approve and send.",
+          description: "Open Sent → Verify to approve this email.",
         })
       }
       qc.invalidateQueries({ queryKey: ["emails"] })
       qc.invalidateQueries({ queryKey: ["stats"] })
-    } catch (e: any) {
-      updateDraft({
-        status: "failed",
-        errorMessage: e.message || "Send failed",
-      })
-      addTimelineEvent("Send Failed", e.message || "Unknown error")
-      toast.error(e.message || "Send failed")
+    } catch (error) {
+      const message = getErrorMessage(error, "Send failed")
+      updateDraft({ status: "failed", errorMessage: message })
+      addTimelineEvent("Send Failed", message)
+      toast.error("Send failed", { description: message })
     } finally {
       setSending(false)
     }
   }
 
   // ── Save as draft (no send) ──────────────────────────────────────────────
-  const handleSaveDraft = async () => {
-    setSending(true)
-    try {
-      const res = await fetch("/api/emails", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          toAddress: draft.recipient,
-          subject: draft.subject || "(no subject)",
-          bodyMarkdown: draft.bodyMarkdown,
-          sourceType: "chat",
-          sourceId: messageId,
-          isAiGenerated: true,
-          requireVerification: false,
-          // Force draft status by scheduling far in the future? No — createEmail
-          // creates with status "queued" and immediately sends. To save as a
-          // true draft we need to schedule far in future. Better: just send it
-          // to a holding state by scheduling 1 year out.
-          scheduledFor: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-        }),
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.error || "Failed to save draft")
-      // Re-patch to "scheduled" status visually but tell the user it's a draft
-      // (the API will have stored it as "scheduled" with a far-future date)
-      // Actually the API returns the email object — let's update the draft card
-      updateDraft({
-        status: "scheduled",
-        emailId: data.id,
-        scheduledFor: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-      })
-      addTimelineEvent("Saved as Draft", `Email ID: ${data.id}`)
-      toast.success("Draft saved", {
-        description: "Find it in Sent → Scheduled. Cancel there to discard.",
-      })
-      qc.invalidateQueries({ queryKey: ["emails"] })
-    } catch (e: any) {
-      toast.error(e.message || "Save failed")
-    } finally {
-      setSending(false)
-    }
+  const handleSaveDraft = () => {
+    updateDraft({ status: "draft", errorMessage: undefined })
+    addTimelineEvent("Draft Saved", "Stored securely with this chat")
+    toast.success("Draft saved", {
+      description: "It will remain with this chat until you send or cancel it.",
+    })
   }
 
   // ── Cancel ───────────────────────────────────────────────────────────────
@@ -773,13 +750,19 @@ export function EmailDraftCard({
             <span className="flex-1">Email delivered successfully{draft.emailId ? ` · ID ${draft.emailId.slice(-6)}` : ""}</span>
           </div>
         )}
+        {draft.status === "saved" && (
+          <div className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1.5 p-2 rounded-md bg-amber-500/10 border border-amber-500/30">
+            <Save className="h-3 w-3 shrink-0" />
+            <span className="flex-1">
+              Saved locally, not sent. Connect SMTP and retry to deliver this message.
+            </span>
+          </div>
+        )}
         {draft.status === "scheduled" && draft.scheduledFor && (
           <div className="text-[11px] text-amber-600 dark:text-amber-400 flex items-center gap-1.5 p-2 rounded-md bg-amber-500/10 border border-amber-500/30">
             <Clock className="h-3 w-3 shrink-0" />
             <span className="flex-1">
-              {draft.scheduledFor && new Date(draft.scheduledFor).getFullYear() > new Date().getFullYear() + 100
-                ? "Saved as draft — find it in Sent → Scheduled"
-                : `Scheduled for ${new Date(draft.scheduledFor).toLocaleString()}`}
+              {`Scheduled for ${new Date(draft.scheduledFor).toLocaleString()}`}
             </span>
           </div>
         )}
@@ -815,8 +798,8 @@ export function ChatActionBar({ emailId, onReply, onCreateTask }: ChatActionBarP
     setBusy(action)
     try {
       if (action === "delete") {
-        const res = await fetch(`/api/inbox/${emailId}`, { method: "DELETE" })
-        if (!res.ok) throw new Error("Delete failed")
+        if (!window.confirm("Remove this email from Memex? The provider copy is not deleted.")) return
+        await apiRequest(`/api/inbox/${emailId}`, { method: "DELETE" })
       } else {
         // Map UI action to API fields
         const payload: Record<string, boolean | string> = {}
@@ -826,12 +809,11 @@ export function ChatActionBar({ emailId, onReply, onCreateTask }: ChatActionBarP
         else if (action === "markRead") payload.isRead = true
         else if (action === "markUnread") payload.isRead = false
 
-        const res = await fetch(`/api/inbox/${emailId}`, {
+        await apiRequest(`/api/inbox/${emailId}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(payload),
         })
-        if (!res.ok) throw new Error("Action failed")
       }
       qc.invalidateQueries({ queryKey: ["inbox"] })
       const labels: Record<string, string> = {
@@ -843,8 +825,8 @@ export function ChatActionBar({ emailId, onReply, onCreateTask }: ChatActionBarP
         markUnread: "Marked as unread",
       }
       toast.success(labels[action] || action)
-    } catch (e: any) {
-      toast.error(e.message || "Action failed")
+    } catch (error) {
+      toast.error("Action failed", { description: getErrorMessage(error) })
     } finally {
       setBusy(null)
     }
@@ -896,11 +878,7 @@ export function ChatActionBar({ emailId, onReply, onCreateTask }: ChatActionBarP
           <ListTodo className="h-3 w-3 mr-1" /> Create Task
         </Button>
       )}
-      {emailId && (
-        <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => toast.info("Follow-up scheduled for tomorrow 9 AM")}>
-          <Calendar className="h-3 w-3 mr-1" /> Schedule Follow-up
-        </Button>
-      )}
+
     </div>
   )
 }

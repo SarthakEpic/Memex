@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { validationError } from "@/server/validation/api"
+import { chatSessionUpdateSchema } from "@/server/validation/mutations"
 
 // GET /api/chat/sessions/[id] — full session with messages
 export async function GET(
@@ -53,13 +55,19 @@ export async function PATCH(
 
   const { id } = await params
   const body = await req.json().catch(() => ({}))
-  const { title } = body as { title?: string }
-  if (!title || typeof title !== "string") {
-    return NextResponse.json({ error: "title is required" }, { status: 400 })
+  const parsed = chatSessionUpdateSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
   }
+  const { title } = parsed.data
+  const existing = await db.chatSession.findFirst({
+    where: { id, userId: auth.user.id },
+    select: { id: true },
+  })
+  if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 })
   await db.chatSession.updateMany({
     where: { id, userId: auth.user.id },
-    data: { title: title.trim().slice(0, 120) },
+    data: { title },
   })
   const session = await db.chatSession.findFirstOrThrow({ where: { id, userId: auth.user.id } })
   return NextResponse.json({ session: { id: session.id, title: session.title } })

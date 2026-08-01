@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server"
 import { db } from "@/lib/db"
 import { extractDecisions } from "@/lib/llm"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
+import { validationError } from "@/server/validation/api"
+import { decisionExtractSchema } from "@/server/validation/mutations"
+import { rateLimit } from "@/server/security/rate-limit"
 
 // POST /api/decisions/extract
 // Body: { noteId: string } — re-run decision extraction on all chunks of a note
@@ -9,9 +12,20 @@ export async function POST(req: NextRequest) {
   const auth = await requireUser(req)
   if (isAuthFailure(auth)) return auth.response
 
+  const limited = await rateLimit(req, {
+    name: "decisions:extract",
+    limit: 10,
+    windowMs: 60_000,
+    userId: auth.user.id,
+  })
+  if (limited) return limited
+
   const body = await req.json().catch(() => ({}))
-  const { noteId } = body as { noteId?: string }
-  if (!noteId) return NextResponse.json({ error: "noteId required" }, { status: 400 })
+  const parsed = decisionExtractSchema.safeParse(body)
+  if (!parsed.success) {
+    return NextResponse.json(validationError(parsed.error), { status: 400 })
+  }
+  const { noteId } = parsed.data
 
   const note = await db.note.findFirst({
     where: { id: noteId, userId: auth.user.id },

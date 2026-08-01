@@ -25,7 +25,10 @@ export function markdownToHtml(md: string): string {
       // links
       .replace(
         /\[([^\]]+)\]\(([^)]+)\)/g,
-        '<a href="$2" class="text-primary underline underline-offset-2">$1</a>'
+        (_match, label: string, href: string) => {
+          const safeHref = /^(https?:\/\/|mailto:)/i.test(href.trim()) ? href.trim() : "#"
+          return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer" class="text-primary underline underline-offset-2">${label}</a>`
+        }
       )
   }
 
