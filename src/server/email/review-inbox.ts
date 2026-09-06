@@ -21,6 +21,7 @@ const STOP_WORDS = new Set(["the", "a", "an", "my", "mail", "email", "emails", "
 
 export function isInboxReviewQuestion(message: string): boolean {
   const text = message.toLowerCase()
+  if (/\b(?:draft|compose|write|send|respond|reply)\b/.test(text)) return false
   if (!/\b(?:email|emails|mail|inbox|message|messages)\b/.test(text)) return false
   return /\b(?:important|urgent|priority|action|reply|review|check|summari[sz]e|details?|what(?:'s| is)|which)\b/.test(text)
 }

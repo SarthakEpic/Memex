@@ -11,11 +11,26 @@ import {
 import { llmRerank, type ContextChunk } from "@/lib/llm"
 
 const cache = new Map<string, { ts: number; chunks: IndexedChunk[] }>()
-const CACHE_TTL = 5_000 // 5s — short so fresh ingest shows up quickly
+const CACHE_TTL = 60_000
+const MAX_CACHED_USERS = 20
+
+function rememberCorpus(userId: string, chunks: IndexedChunk[]): void {
+  cache.delete(userId)
+  cache.set(userId, { ts: Date.now(), chunks })
+  while (cache.size > MAX_CACHED_USERS) {
+    const oldestUserId = cache.keys().next().value
+    if (!oldestUserId) break
+    cache.delete(oldestUserId)
+  }
+}
 
 async function loadCorpus(userId: string): Promise<IndexedChunk[]> {
   const current = cache.get(userId)
-  if (current && Date.now() - current.ts < CACHE_TTL) return current.chunks
+  if (current && Date.now() - current.ts < CACHE_TTL) {
+    // Refresh recency so active users survive bounded-cache eviction.
+    rememberCorpus(userId, current.chunks)
+    return current.chunks
+  }
   const chunks = await db.chunk.findMany({
     where: { userId },
     include: { note: true },
@@ -30,7 +45,7 @@ async function loadCorpus(userId: string): Promise<IndexedChunk[]> {
     termFreq: safeParse(c.termFreq, {}),
     tokens: c.tokens,
   }))
-  cache.set(userId, { ts: Date.now(), chunks: indexed })
+  rememberCorpus(userId, indexed)
   return indexed
 }
 

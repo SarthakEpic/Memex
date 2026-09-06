@@ -87,6 +87,8 @@ const persistedEmailDraftSchema = emailDraftCoreSchema
   .extend({
     status: z.enum(["draft", "sending", "saved", "sent", "failed", "scheduled", "cancelled"]),
     emailId: idSchema.optional(),
+    accountId: idSchema.optional(),
+    requiresApproval: z.boolean().optional(),
     errorMessage: z.string().max(2_000).optional(),
     scheduledFor: z.string().datetime().optional(),
     timeline: z.array(emailTimelineEventSchema).max(100),

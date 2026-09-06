@@ -4,6 +4,7 @@ import { retrieve } from "@/lib/retrieval"
 import {
   generateSmartAnswer,
   draftEmailFromInstruction,
+  draftEmailReply,
   type ContextChunk,
   type EmailDraftResult,
 } from "@/lib/llm"
@@ -12,6 +13,11 @@ import { isAuthFailure, requireUser } from "@/server/auth/guard"
 import { chatRequestSchema, validationError } from "@/server/validation/api"
 import { formatInboxChatAnswer, parseInboxChatQuery } from "@/server/email/inbox-chat"
 import { isInboxReviewQuestion, reviewInboxQuestion } from "@/server/email/review-inbox"
+import {
+  formatInboxEmailForChat,
+  parseEmailDisplayIntent,
+  rankInboxEmailMatch,
+} from "@/server/email/chat-email"
 
 // POST /api/chat
 // Body: { message: string, sessionId?: string }
@@ -50,6 +56,56 @@ export async function POST(req: NextRequest) {
     data: { userId: auth.user.id, sessionId: session.id, role: "user", content: message },
   })
 
+  // Opening an email is resolved locally and scoped to this user. The selected
+  // email stays attached to this chat only, so follow-ups such as "show me
+  // here" and "reply to it" never depend on ambiguous AI memory.
+  const emailDisplayIntent = parseEmailDisplayIntent(message)
+  if (emailDisplayIntent) {
+    const selectedEmail = emailDisplayIntent.useActiveEmail && session.activeInboxEmailId
+      ? await db.inboxEmail.findFirst({
+          where: { id: session.activeInboxEmailId, userId: auth.user.id, isArchived: false },
+        })
+      : emailDisplayIntent.query
+        ? await findInboxEmailForChat(auth.user.id, emailDisplayIntent.query)
+        : null
+
+    const answer = selectedEmail
+      ? formatInboxEmailForChat(selectedEmail)
+      : emailDisplayIntent.useActiveEmail
+        ? "There is no email selected in this chat yet. Ask me to open an email by sender or subject first."
+        : "I could not find that email in your active inbox. Try the sender name or a few words from its subject."
+
+    if (selectedEmail) {
+      await db.chatSession.updateMany({
+        where: { id: session.id, userId: auth.user.id },
+        data: { activeInboxEmailId: selectedEmail.id },
+      })
+      session = { ...session, activeInboxEmailId: selectedEmail.id }
+    }
+
+    await db.chatMessage.create({
+      data: {
+        userId: auth.user.id,
+        sessionId: session.id,
+        role: "assistant",
+        content: answer,
+        citations: "[]",
+        emailDraft: "",
+      },
+    })
+
+    return NextResponse.json({
+      sessionId: session.id,
+      answer,
+      citations: [],
+      context: [],
+      mode: "email",
+      refused: false,
+      serviceError: false,
+      retrievalCount: 0,
+      activeEmailId: selectedEmail?.id,
+    })
+  }
   if (isInboxReviewQuestion(message)) {
     const review = await reviewInboxQuestion(auth.user.id, message)
     await db.chatMessage.create({
@@ -125,6 +181,11 @@ export async function POST(req: NextRequest) {
     )
     .join("\n")
 
+  const selectedInboxEmail = session.activeInboxEmailId
+    ? await db.inboxEmail.findFirst({
+        where: { id: session.activeInboxEmailId, userId: auth.user.id, isArchived: false },
+      })
+    : null
   // Mailbox status questions are answered from the local inbox directly. They
   // do not need an LLM and remain useful when an external provider is busy.
   if (inboxQuestion) {
@@ -156,11 +217,46 @@ export async function POST(req: NextRequest) {
   // EMAIL INTENT DETECTION — check if the user wants to send/draft an email
   // ───────────────────────────────────────────────────────────────────────
   const lowerMsg = message.toLowerCase().trim()
+  const sendExistingDraft = /^(?:please\s+)?(?:yes[,!]?\s*)?send(?:\s+(?:this|the|that))?(?:\s+(?:email|mail|message|draft))?[.!]?$/i.test(lowerMsg)
+  if (sendExistingDraft) {
+    const recentDraftMessages = await db.chatMessage.findMany({
+      where: { userId: auth.user.id, sessionId: session.id, role: "assistant", emailDraft: { not: "" } },
+      orderBy: { createdAt: "desc" },
+      take: 8,
+    })
+    const draftMessage = recentDraftMessages[0]
+    const parsedDraft = draftMessage ? safeParseEmailDraft(draftMessage.emailDraft) : null
+    const latestDraft = parsedDraft && !["sent", "scheduled", "cancelled", "sending"].includes(parsedDraft.status) ? parsedDraft : null
+    const answer = latestDraft
+      ? "Review your draft in the confirmation dialog. Nothing is sent until you click Confirm send."
+      : "There is no sendable draft in this chat. Tell me who to email and what you want to say."
+    await db.chatMessage.create({
+      data: {
+        userId: auth.user.id,
+        sessionId: session.id,
+        role: "assistant",
+        content: answer,
+        citations: "[]",
+        emailDraft: "",
+      },
+    })
+    return NextResponse.json({
+      sessionId: session.id,
+      answer,
+      citations: [],
+      context: [],
+      mode: "email",
+      refused: false,
+      serviceError: false,
+      retrievalCount: 0,
+      ...(latestDraft ? { confirmDraftMessageId: draftMessage.id } : {}),
+    })
+  }
   const emailIntentKeywords = [
     "send email", "send an email", "send a email", "send mail",
     "email to", "compose email", "compose an email",
     "draft email", "draft an email", "write email", "write an email",
-    "mail to", "write to", "reply to",
+    "mail to", "write to", "reply to", "draft a reply", "write a reply", "reply saying", "reply with", "draft a mail",
     "send a message to", "send message to",
   ]
   // Phrases that clearly indicate "draft me an email" intent
@@ -189,7 +285,33 @@ export async function POST(req: NextRequest) {
   // PATH A: EMAIL DRAFT — generate a structured draft for the chat UI
   // ───────────────────────────────────────────────────────────────────────
   if (wantsEmail && !isQuestionAboutEmail) {
-    const draft = await draftEmailFromInstruction(message, emailContext || undefined)
+    const wantsReply = /\b(?:reply|respond|answer)\b/.test(lowerMsg)
+    if (wantsReply && !selectedInboxEmail) {
+      const answer = "Open the email in this chat first, then tell me what you want the reply to say. I will create a draft for your review."
+      await db.chatMessage.create({
+        data: { userId: auth.user.id, sessionId: session.id, role: "assistant", content: answer, citations: "[]", emailDraft: "" },
+      })
+      return NextResponse.json({ sessionId: session.id, answer, citations: [], context: [], mode: "email", refused: false, serviceError: false, retrievalCount: 0 })
+    }
+
+    const replyBody = wantsReply && selectedInboxEmail
+      ? await draftEmailReply(
+          selectedInboxEmail.fromAddress,
+          selectedInboxEmail.subject,
+          selectedInboxEmail.body,
+          message
+        )
+      : null
+    const draft = replyBody && replyBody !== "Unable to generate a draft at this time."
+      ? {
+          recipient: selectedInboxEmail!.fromAddress,
+          subject: selectedInboxEmail!.subject.toLowerCase().startsWith("re:")
+            ? selectedInboxEmail!.subject
+            : `Re: ${selectedInboxEmail!.subject}`,
+          bodyMarkdown: replyBody,
+          rationale: `Reply drafted from the email opened in this chat from ${selectedInboxEmail!.fromName || selectedInboxEmail!.fromAddress}.`,
+        }
+      : wantsReply ? null : await draftEmailFromInstruction(message, emailContext || undefined)
 
     if (draft) {
       // Short, action-oriented assistant message — the actual email content
@@ -237,7 +359,11 @@ export async function POST(req: NextRequest) {
         emailDraft: emailDraftPayload,
       })
     }
-    // If draft generation failed (rate limit, etc.), fall through to normal chat
+    const answer = "The AI service could not prepare your draft right now. Nothing was sent. Please retry your drafting request."
+    await db.chatMessage.create({
+      data: { userId: auth.user.id, sessionId: session.id, role: "assistant", content: answer },
+    })
+    return NextResponse.json({ sessionId: session.id, answer, citations: [], mode: "email", serviceError: true })
   }
 
   // ───────────────────────────────────────────────────────────────────────
@@ -341,7 +467,8 @@ export interface EmailDraftPayload {
   subject: string
   bodyMarkdown: string
   rationale: string
-  status: "draft" | "sending" | "sent" | "failed" | "scheduled" | "cancelled"
+  status: "draft" | "sending" | "saved" | "sent" | "failed" | "scheduled" | "cancelled"
+
   timeline: {
     action: string
     timestamp: string
@@ -380,4 +507,32 @@ function generateFallbackAnswer(question: string, chunks: ContextChunk[]): strin
   lines.push("_The AI reasoning service is temporarily unavailable. These are raw search results from your notes. Try asking again in a minute for a full AI-generated answer._")
 
   return lines.join("\n")
+}
+
+async function findInboxEmailForChat(userId: string, query: string) {
+  const terms = query.toLowerCase().match(/[a-z0-9@.]{2,}/g)?.slice(0, 12) ?? []
+  if (!terms.length) return null
+  const candidates = await db.inboxEmail.findMany({
+    where: { userId, isArchived: false, AND: terms.map((term) => ({
+      OR: [{ fromName: { contains: term } }, { fromAddress: { contains: term } }, { subject: { contains: term } }],
+    })) },
+    select: { id: true, fromName: true, fromAddress: true, subject: true, receivedAt: true },
+    orderBy: { receivedAt: "desc" },
+    take: 30,
+  })
+  const match = candidates
+    .map((email) => ({ email, score: rankInboxEmailMatch(query, email) }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score || b.email.receivedAt.getTime() - a.email.receivedAt.getTime())[0]
+  return match ? db.inboxEmail.findFirst({ where: { id: match.email.id, userId, isArchived: false } }) : null
+}
+function safeParseEmailDraft(value: string): EmailDraftPayload | null {
+  try {
+    const parsed = JSON.parse(value) as Partial<EmailDraftPayload>
+    return parsed.recipient && parsed.subject && parsed.bodyMarkdown && parsed.rationale && parsed.status && Array.isArray(parsed.timeline)
+      ? parsed as EmailDraftPayload
+      : null
+  } catch {
+    return null
+  }
 }

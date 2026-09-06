@@ -15,6 +15,8 @@ export interface SendEmailInput {
   sourceType?: "manual" | "chat" | "decision" | "note" | "digest" | "ai"
   sourceId?: string
   fromName?: string
+  accountId?: string
+  idempotencyKey?: string
   scheduledFor?: Date | null
   isAiGenerated?: boolean
   // If true, email is saved as "pending_verification" and requires human verification before sending
@@ -31,35 +33,58 @@ export interface SendEmailResult {
   requiresVerification?: boolean
 }
 
+function resultFromStoredEmail(email: { id: string; status: string; deliveryMode: string; errorMessage: string }): SendEmailResult {
+  return { id: email.id, status: email.status, delivered: email.status === "delivered", deliveryMode: email.deliveryMode as SendEmailResult["deliveryMode"], error: email.errorMessage || undefined, requiresVerification: email.status === "pending_verification" }
+}
+
 // Create an email (draft or pending verification) — does NOT send yet
 export async function createEmail(input: SendEmailInput): Promise<SendEmailResult> {
+  if (input.idempotencyKey) {
+    const existing = await db.email.findFirst({ where: { userId: input.userId, idempotencyKey: input.idempotencyKey } })
+    if (existing) return resultFromStoredEmail(existing)
+  }
+
   const bodyHtml = await markdownToHtml(input.bodyMarkdown)
   const isScheduled = input.scheduledFor && new Date(input.scheduledFor).getTime() > Date.now()
+  const requiresConfirmation = Boolean(input.requireVerification || input.isAiGenerated || input.sourceType === "chat")
 
   // Determine initial status
   let status = "queued"
-  if (input.requireVerification) {
+  if (requiresConfirmation) {
     status = "pending_verification"
   } else if (isScheduled) {
     status = "scheduled"
   }
 
-  const email = await db.email.create({
-    data: {
-      toAddress: input.toAddress,
-      userId: input.userId,
-      fromName: input.fromName ?? "Memex",
-      subject: input.subject,
-      bodyMarkdown: input.bodyMarkdown,
-      bodyHtml,
-      status,
-      sourceType: input.sourceType ?? "manual",
-      sourceId: input.sourceId ?? "",
-      scheduledFor: isScheduled ? new Date(input.scheduledFor!) : null,
-      isAiGenerated: input.isAiGenerated ?? false,
-      verified: !input.requireVerification,
-    },
-  })
+  let email
+  try {
+    email = await db.email.create({
+      data: {
+        toAddress: input.toAddress,
+        userId: input.userId,
+        fromName: input.fromName ?? "Memex",
+        accountId: input.accountId ?? "",
+        idempotencyKey: input.idempotencyKey,
+        subject: input.subject,
+        bodyMarkdown: input.bodyMarkdown,
+        bodyHtml,
+        status,
+        sourceType: input.sourceType ?? "manual",
+        sourceId: input.sourceId ?? "",
+        scheduledFor: isScheduled ? new Date(input.scheduledFor!) : null,
+        isAiGenerated: input.isAiGenerated ?? false,
+        verified: !requiresConfirmation,
+      },
+    })
+
+    } catch (error) {
+    // The unique user/key constraint closes the race between duplicate POSTs.
+    if (input.idempotencyKey && (error as { code?: string }).code === "P2002") {
+      const existing = await db.email.findFirst({ where: { userId: input.userId, idempotencyKey: input.idempotencyKey } })
+      if (existing) return resultFromStoredEmail(existing)
+    }
+    throw error
+  }
 
   if (status === "pending_verification") {
     return {
@@ -85,27 +110,39 @@ export async function executeSend(emailId: string, userId: string): Promise<Send
     return { id: emailId, status: "failed", delivered: false, error: "Email not found" }
   }
 
-  // Update status to "sending"
-  await db.email.update({
-    where: { id: emailId },
-    data: {
-      status: "sending",
-      attempts: { increment: 1 },
-      lastAttemptAt: new Date(),
-    },
+  // Claim the eligible delivery atomically before contacting a provider.
+  const claimed = await db.email.updateMany({
+    where: { id: emailId, userId, verified: true, status: { in: ["queued", "failed", "saved", "scheduled"] },
+      OR: [{ scheduledFor: null }, { scheduledFor: { lte: new Date() } }] },
+    data: { status: "sending", attempts: { increment: 1 }, lastAttemptAt: new Date() },
   })
+  if (claimed.count !== 1) {
+    return { id: emailId, status: email.status, delivered: false, error: "This email is not eligible to send, is already being sent, or needs approval." }
+  }
+  // The sender is part of the confirmed email record. Never infer an account.
+  const account = email.accountId
+    ? await db.emailAccount.findFirst({
+        where: {
+          id: email.accountId,
+          userId,
+          connected: true,
+          OR: [{ smtpPassword: { not: "" } }, { oauthRefreshToken: { not: "" } }],
+        },
+      })
+    : null
 
-  // Try real SMTP if an account with SMTP credentials is connected
-  const account = await db.emailAccount.findFirst({
-    where: {
-      userId,
-      connected: true,
-      OR: [{ smtpPassword: { not: "" } }, { oauthRefreshToken: { not: "" } }],
-    },
-    orderBy: { updatedAt: "desc" },
-  })
+  if (!account) {
+    const message = email.accountId
+      ? "The selected sending account is no longer connected. Reconnect it and create a new confirmed draft."
+      : "No sending account was selected. Select an account and create a new confirmed draft."
+    await db.email.update({
+      where: { id: emailId },
+      data: { status: "failed", deliveryMode: "unknown", errorMessage: message },
+    })
+    return { id: emailId, status: "failed", delivered: false, deliveryMode: "unknown", realSend: false, error: message }
+  }
 
-  if (account && isEmailOAuthProvider(account.provider) && account.oauthRefreshToken) {
+  if (isEmailOAuthProvider(account.provider) && account.oauthRefreshToken) {
     try {
       await sendOAuthEmail(account, {
         toAddress: email.toAddress,
@@ -142,7 +179,7 @@ export async function executeSend(emailId: string, userId: string): Promise<Send
     }
   }
 
-  if (account && account.smtpHost && account.smtpPassword) {
+  if (account.smtpHost && account.smtpPassword) {
     try {
       const nodemailer = await import("nodemailer")
       const transporter = nodemailer.createTransport({
@@ -180,14 +217,15 @@ export async function executeSend(emailId: string, userId: string): Promise<Send
       } else {
         throw new Error("SMTP server did not confirm delivery")
       }
-    } catch (err: any) {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The SMTP server did not accept the message."
       // Real send failed — mark as failed (NOT delivered)
       await db.email.update({
         where: { id: emailId },
         data: {
           status: "failed",
           deliveryMode: "smtp",
-          errorMessage: `SMTP error: ${err.message}`,
+          errorMessage: `SMTP error: ${message}`,
         },
       })
       return {
@@ -196,7 +234,7 @@ export async function executeSend(emailId: string, userId: string): Promise<Send
         delivered: false,
         deliveryMode: "smtp",
         realSend: false,
-        error: err.message,
+        error: message,
       }
     }
   }
@@ -233,18 +271,15 @@ export async function verifyEmail(emailId: string, userId: string): Promise<Send
     return { id: emailId, status: "failed", delivered: false, error: "Email not found" }
   }
 
-  if (email.scheduledFor && email.scheduledFor.getTime() > Date.now()) {
-    await db.email.update({
-      where: { id: emailId },
-      data: { verified: true, status: "scheduled", errorMessage: "" },
-    })
-    return { id: emailId, status: "scheduled", delivered: false }
-  }
-
-  await db.email.update({
-    where: { id: emailId },
-    data: { verified: true, status: "queued" },
+  const scheduled = Boolean(email.scheduledFor && email.scheduledFor.getTime() > Date.now())
+  const approved = await db.email.updateMany({
+    where: { id: emailId, userId, status: "pending_verification", verified: false },
+    data: { verified: true, confirmedAt: new Date(), status: scheduled ? "scheduled" : "queued", errorMessage: "" },
   })
+  if (approved.count !== 1) {
+    return { id: emailId, status: email.status, delivered: false, error: "This email is no longer awaiting approval." }
+  }
+  if (scheduled) return { id: emailId, status: "scheduled", delivered: false }
   return await executeSend(emailId, userId)
 }
 

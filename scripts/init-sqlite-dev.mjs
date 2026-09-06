@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS "ChatSession" (
   "id" TEXT NOT NULL PRIMARY KEY,
   "userId" TEXT NOT NULL DEFAULT 'local-user',
   "title" TEXT NOT NULL DEFAULT 'New chat',
+  "activeInboxEmailId" TEXT NOT NULL DEFAULT '',
   "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" DATETIME NOT NULL,
   CONSTRAINT "ChatSession_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -146,6 +147,8 @@ CREATE TABLE IF NOT EXISTS "Email" (
   "userId" TEXT NOT NULL DEFAULT 'local-user',
   "toAddress" TEXT NOT NULL,
   "fromName" TEXT NOT NULL DEFAULT 'Memex',
+  "accountId" TEXT NOT NULL DEFAULT '',
+  "idempotencyKey" TEXT,
   "subject" TEXT NOT NULL,
   "bodyMarkdown" TEXT NOT NULL,
   "bodyHtml" TEXT NOT NULL DEFAULT '',
@@ -160,6 +163,7 @@ CREATE TABLE IF NOT EXISTS "Email" (
   "deliveryMode" TEXT NOT NULL DEFAULT 'unknown',
   "isAiGenerated" BOOLEAN NOT NULL DEFAULT false,
   "verified" BOOLEAN NOT NULL DEFAULT false,
+  "confirmedAt" DATETIME,
   "attempts" INTEGER NOT NULL DEFAULT 0,
   "lastAttemptAt" DATETIME,
   CONSTRAINT "Email_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User" ("id") ON DELETE CASCADE ON UPDATE CASCADE
@@ -311,7 +315,11 @@ for (const table of [
   db.prepare(`UPDATE "${table}" SET "userId" = 'local-user' WHERE "userId" IS NULL OR "userId" = ''`).run()
 }
 ensureColumn("RateLimitBucket", "userId", "TEXT")
+ensureColumn("ChatSession", "activeInboxEmailId", "TEXT NOT NULL DEFAULT ''")
 ensureColumn("Email", "deliveryMode", "TEXT NOT NULL DEFAULT 'unknown'")
+ensureColumn("Email", "accountId", "TEXT NOT NULL DEFAULT ''")
+ensureColumn("Email", "idempotencyKey", "TEXT")
+ensureColumn("Email", "confirmedAt", "DATETIME")
 ensureColumn("InboxEmail", "providerMessageId", "TEXT NOT NULL DEFAULT ''")
 ensureColumn("InboxEmail", "analysisState", "TEXT NOT NULL DEFAULT 'pending'")
 ensureColumn("InboxEmail", "triageScore", "INTEGER NOT NULL DEFAULT 0")
@@ -343,6 +351,8 @@ CREATE INDEX IF NOT EXISTS "Decision_userId_idx" ON "Decision"("userId");
 CREATE INDEX IF NOT EXISTS "ChatSession_userId_idx" ON "ChatSession"("userId");
 CREATE INDEX IF NOT EXISTS "ChatMessage_userId_idx" ON "ChatMessage"("userId");
 CREATE INDEX IF NOT EXISTS "Email_userId_idx" ON "Email"("userId");
+CREATE INDEX IF NOT EXISTS "Email_userId_accountId_idx" ON "Email"("userId", "accountId");
+CREATE UNIQUE INDEX IF NOT EXISTS "Email_userId_idempotencyKey_key" ON "Email"("userId", "idempotencyKey");
 CREATE UNIQUE INDEX IF NOT EXISTS "EmailTemplate_userId_name_key" ON "EmailTemplate"("userId", "name");
 CREATE INDEX IF NOT EXISTS "EmailTemplate_userId_idx" ON "EmailTemplate"("userId");
 CREATE UNIQUE INDEX IF NOT EXISTS "EmailAccount_userId_emailAddress_key" ON "EmailAccount"("userId", "emailAddress");

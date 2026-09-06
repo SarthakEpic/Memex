@@ -54,6 +54,8 @@ export async function POST(req: NextRequest) {
     scheduledFor,
     isAiGenerated,
     requireVerification,
+    accountId,
+    idempotencyKey,
   } = parsed.data
 
   // Resolve "me" profile if toAddress is "me" or empty
@@ -63,6 +65,20 @@ export async function POST(req: NextRequest) {
     recipient = profile?.email || "you@memex.local"
   }
 
+  if (accountId) {
+    const account = await db.emailAccount.findFirst({
+      where: {
+        id: accountId,
+        userId: auth.user.id,
+        connected: true,
+        OR: [{ smtpPassword: { not: "" } }, { oauthRefreshToken: { not: "" } }],
+      },
+      select: { id: true },
+    })
+    if (!account) {
+      return NextResponse.json({ error: "Select a currently connected sending account." }, { status: 400 })
+    }
+  }
   const result = await createEmail({
     userId: auth.user.id,
     toAddress: recipient,
@@ -71,9 +87,12 @@ export async function POST(req: NextRequest) {
     sourceType: sourceType || "manual",
     sourceId: sourceId || "",
     fromName: fromName || "Memex",
+    accountId,
+    idempotencyKey,
     scheduledFor: scheduledFor ? new Date(scheduledFor) : null,
     isAiGenerated: isAiGenerated ?? false,
-    requireVerification: requireVerification ?? false,
+    // Chat and AI messages always create a pending confirmation record first.
+    requireVerification: sourceType === "chat" || isAiGenerated === true || requireVerification === true,
   })
 
   return NextResponse.json(result)
@@ -105,32 +124,48 @@ export async function PATCH(req: NextRequest) {
       // Retry sending a failed email
       const email = await db.email.findFirst({ where: { id, userId: auth.user.id } })
       if (!email) return NextResponse.json({ error: "Not found" }, { status: 404 })
-      if (email.status === "delivered") {
-        return NextResponse.json({ error: "Email already delivered" }, { status: 400 })
+      if (!["failed", "saved"].includes(email.status)) {
+        return NextResponse.json({ error: "Only failed or locally saved emails can be retried." }, { status: 409 })
       }
       const result = await executeSend(id, auth.user.id)
       return NextResponse.json(result)
     }
     case "cancel": {
       // Cancel a pending/scheduled email
-      await db.email.updateMany({
-        where: { id, userId: auth.user.id },
+      const cancelled = await db.email.updateMany({
+        where: {
+          id,
+          userId: auth.user.id,
+          status: { in: ["pending_verification", "queued", "scheduled", "saved", "failed"] },
+        },
         data: { status: "cancelled" },
       })
+      if (cancelled.count !== 1) {
+        return NextResponse.json({ error: "This email cannot be cancelled in its current state." }, { status: 409 })
+      }
       return NextResponse.json({ ok: true, status: "cancelled" })
     }
     case "edit": {
       // Edit a draft or pending email
-      const data: any = {}
+      const existing = await db.email.findFirst({ where: { id, userId: auth.user.id } })
+      if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 })
+      if (!["pending_verification", "failed", "saved"].includes(existing.status)) {
+        return NextResponse.json({ error: "Only pending, failed, or locally saved emails can be edited." }, { status: 409 })
+      }
+
+      const data: { subject?: string; bodyMarkdown?: string; bodyHtml?: string; toAddress?: string; verified?: boolean; confirmedAt?: null } = {}
       if (subject !== undefined) data.subject = subject
       if (bodyMarkdown !== undefined) {
         data.bodyMarkdown = bodyMarkdown
-        // Re-render HTML
         const { markdownToHtml } = await import("@/lib/markdown")
         data.bodyHtml = await markdownToHtml(bodyMarkdown)
       }
       if (toAddress !== undefined) data.toAddress = toAddress
-      await db.email.updateMany({ where: { id, userId: auth.user.id }, data })
+      if (existing.status === "pending_verification") {
+        data.verified = false
+        data.confirmedAt = null
+      }
+      await db.email.update({ where: { id }, data })
       const email = await db.email.findFirstOrThrow({ where: { id, userId: auth.user.id } })
       return NextResponse.json({ email })
     }

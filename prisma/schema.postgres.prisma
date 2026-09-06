@@ -179,6 +179,7 @@ model ChatSession {
   userId    String
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   title     String   @default("New chat")
+  activeInboxEmailId String @default("")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -217,6 +218,8 @@ model Email {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   toAddress  String
   fromName   String   @default("Memex")
+  accountId  String   @default("")
+  idempotencyKey String?
   subject    String
   bodyMarkdown String @db.Text // markdown body
   bodyHtml   String   @default("") @db.Text // rendered html (computed on send)
@@ -232,6 +235,7 @@ model Email {
   // Enhanced tracking
   isAiGenerated Boolean @default(false) // true if AI drafted this email
   verified      Boolean @default(false) // true if human verification completed
+  confirmedAt   DateTime?
   attempts      Int     @default(0) // number of send attempts
   lastAttemptAt DateTime?
 
@@ -241,6 +245,8 @@ model Email {
   @@index([queuedAt])
   @@index([scheduledFor])
   @@index([isAiGenerated])
+  @@index([userId, accountId])
+  @@unique([userId, idempotencyKey])
 }
 
 model EmailTemplate {

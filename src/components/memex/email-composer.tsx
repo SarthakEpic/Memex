@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   Dialog,
@@ -22,6 +22,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Badge } from "@/components/ui/badge"
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog"
 import { Loader2, Mail, Send, Sparkles, Clock } from "lucide-react"
 import { toast } from "sonner"
 import { apiRequest, getErrorMessage } from "@/lib/client-api"
@@ -37,6 +38,9 @@ export function EmailComposer() {
   const [bodyMarkdown, setBodyMarkdown] = useState("")
   const [sourceType, setSourceType] = useState<string>("manual")
   const [sending, setSending] = useState(false)
+  const [accountId, setAccountId] = useState("")
+  const [pendingApproval, setPendingApproval] = useState<{ id: string; scheduledFor: string | null } | null>(null)
+  const idempotencyKey = useRef("")
   const templatesQuery = useQuery<{ templates: EmailTemplateData[] }>({
     queryKey: ["email-templates"],
     queryFn: () => apiRequest("/api/emails/templates"),
@@ -49,12 +53,13 @@ export function EmailComposer() {
     queryFn: () =>
       apiRequest<{ accounts: EmailAccountData[] }>("/api/email-accounts"),
   })
-  const hasLiveDelivery = (accountsQuery.data?.accounts ?? []).some(
+  const sendReadyAccounts = (accountsQuery.data?.accounts ?? []).filter(
     (account) =>
       account.connected &&
       ((account.syncMode === "oauth" && account.hasOAuthConnection) ||
         (account.syncMode === "real" && account.hasSmtpPassword))
   )
+  const hasLiveDelivery = sendReadyAccounts.length > 0
 
   useEffect(() => {
     if (draft) {
@@ -66,6 +71,11 @@ export function EmailComposer() {
       setScheduledFor("")
     }
   }, [draft])
+  useEffect(() => {
+    if (!accountId && sendReadyAccounts.length === 1) {
+      setAccountId(sendReadyAccounts[0].id)
+    }
+  }, [accountId, sendReadyAccounts])
 
 
   if (!draft) return null
@@ -79,6 +89,10 @@ export function EmailComposer() {
   const handleSend = async () => {
     if (!subject.trim() || !bodyMarkdown.trim()) {
       toast.error("Subject and body are required.")
+      return
+    }
+    if (!accountId) {
+      toast.error("Select the sending account before continuing.")
       return
     }
     if (scheduleEnabled && !scheduledFor) {
@@ -107,14 +121,15 @@ export function EmailComposer() {
           sourceId: draft.sourceId,
           scheduledFor: scheduleEnabled ? new Date(scheduledFor).toISOString() : null,
           isAiGenerated: sourceType === "chat",
-          requireVerification: sourceType === "chat", // AI emails require verification
+          requireVerification: sourceType === "chat",
+          accountId,
+          idempotencyKey: idempotencyKey.current
         }),
       })
 
-      if (data.requiresVerification) {
-        toast.info("Verification required", {
-          description: "AI-drafted email needs your verification. Go to Sent → Verify tab to approve and send.",
-        })
+      if (data.requiresVerification && data.id) {
+        setPendingApproval({ id: data.id, scheduledFor: scheduleEnabled ? new Date(scheduledFor).toISOString() : null })
+        return
       } else if (scheduleEnabled) {
         toast.success("Email scheduled", {
           description: `For ${new Date(scheduledFor).toLocaleString()}`,
@@ -138,6 +153,41 @@ export function EmailComposer() {
     }
   }
 
+  const discardPreparedEmail = () => {
+    if (pendingApproval) {
+      void apiRequest("/api/emails", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "cancel", id: pendingApproval.id }),
+      }).catch(() => undefined)
+      setPendingApproval(null)
+    }
+    idempotencyKey.current = ""
+  }
+  const approveEmail = async () => {
+    if (!pendingApproval) return
+    setSending(true)
+    try {
+      const data = await apiRequest<{ status: string; delivered: boolean; error?: string }>("/api/emails", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "verify", id: pendingApproval.id }),
+      })
+      if (!data.delivered && data.status !== "scheduled") {
+        throw new Error(data.error || "Email could not be delivered.")
+      }
+      toast.success(data.status === "scheduled" ? "Email scheduled" : "Email accepted by the selected provider")
+      qc.invalidateQueries({ queryKey: ["emails"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+      idempotencyKey.current = ""
+      setPendingApproval(null)
+      close()
+    } catch (error) {
+      toast.error("Email was not sent", { description: getErrorMessage(error) })
+    } finally {
+      setSending(false)
+    }
+  }
   return (
     <Dialog open={!!draft} onOpenChange={(o) => !o && close()}>
       <DialogContent className="sm:max-w-2xl max-h-[90vh] flex flex-col gap-0 p-0">
@@ -178,20 +228,32 @@ export function EmailComposer() {
             </div>
           )}
 
+          <div className="space-y-1.5">
+            <Label className="text-xs">From</Label>
+            <Select value={accountId} onValueChange={(value) => { discardPreparedEmail(); setAccountId(value) }}>
+              <SelectTrigger className="text-sm"><SelectValue placeholder="Select sending account" /></SelectTrigger>
+              <SelectContent>
+                {sendReadyAccounts.map((account) => (
+                  <SelectItem key={account.id} value={account.id}>{account.displayName || account.emailAddress} ({account.emailAddress})</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {!sendReadyAccounts.length && <p className="text-[10px] text-amber-600 dark:text-amber-400">Connect an OAuth or SMTP sending account in Settings first.</p>}
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr] gap-3">
             <div className="space-y-1.5">
               <Label htmlFor="email-to" className="text-xs">To</Label>
               <Input
                 id="email-to"
                 value={toAddress}
-                onChange={(e) => setToAddress(e.target.value)}
+                onChange={(e) => { discardPreparedEmail(); setToAddress(e.target.value) }}
                 placeholder="me / you@memex.local"
                 className="text-sm"
               />
             </div>
             <div className="space-y-1.5">
               <Label className="text-xs">Source type</Label>
-              <Select value={sourceType} onValueChange={setSourceType}>
+              <Select value={sourceType} onValueChange={(value) => { discardPreparedEmail(); setSourceType(value) }}>
                 <SelectTrigger className="text-sm">
                   <SelectValue />
                 </SelectTrigger>
@@ -211,7 +273,7 @@ export function EmailComposer() {
             <Input
               id="email-subject"
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              onChange={(e) => { discardPreparedEmail(); setSubject(e.target.value) }}
               placeholder="Subject line"
               className="text-sm"
             />
@@ -224,7 +286,7 @@ export function EmailComposer() {
             <Textarea
               id="email-body"
               value={bodyMarkdown}
-              onChange={(e) => setBodyMarkdown(e.target.value)}
+              onChange={(e) => { discardPreparedEmail(); setBodyMarkdown(e.target.value) }}
               placeholder={"# Heading\n\nWrite your email in **Markdown**…"}
               className="text-sm font-mono min-h-[280px] resize-y"
             />
@@ -250,7 +312,7 @@ export function EmailComposer() {
               <input
                 type="checkbox"
                 checked={scheduleEnabled}
-                onChange={(e) => setScheduleEnabled(e.target.checked)}
+                onChange={(e) => { discardPreparedEmail(); setScheduleEnabled(e.target.checked) }}
                 className="rounded"
               />
               <span className="text-xs font-medium flex items-center gap-1.5">
@@ -263,7 +325,7 @@ export function EmailComposer() {
                 <Input
                   type="datetime-local"
                   value={scheduledFor}
-                  onChange={(e) => setScheduledFor(e.target.value)}
+                  onChange={(e) => { discardPreparedEmail(); setScheduledFor(e.target.value) }}
                   className="text-xs h-8 flex-1"
                 />
                 <span className="text-[10px] text-muted-foreground shrink-0">
@@ -290,7 +352,7 @@ export function EmailComposer() {
             <Button variant="outline" onClick={close} disabled={sending}>
               Cancel
             </Button>
-            <Button onClick={handleSend} disabled={sending}>
+            <Button onClick={handleSend} disabled={sending || !accountId}>
               {sending ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-1 animate-spin" />
@@ -324,6 +386,26 @@ export function EmailComposer() {
           </div>
         </DialogFooter>
       </DialogContent>
+      <AlertDialog open={pendingApproval !== null} onOpenChange={(open) => { if (!open && !sending) setPendingApproval(null) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{pendingApproval?.scheduledFor ? "Schedule this email?" : "Send this email?"}</AlertDialogTitle>
+            <AlertDialogDescription>Review the final recipient, sender, subject, and message. This action contacts your mail provider.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 text-sm">
+            <p><strong>From:</strong> {sendReadyAccounts.find((account) => account.id === accountId)?.emailAddress}</p>
+            <p><strong>To:</strong> {toAddress}</p>
+            <p><strong>Subject:</strong> {subject}</p>
+            {pendingApproval?.scheduledFor && <p><strong>Scheduled:</strong> {new Date(pendingApproval.scheduledFor).toLocaleString()}</p>}
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={sending} onClick={discardPreparedEmail}>Keep editing</AlertDialogCancel>
+            <AlertDialogAction onClick={() => { void approveEmail() }} disabled={sending}>
+              <Send className="h-4 w-4 mr-2" />{pendingApproval?.scheduledFor ? "Confirm schedule" : "Confirm send"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Dialog>
   )
 }

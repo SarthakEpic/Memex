@@ -93,6 +93,8 @@ export interface EmailDraftPayload {
   bodyMarkdown: string
   rationale: string
   status: "draft" | "sending" | "saved" | "sent" | "failed" | "scheduled" | "cancelled"
+  accountId?: string
+  requiresApproval?: boolean
   // Optional: link to the Email row once it's been sent/saved
   emailId?: string
   // Optional: error message when status === "failed"

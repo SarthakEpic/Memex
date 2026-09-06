@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
+import { AlertDialog, AlertDialogContent, AlertDialogHeader, AlertDialogTitle, AlertDialogDescription, AlertDialogFooter, AlertDialogCancel, AlertDialogAction } from "@/components/ui/alert-dialog"
 import {
   Collapsible,
   CollapsibleContent,
@@ -146,12 +147,22 @@ export function EmailDraftCard({
   const [subjectInput, setSubjectInput] = useState(draft.subject)
   const [bodyInput, setBodyInput] = useState(draft.bodyMarkdown)
   const [sending, setSending] = useState(false)
+  const [accounts, setAccounts] = useState<Array<{ id: string; emailAddress: string; displayName: string; connected: boolean; hasOAuthConnection: boolean; hasSmtpPassword: boolean }>>([])
+  const [accountId, setAccountId] = useState(draft.accountId ?? "")
+  const sendIdempotencyKey = useRef("")
+  const [confirmation, setConfirmation] = useState<{ schedule?: string } | null>(null)
+  const sendLock = useRef(false)
+  useEffect(() => {
+    const request = () => setConfirmation({})
+    window.addEventListener(`memex:confirm-email:${messageId}`, request)
+    return () => window.removeEventListener(`memex:confirm-email:${messageId}`, request)
+  }, [messageId])
   const [regenerating, setRegenerating] = useState(false)
   const [showRegenerateBox, setShowRegenerateBox] = useState(false)
   const [feedbackText, setFeedbackText] = useState("")
   const [showScheduleBox, setShowScheduleBox] = useState(false)
   const [scheduleFor, setScheduleFor] = useState("")
-  const [autoSubject, setAutoSubject] = useState(true)
+  const [autoSubject, setAutoSubject] = useState(false)
   const bodyEditRef = useRef<HTMLTextAreaElement>(null)
 
   // Keep local draft in sync if the parent passes a new initialDraft
@@ -161,6 +172,7 @@ export function EmailDraftCard({
     setRecipientInput(initialDraft.recipient)
     setSubjectInput(initialDraft.subject)
     setBodyInput(initialDraft.bodyMarkdown)
+    setAccountId(initialDraft.accountId ?? "")
   }, [initialDraft])
 
   // Helper: update draft + notify parent
@@ -175,6 +187,22 @@ export function EmailDraftCard({
     [onDraftChange]
   )
 
+
+  useEffect(() => {
+    let active = true
+    void apiRequest<{ accounts: Array<{ id: string; emailAddress: string; displayName: string; connected: boolean; hasOAuthConnection: boolean; hasSmtpPassword: boolean }> }>("/api/email-accounts")
+      .then(({ accounts: loaded }) => {
+        if (!active) return
+        const sendReady = loaded.filter((account) => account.connected && (account.hasOAuthConnection || account.hasSmtpPassword))
+        setAccounts(sendReady)
+        if (!draft.accountId && sendReady.length === 1) {
+          setAccountId(sendReady[0].id)
+          updateDraft({ accountId: sendReady[0].id })
+        }
+      })
+      .catch(() => { if (active) setAccounts([]) })
+    return () => { active = false }
+  }, [draft.accountId, updateDraft])
   // Helper: append a timeline event
   const addTimelineEvent = useCallback(
     (action: string, details?: string) => {
@@ -203,12 +231,15 @@ export function EmailDraftCard({
 
   const saveEdit = (field: EditField) => {
     if (field === "recipient") {
+      sendIdempotencyKey.current = ""
       updateDraft({ recipient: recipientInput.trim() || "me" })
       addTimelineEvent("Recipient Selected", recipientInput.trim() || "me")
     } else if (field === "subject") {
+      sendIdempotencyKey.current = ""
       updateDraft({ subject: subjectInput.trim() })
       addTimelineEvent("Subject Approved", subjectInput.trim())
     } else if (field === "body") {
+      sendIdempotencyKey.current = ""
       updateDraft({ bodyMarkdown: bodyInput })
       addTimelineEvent("Message Edited", `${bodyInput.length} chars`)
       // Auto-update subject from body if enabled and subject wasn't manually customized
@@ -274,6 +305,7 @@ export function EmailDraftCard({
           feedback: feedbackText.trim(),
         }),
       })
+      sendIdempotencyKey.current = ""
       const newDraft = data.draft
       const updated: EmailDraftPayload = {
         ...draft,
@@ -309,9 +341,14 @@ export function EmailDraftCard({
   // ── Send the email ───────────────────────────────────────────────────────
   // CRITICAL: this sends ONLY the current draft.recipient, draft.subject,
   // and draft.bodyMarkdown — never chat history, never internal prompts.
-  const handleSend = async (schedule?: string) => {
+  const requestSend = async (schedule?: string) => {
+    if (messageId === "streaming" || sending || regenerating || editField || draft.requiresApproval) return
     if (!draft.subject.trim() || !draft.bodyMarkdown.trim()) {
       toast.error("Subject and body are required.")
+      return
+    }
+    if (!accountId) {
+      toast.error("Select the sending account before continuing.")
       return
     }
     if (schedule && new Date(schedule).getTime() <= Date.now()) {
@@ -319,94 +356,80 @@ export function EmailDraftCard({
       return
     }
 
-    const previousStatus = draft.status
     setSending(true)
-    updateDraft({ status: "sending" })
-    addTimelineEvent("User Confirmed", schedule ? "Scheduled send" : "Send now")
     try {
-      const data = !schedule && draft.emailId && (previousStatus === "saved" || previousStatus === "failed")
-        ? await apiRequest<{
-            id: string
-            status: string
-            delivered: boolean
-            realSend?: boolean
-            error?: string
-          }>(`/api/emails/${draft.emailId}/resend`, { method: "POST" })
-        : await apiRequest<{
-            id: string
-            status: string
-            delivered: boolean
-            realSend?: boolean
-            error?: string
-            requiresVerification?: boolean
-          }>("/api/emails", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              toAddress: draft.recipient,
-              subject: draft.subject,
-              bodyMarkdown: draft.bodyMarkdown,
-              sourceType: "chat",
-              sourceId: messageId,
-              isAiGenerated: true,
-              requireVerification: false,
-              scheduledFor: schedule ? new Date(schedule).toISOString() : null,
-            }),
-          })
-
-      if (data.status === "scheduled") {
-        const scheduledFor = schedule ? new Date(schedule).toISOString() : draft.scheduledFor
-        updateDraft({ status: "scheduled", emailId: data.id, scheduledFor })
-        addTimelineEvent("Email Scheduled", scheduledFor ? new Date(scheduledFor).toLocaleString() : "")
-        toast.success("Email scheduled", {
-          description: scheduledFor ? `For ${new Date(scheduledFor).toLocaleString()}` : undefined,
-        })
-        setShowScheduleBox(false)
-      } else if (data.delivered && data.status === "delivered") {
-        updateDraft({ status: "sent", emailId: data.id, errorMessage: undefined })
-        addTimelineEvent("Email Sent", `To: ${draft.recipient === "me" ? "yourself" : draft.recipient}`)
-        addTimelineEvent("Delivery Confirmed", "SMTP server accepted the message")
-        toast.success("Email accepted by SMTP", {
-          description: `Sent to ${draft.recipient === "me" ? "your default recipient" : draft.recipient}`,
-        })
-        onSent?.(data.id)
-      } else if (data.status === "saved") {
-        updateDraft({
-          status: "saved",
-          emailId: data.id,
-          errorMessage: data.error || "No mail provider is connected.",
-        })
-        addTimelineEvent("Saved Locally", "No mail provider was available; message was not sent")
-        toast.info("Email saved locally", {
-          description: "Connect a verified SMTP account, then retry from this card or Sent.",
-        })
-      } else if (data.status === "failed") {
-        updateDraft({
-          status: "failed",
-          emailId: data.id,
-          errorMessage: data.error || "Send failed",
-        })
-        addTimelineEvent("Send Failed", data.error || "Unknown error")
-        toast.error("Email failed to send", { description: data.error })
-      } else {
-        updateDraft({ status: "draft", emailId: data.id })
-        addTimelineEvent("Awaiting Approval", data.status)
-        toast.info("Verification required", {
-          description: "Open Sent → Verify to approve this email.",
-        })
+      if (!sendIdempotencyKey.current) sendIdempotencyKey.current = crypto.randomUUID()
+      const prepared = await apiRequest<{ id: string; status: string; requiresVerification?: boolean; error?: string }>("/api/emails", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          toAddress: draft.recipient,
+          subject: draft.subject,
+          bodyMarkdown: draft.bodyMarkdown,
+          sourceType: "chat",
+          sourceId: messageId,
+          isAiGenerated: true,
+          accountId,
+          idempotencyKey: sendIdempotencyKey.current,
+          requireVerification: true,
+          scheduledFor: schedule ? new Date(schedule).toISOString() : null,
+        }),
+      })
+      if (prepared.status !== "pending_verification") {
+        throw new Error(prepared.error || "Email could not be prepared for confirmation.")
       }
-      qc.invalidateQueries({ queryKey: ["emails"] })
-      qc.invalidateQueries({ queryKey: ["stats"] })
+      updateDraft({ emailId: prepared.id, accountId, requiresApproval: true, scheduledFor: schedule ? new Date(schedule).toISOString() : undefined, errorMessage: undefined })
+      addTimelineEvent("Awaiting Final Confirmation", schedule ? "Scheduled delivery" : "Ready to send")
+      setConfirmation({ schedule })
     } catch (error) {
-      const message = getErrorMessage(error, "Send failed")
-      updateDraft({ status: "failed", errorMessage: message })
-      addTimelineEvent("Send Failed", message)
-      toast.error("Send failed", { description: message })
+      toast.error("Email could not be prepared", { description: getErrorMessage(error) })
     } finally {
       setSending(false)
     }
   }
 
+  const approveDelivery = async () => {
+    if (sendLock.current || !draft.emailId || !draft.requiresApproval) return
+    sendLock.current = true
+    setSending(true)
+    try {
+      const data = await apiRequest<{
+        id: string
+        status: string
+        delivered: boolean
+        error?: string
+      }>("/api/emails", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "verify", id: draft.emailId }),
+      })
+      setConfirmation(null)
+      if (data.status === "scheduled") {
+        updateDraft({ status: "scheduled", requiresApproval: false, scheduledFor: draft.scheduledFor })
+        addTimelineEvent("Delivery Scheduled", "User confirmed scheduling")
+        toast.success("Email scheduled")
+      } else if (data.delivered && data.status === "delivered") {
+        updateDraft({ status: "sent", requiresApproval: false, errorMessage: undefined })
+        addTimelineEvent("Email Sent", `To: ${draft.recipient}`)
+        toast.success("Email accepted by the selected provider")
+        onSent?.(data.id)
+      } else {
+        updateDraft({ status: "failed", requiresApproval: false, errorMessage: data.error || "Send failed" })
+        addTimelineEvent("Send Failed", data.error || "Unknown error")
+        toast.error("Email failed to send", { description: data.error })
+      }
+      qc.invalidateQueries({ queryKey: ["emails"] })
+      qc.invalidateQueries({ queryKey: ["stats"] })
+    } catch (error) {
+      const message = getErrorMessage(error, "Send failed")
+      updateDraft({ status: "failed", requiresApproval: false, errorMessage: message })
+      addTimelineEvent("Send Failed", message)
+      toast.error("Send failed", { description: message })
+    } finally {
+      sendLock.current = false
+      setSending(false)
+    }
+  }
   // ── Save as draft (no send) ──────────────────────────────────────────────
   const handleSaveDraft = () => {
     updateDraft({ status: "draft", errorMessage: undefined })
@@ -417,17 +440,55 @@ export function EmailDraftCard({
   }
 
   // ── Cancel ───────────────────────────────────────────────────────────────
-  const handleCancel = () => {
-    updateDraft({ status: "cancelled" })
+  const handleCancel = async () => {
+    if (draft.emailId && draft.requiresApproval) {
+      setSending(true)
+      try {
+        await apiRequest("/api/emails", {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "cancel", id: draft.emailId }),
+        })
+      } catch (error) {
+        toast.error("Could not cancel the prepared email", { description: getErrorMessage(error) })
+        return
+      } finally {
+        setSending(false)
+      }
+    }
+    updateDraft({ status: "cancelled", requiresApproval: false })
     addTimelineEvent("Draft Cancelled", "User dismissed the draft")
     toast.info("Draft cancelled")
   }
 
-  const isFinal = draft.status === "sent" || draft.status === "cancelled"
-  const isBusy = sending || regenerating || draft.status === "sending"
+  const isFinal = draft.status === "sent" || draft.status === "cancelled" || draft.status === "scheduled" || Boolean(draft.requiresApproval)
+  const isBusy = sending || regenerating || draft.status === "sending" || messageId === "streaming" || editField !== null
 
   return (
     <Card className="border-primary/30 shadow-sm overflow-hidden">
+      <AlertDialog open={confirmation !== null} onOpenChange={(open) => { if (!open) setConfirmation(null) }}>
+        <AlertDialogContent className="max-h-[85dvh] overflow-y-auto">
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmation?.schedule ? "Schedule this email?" : "Send this email?"}</AlertDialogTitle>
+            <AlertDialogDescription>Check the recipient and message before confirming. This action sends a real email.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3 text-sm min-w-0">
+            <p className="break-all"><strong>From:</strong> {accounts.find((account) => account.id === accountId)?.emailAddress || "No account selected"}</p>
+            <p className="break-all"><strong>To:</strong> {draft.recipient}</p>
+            <p className="break-words"><strong>Subject:</strong> {draft.subject}</p>
+            {confirmation?.schedule && <p><strong>Scheduled:</strong> {new Date(confirmation.schedule).toLocaleString()}</p>}
+            <div className="max-h-64 overflow-y-auto whitespace-pre-wrap break-words border-t pt-3">{draft.bodyMarkdown}</div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep editing</AlertDialogCancel>
+            <AlertDialogAction disabled={isBusy} onClick={() => {
+              const schedule = confirmation?.schedule
+              setConfirmation(null)
+              void approveDelivery()
+            }}><Send className="h-4 w-4 mr-2" />{confirmation?.schedule ? "Confirm schedule" : "Confirm send"}</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <CardHeader className="p-3 pb-2 bg-muted/40 border-b border-border">
         <div className="flex items-center justify-between gap-2">
           <div className="flex items-center gap-2 min-w-0">
@@ -449,6 +510,24 @@ export function EmailDraftCard({
       </CardHeader>
 
       <CardContent className="p-3 space-y-2.5">
+        <div className="space-y-1">
+          <label className="text-[10px] uppercase tracking-wide font-medium text-muted-foreground">From</label>
+          <select
+            value={accountId}
+            onChange={(event) => {
+              const nextAccountId = event.target.value
+              setAccountId(nextAccountId)
+              sendIdempotencyKey.current = ""
+              updateDraft({ accountId: nextAccountId })
+            }}
+            disabled={isBusy || isFinal}
+            className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs"
+          >
+            <option value="">{accounts.length ? "Select sending account" : "No sending account connected"}</option>
+            {accounts.map((account) => <option key={account.id} value={account.id}>{account.displayName || account.emailAddress} ({account.emailAddress})</option>)}
+          </select>
+          {!accounts.length && <p className="text-[10px] text-amber-600 dark:text-amber-400">Connect a sending account before confirming delivery.</p>}
+        </div>
         {/* Recipient row */}
         <div className="space-y-1">
           <div className="flex items-center justify-between">
@@ -606,7 +685,7 @@ export function EmailDraftCard({
               size="sm"
               variant="outline"
               className="h-6 text-[10px]"
-              onClick={() => handleSend()}
+              onClick={() => { void requestSend() }}
               disabled={isBusy}
             >
               <RefreshCw className="h-3 w-3 mr-1" /> Retry
@@ -677,7 +756,7 @@ export function EmailDraftCard({
               <Button
                 size="sm"
                 className="h-7 text-xs"
-                onClick={() => handleSend(scheduleFor)}
+                onClick={() => { void requestSend(scheduleFor) }}
                 disabled={!scheduleFor}
               >
                 <Clock className="h-3 w-3 mr-1" /> Schedule
@@ -694,7 +773,7 @@ export function EmailDraftCard({
               <Button
                 size="sm"
                 className="h-8 text-xs"
-                onClick={() => handleSend()}
+                onClick={() => { void requestSend() }}
                 disabled={isBusy}
               >
                 {sending ? (
@@ -734,7 +813,7 @@ export function EmailDraftCard({
                 size="sm"
                 variant="ghost"
                 className="h-8 text-xs"
-                onClick={handleCancel}
+                onClick={() => { void handleCancel() }}
                 disabled={isBusy}
               >
                 <X className="h-3 w-3 mr-1" /> Cancel
@@ -743,6 +822,14 @@ export function EmailDraftCard({
           </>
         )}
 
+        {draft.requiresApproval && draft.emailId && (
+          <div className="space-y-2 rounded-md border border-amber-500/30 bg-amber-500/10 p-2">
+            <p className="text-[11px] text-amber-700 dark:text-amber-300">This email is prepared but cannot leave Memex until you confirm delivery.</p>
+            <Button size="sm" className="h-8 text-xs" onClick={() => setConfirmation({})} disabled={isBusy}>
+              <Send className="h-3 w-3 mr-1" /> Review and confirm delivery
+            </Button>
+          </div>
+        )}
         {/* Final-state actions */}
         {draft.status === "sent" && (
           <div className="text-[11px] text-emerald-600 dark:text-emerald-400 flex items-center gap-1.5 p-2 rounded-md bg-emerald-500/10 border border-emerald-500/30">

@@ -157,6 +157,14 @@ export function Chat() {
       const data = await res.json()
       if (!res.ok) throw new Error(data.error || "Chat failed")
 
+      if (data.confirmDraftMessageId) {
+        setStreamingAnswer(null)
+        setSending(false)
+        window.dispatchEvent(new Event(`memex:confirm-email:${data.confirmDraftMessageId}`))
+        void qc.invalidateQueries({ queryKey: ["chat-session", data.sessionId] })
+        return
+      }
+
       // If the response includes an emailDraft, skip the token animation —
       // show the short answer + the draft card immediately.
       if (data.emailDraft) {

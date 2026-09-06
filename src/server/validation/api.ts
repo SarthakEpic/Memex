@@ -101,6 +101,8 @@ export const createEmailSchema = z.object({
   sourceType: z.enum(["manual", "chat", "decision", "note", "digest", "ai"]).optional(),
   sourceId: z.string().trim().max(160).optional(),
   fromName: z.string().trim().max(120).optional(),
+  accountId: z.string().trim().min(1).max(160).optional(),
+  idempotencyKey: z.string().trim().min(16).max(160).optional(),
   scheduledFor: z.string().datetime().nullable().optional(),
   isAiGenerated: z.boolean().optional(),
   requireVerification: z.boolean().optional(),
