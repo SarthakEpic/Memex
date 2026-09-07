@@ -97,7 +97,7 @@ export async function ingestNote(input: IngestNoteInput): Promise<IngestNoteResu
 
     if (input.extractDecisions ?? true) {
       try {
-        const extracted = await extractDecisions(c.text, c.headingPath)
+        const extracted = await extractDecisions(c.text, c.headingPath, { userId: input.userId })
         for (const d of extracted) {
           await db.decision.create({
             data: {

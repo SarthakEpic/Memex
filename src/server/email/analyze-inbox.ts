@@ -16,7 +16,7 @@ export async function analyzeInboxEmails(userId: string, emailIds: string[]): Pr
         })
         if (!email) return
 
-        const analysis = await analyzeEmail(email.fromAddress, email.subject, email.body)
+        const analysis = await analyzeEmail(email.fromAddress, email.subject, email.body, { userId })
         if (!analysis) return
 
         await db.inboxEmail.updateMany({

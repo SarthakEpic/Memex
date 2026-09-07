@@ -4,13 +4,15 @@
 // which supports Google Gemini, Groq, OpenRouter, OpenAI, Ollama, and any
 // OpenAI-compatible provider. Configure via environment variables.
 //
-// Default provider: Google Gemini (free tier — 1500 requests/day).
-// See .env.example for configuration options.
+// Provider limits and data handling are deployment-specific. See .env.example
+// for explicit configuration and local admission-control settings.
 
 import {
   chatComplete,
+  type AIErrorCode,
   type ChatMessage,
 } from "./ai-client"
+import { selectRelevantText } from "./relevant-text"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Backward-compatible retry wrapper (re-exported for other modules)
@@ -18,7 +20,7 @@ import {
 //
 // The `withRetry` function is imported by src/app/api/notes/audio/route.ts.
 // We keep it here for backward compatibility, but the new `chatComplete`
-// function already has built-in retry with exponential backoff.
+// function centralizes timeouts, admission control, and error classification.
 
 export async function withRetry<T>(
   fn: () => Promise<T>
@@ -51,6 +53,16 @@ export interface CitedAnswer {
   serviceError: boolean
 }
 
+function describeAIError(errorCode?: AIErrorCode, retryAt?: string): string {
+  const retry = retryAt ? ` You can retry after ${new Date(retryAt).toLocaleTimeString()}.` : ""
+  if (errorCode === "budget_exhausted") return `AI capacity is currently reserved or exhausted. Your message is saved.${retry} Search, inbox filters, and manual drafting still work.`
+  if (errorCode === "rate_limited") return `The AI provider has reached its current rate limit. Your message is saved.${retry}`
+  if (errorCode === "timeout") return "The AI provider did not respond before the safety timeout. Your message is saved; retry when the connection is stable."
+  if (errorCode === "configuration") return "The AI provider rejected the configured credentials or permissions. Check AI settings before retrying."
+  if (errorCode === "invalid_request") return "The AI provider rejected this request. Try a shorter request or check the selected model configuration."
+  return "The AI provider is temporarily unavailable. Your message is saved and non-AI features still work."
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Smart multi-mode chat — intent detection + appropriate response.
 // The chat can operate in 4 modes:
@@ -61,6 +73,8 @@ export interface CitedAnswer {
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type ChatMode = "note_qa" | "app_help" | "general" | "email"
+
+export type LLMRequestContext = { userId?: string }
 
 export interface SmartAnswer {
   answer: string
@@ -88,15 +102,15 @@ export async function generateSmartAnswer(
   question: string,
   chunks: ContextChunk[],
   history: { role: "user" | "assistant"; content: string }[] = [],
-  emailContext?: string
+  emailContext?: string,
+  requestContext: LLMRequestContext = {}
 ): Promise<SmartAnswer> {
   // Build a compact context block — only include the most relevant chunks
   // and keep email context SHORT to avoid drowning out conversation history
   const contextBlock = chunks.length > 0 ? buildContextBlock(chunks.slice(0, 3)) : ""
   const shortEmailContext = emailContext ? emailContext.slice(0, 800) : ""
 
-  // Keep MORE conversation history (last 10 messages = 5 exchanges)
-  // This is critical for maintaining conversation flow
+  // Retain recent conversational continuity within a strict character budget.
   let historyBudget = 8_000
   const recentHistory = history.slice(-10).reverse().map((item) => {
     const content = item.content.slice(0, Math.min(2_000, historyBudget))
@@ -136,12 +150,12 @@ export async function generateSmartAnswer(
     temperature: 0.4,
     maxTokens: 800,
     noRetry: true,
+    request: { feature: "chat.answer", workClass: "interactive", userId: requestContext.userId },
   })
 
   if (!result.ok) {
     return {
-      answer:
-        "⚠️ I'm having trouble connecting right now (rate limited or service unavailable). Please try again in a moment — your message has been saved.",
+      answer: describeAIError(result.errorCode, result.retryAt),
       mode: "general",
       citedChunkIds: [],
       refused: false,
@@ -208,7 +222,8 @@ ${c.text}`
 export async function generateCitedAnswer(
   question: string,
   chunks: ContextChunk[],
-  history: { role: "user" | "assistant"; content: string }[] = []
+  history: { role: "user" | "assistant"; content: string }[] = [],
+  requestContext: LLMRequestContext = {}
 ): Promise<CitedAnswer> {
   if (chunks.length === 0) {
     return {
@@ -237,6 +252,8 @@ ANSWER (with [^chunk_id] citations):`
     messages,
     temperature: 0.3,
     maxTokens: 600,
+    noRetry: true,
+    request: { feature: "note.cited_answer", workClass: "interactive", userId: requestContext.userId },
   })
 
   if (!result.ok) {
@@ -321,18 +338,22 @@ Respond with JSON only, no prose.`
 export async function analyzeEmail(
   from: string,
   subject: string,
-  body: string
+  body: string,
+  requestContext: LLMRequestContext = {}
 ): Promise<EmailAnalysis | null> {
   const result = await chatComplete({
     messages: [
       { role: "system", content: EMAIL_ANALYSIS_PROMPT },
       {
         role: "user",
-        content: `FROM: ${from}\nSUBJECT: ${subject}\n\nBODY:\n${body.slice(0, 2000)}\n\nJSON:`,
+        content: `FROM: ${from}\nSUBJECT: ${subject}\n\nBODY:\n${selectRelevantText(body, `${from} ${subject} urgent deadline amount action`, 2_000).text}\n\nJSON:`,
       },
     ],
     temperature: 0.2,
     maxTokens: 500,
+    noRetry: true,
+    reasoningEffort: "low",
+    request: { feature: "email.single_analysis", workClass: "background", userId: requestContext.userId },
   })
 
   if (!result.ok) return null
@@ -349,20 +370,16 @@ export async function analyzeEmail(
 
 // Preserve both the opening request and closing conditions of a long email
 // without paying to send the whole message to the provider.
-export function buildReplyContext(body: string, maxChars = 4_800): string {
-  const normalized = body.trim()
-  if (normalized.length <= maxChars) return normalized
-
-  const opening = Math.floor(maxChars * 0.62)
-  const closing = maxChars - opening
-  return normalized.slice(0, opening) + "\n\n[... middle of original email omitted ...]\n\n" + normalized.slice(-closing)
+export function buildReplyContext(body: string, maxChars = 4_800, query = "reply action deadline amount"): string {
+  return selectRelevantText(body, query, maxChars).text
 }
 // Generate a reply draft for an email
 export async function draftEmailReply(
   from: string,
   subject: string,
   body: string,
-  instruction: string
+  instruction: string,
+  requestContext: LLMRequestContext = {}
 ): Promise<string> {
   const result = await chatComplete({
     messages: [
@@ -373,12 +390,13 @@ export async function draftEmailReply(
       },
       {
         role: "user",
-        content: `ORIGINAL EMAIL FROM: ${from}\nSUBJECT: ${subject}\nBODY: ${buildReplyContext(body)}\n\nUSER'S INSTRUCTION: ${instruction}\n\nDRAFT REPLY:`,
+        content: `ORIGINAL EMAIL FROM: ${from}\nSUBJECT: ${subject}\nBODY: ${buildReplyContext(body, 4_800, instruction)}\n\nUSER'S INSTRUCTION: ${instruction}\n\nDRAFT REPLY:`,
       },
     ],
     temperature: 0.5,
     maxTokens: 400,
     noRetry: true,
+    request: { feature: "email.reply_draft", workClass: "interactive", userId: requestContext.userId },
   })
 
   if (!result.ok) return "Unable to generate a draft at this time."
@@ -393,7 +411,8 @@ export async function draftEmailReply(
 
 export async function llmRerank(
   query: string,
-  chunks: ContextChunk[]
+  chunks: ContextChunk[],
+  requestContext: LLMRequestContext = {}
 ): Promise<ContextChunk[]> {
   if (chunks.length <= 1) return chunks
 
@@ -421,6 +440,8 @@ JSON scores:`
     temperature: 0,
     maxTokens: 200,
     noRetry: true,
+    reasoningEffort: "low",
+    request: { feature: "retrieval.rerank", workClass: "interactive", userId: requestContext.userId },
   })
 
   if (!result.ok) return chunks
@@ -476,7 +497,8 @@ Respond with JSON only, no prose. Dates must be ISO format YYYY-MM-DD or null.`
 
 export async function extractDecisions(
   chunkText: string,
-  headingPath: string
+  headingPath: string,
+  requestContext: LLMRequestContext = {}
 ): Promise<ExtractedDecision[]> {
   const result = await chatComplete({
     messages: [
@@ -488,6 +510,9 @@ export async function extractDecisions(
     ],
     temperature: 0.1,
     maxTokens: 600,
+    noRetry: true,
+    reasoningEffort: "low",
+    request: { feature: "note.decision_extraction", workClass: "background", userId: requestContext.userId },
   })
 
   if (!result.ok) return []
@@ -560,7 +585,8 @@ Return ONLY a JSON object with this exact shape:
 
 export async function draftEmailFromInstruction(
   instruction: string,
-  emailContext?: string
+  emailContext?: string,
+  requestContext: LLMRequestContext = {}
 ): Promise<EmailDraftResult | null> {
   const userContent = `INSTRUCTION:
 ${instruction}
@@ -575,6 +601,7 @@ JSON:`
     temperature: 0.5,
     maxTokens: 900,
     noRetry: true,
+    request: { feature: "email.draft", workClass: "interactive", userId: requestContext.userId },
   })
 
   if (!result.ok) return null
@@ -606,7 +633,8 @@ JSON:`
 export async function regenerateEmailDraft(
   originalInstruction: string,
   previousDraft: EmailDraftResult,
-  feedback: string
+  feedback: string,
+  requestContext: LLMRequestContext = {}
 ): Promise<EmailDraftResult | null> {
   const result = await chatComplete({
     messages: [
@@ -631,6 +659,7 @@ JSON:`,
     temperature: 0.6,
     maxTokens: 900,
     noRetry: true,
+    request: { feature: "email.draft_revision", workClass: "interactive", userId: requestContext.userId },
   })
 
   if (!result.ok) return null
@@ -658,7 +687,7 @@ JSON:`,
 // Generate a concise, professional subject from an email body.
 // Used when the user edits the body — the subject can be auto-updated to
 // stay relevant to the new content.
-export async function generateEmailSubject(bodyMarkdown: string): Promise<string | null> {
+export async function generateEmailSubject(bodyMarkdown: string, requestContext: LLMRequestContext = {}): Promise<string | null> {
   if (!bodyMarkdown.trim()) return null
 
   const result = await chatComplete({
@@ -676,7 +705,7 @@ Respond with ONLY the subject text, nothing else.`,
       {
         role: "user",
         content: `EMAIL BODY:
-${bodyMarkdown.slice(0, 1500)}
+${selectRelevantText(bodyMarkdown, "email subject topic purpose action", 1_500).text}
 
 SUBJECT:`,
       },
@@ -684,6 +713,8 @@ SUBJECT:`,
     temperature: 0.3,
     maxTokens: 60,
     noRetry: true,
+    reasoningEffort: "low",
+    request: { feature: "email.subject", workClass: "interactive", userId: requestContext.userId },
   })
 
   if (!result.ok) return null
@@ -706,7 +737,8 @@ export async function generateEmailBriefing(
   totalCount: number,
   urgentCount: number,
   needReplyCount: number,
-  newsletterCount: number
+  newsletterCount: number,
+  requestContext: LLMRequestContext = {}
 ): Promise<string> {
   const result = await chatComplete({
     messages: [
@@ -739,6 +771,8 @@ Keep it under 200 words total. Be specific about what action each urgent email n
     ],
     temperature: 0.3,
     maxTokens: 500,
+    noRetry: true,
+    request: { feature: "email.briefing", workClass: "interactive", userId: requestContext.userId },
   })
 
   if (!result.ok) {

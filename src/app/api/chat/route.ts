@@ -14,6 +14,7 @@ import { chatRequestSchema, validationError } from "@/server/validation/api"
 import { formatInboxChatAnswer, parseInboxChatQuery } from "@/server/email/inbox-chat"
 import { isInboxReviewQuestion, reviewInboxQuestion } from "@/server/email/review-inbox"
 import {
+  compactChatHistoryContent,
   formatInboxEmailForChat,
   parseEmailDisplayIntent,
   rankInboxEmailMatch,
@@ -170,7 +171,7 @@ export async function POST(req: NextRequest) {
     .slice(0, -1) // exclude the just-stored user message
     .map((item) => ({
       role: item.role as "user" | "assistant",
-      content: item.content,
+      content: compactChatHistoryContent(item.content),
     }))
 
   // Email context contains metadata only. Full bodies are not attached to chat.
@@ -299,7 +300,8 @@ export async function POST(req: NextRequest) {
           selectedInboxEmail.fromAddress,
           selectedInboxEmail.subject,
           selectedInboxEmail.body,
-          message
+          message,
+          { userId: auth.user.id }
         )
       : null
     const draft = replyBody && replyBody !== "Unable to generate a draft at this time."
@@ -311,7 +313,7 @@ export async function POST(req: NextRequest) {
           bodyMarkdown: replyBody,
           rationale: `Reply drafted from the email opened in this chat from ${selectedInboxEmail!.fromName || selectedInboxEmail!.fromAddress}.`,
         }
-      : wantsReply ? null : await draftEmailFromInstruction(message, emailContext || undefined)
+      : wantsReply ? null : await draftEmailFromInstruction(message, emailContext || undefined, { userId: auth.user.id })
 
     if (draft) {
       // Short, action-oriented assistant message — the actual email content
@@ -402,7 +404,7 @@ export async function POST(req: NextRequest) {
 
   // Generate smart answer (multi-mode)
   const { answer, mode, citedChunkIds, refused, serviceError } =
-    await generateSmartAnswer(message, chunks, historyClean, emailContext || undefined)
+    await generateSmartAnswer(message, chunks, historyClean, emailContext || undefined, { userId: auth.user.id })
 
   // Fallback answer if rate-limited
   const finalAnswer = serviceError

@@ -71,7 +71,7 @@ export async function reingestNote(noteId: string, opts: IngestOptions): Promise
 
     if (opts.extractDecisions !== false) {
       try {
-        const extracted = await extractDecisions(c.text, c.headingPath)
+        const extracted = await extractDecisions(c.text, c.headingPath, { userId: opts.userId })
         for (const d of extracted) {
           await db.decision.create({
             data: {

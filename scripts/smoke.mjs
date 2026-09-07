@@ -96,29 +96,22 @@ try {
     "Created note did not appear in the timeline."
   )
 
-  const accountData = await requestJson("/api/email-accounts")
-  const hasLiveSmtp = accountData.accounts?.some(
-    (account) =>
-      account.connected &&
-      account.syncMode === "real" &&
-      account.hasSmtpPassword
-  )
-
-  if (!hasLiveSmtp) {
-    const email = await requestJson("/api/emails", {
-      method: "POST",
-      body: {
-        toAddress: smokeEmail,
-        subject: `Smoke local delivery ${suffix}`,
-        bodyMarkdown: "This message must remain local when SMTP is not configured.",
-        sourceType: "manual",
-      },
-    })
-    createdEmailId = email.id
-    assert(email.status === "saved", `Expected local email status "saved", got "${email.status}".`)
-    assert(email.delivered === false, "A local-only email was incorrectly marked delivered.")
-    assert(email.deliveryMode === "local", "A local-only email did not record local delivery mode.")
-  }
+  // Never provide an account id in smoke tests. Production delivery must refuse
+  // an implicit sender even when this test user happens to have a connection.
+  const email = await requestJson("/api/emails", {
+    method: "POST",
+    body: {
+      toAddress: smokeEmail,
+      subject: `Smoke sender safety ${suffix}`,
+      bodyMarkdown: "This message must not be sent without an explicit sender account.",
+      sourceType: "manual",
+    },
+  })
+  createdEmailId = email.id
+  assert(email.status === "failed", `Expected unbound email status "failed", got "${email.status}".`)
+  assert(email.delivered === false, "An email without an explicit sender was marked delivered.")
+  assert(email.realSend === false, "An email without an explicit sender attempted real delivery.")
+  assert(email.error?.includes("No sending account was selected"), "Missing-sender refusal was not returned.")
 
   const invalidProfile = await fetch(`${baseUrl}/api/profile`, {
     method: "PATCH",

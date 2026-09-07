@@ -32,6 +32,7 @@ export async function POST(req: NextRequest) {
   await db.chunk.deleteMany({ where: { userId } })
   await db.note.deleteMany({ where: { userId } })
   await db.profile.deleteMany({ where: { userId } })
+  await db.rateLimitBucket.deleteMany({ where: { userId } })
 
   await ensureUserWorkspace(auth.user)
   invalidateCorpusCache(userId)

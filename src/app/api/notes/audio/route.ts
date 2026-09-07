@@ -90,6 +90,7 @@ Return ONLY the Markdown note, no explanations.`
     ],
     temperature: 0.3,
     maxTokens: 1000,
+    request: { userId: auth.user.id, feature: "note.audio_structure", workClass: "interactive" },
   })
 
   let structuredContent: string

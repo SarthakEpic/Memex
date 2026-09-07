@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server"
 import { getProviderStatus } from "@/lib/ai-client"
+import { getAIBudgetSnapshot } from "@/server/ai/budget"
 import { isAuthFailure, requireUser } from "@/server/auth/guard"
 
 // GET /api/ai-status
@@ -11,5 +12,6 @@ export async function GET(req: NextRequest) {
   if (isAuthFailure(auth)) return auth.response
 
   const status = getProviderStatus()
-  return NextResponse.json(status)
+  const budget = await getAIBudgetSnapshot(status.provider, status.model, auth.user.id)
+  return NextResponse.json({ ...status, budget })
 }

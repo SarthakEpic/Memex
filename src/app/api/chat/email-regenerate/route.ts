@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
   }
   const { instruction, previousDraft, feedback } = parsed.data
 
-  const draft = await regenerateEmailDraft(instruction, previousDraft, feedback)
+  const draft = await regenerateEmailDraft(instruction, previousDraft, feedback, { userId: auth.user.id })
 
   if (!draft) {
     return NextResponse.json(

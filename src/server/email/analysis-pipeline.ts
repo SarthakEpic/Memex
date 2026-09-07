@@ -6,7 +6,6 @@ import {
   type InboxMetadataTriage,
 } from "@/server/email/ai-batch"
 
-const GLOBAL_AI_SLOT_MS = 20_000
 const METADATA_BATCH_SIZE = 8
 const CONTENT_BATCH_SIZE = 3
 const MAX_ATTEMPTS = 4
@@ -162,15 +161,15 @@ export async function processInboxAnalysisQueue(options: { userId?: string; maxB
   await recoverStaleJobs()
 
   for (let index = 0; index < maxBatches; index++) {
-    const stage = await nextReadyStage(options.userId)
-    if (!stage) break
-    if (!(await reserveInboxAiSlot())) break
-    const claimed = await claimReadyJobs(stage, options.userId)
+    const next = await nextReadyBatch(options.userId)
+    if (!next) break
+    const { stage, userId } = next
+    const claimed = await claimReadyJobs(stage, userId)
     if (claimed.length === 0) break
 
     result.processed += claimed.length
     const emails = await db.inboxEmail.findMany({
-      where: { id: { in: claimed.map((job) => job.emailId) }, userId: options.userId },
+      where: { id: { in: claimed.map((job) => job.emailId) }, userId },
       select: {
         id: true,
         fromAddress: true,
@@ -207,13 +206,14 @@ export async function processInboxAnalysisQueue(options: { userId?: string; maxB
           receivedAt: email.receivedAt.toISOString(),
           isRead: email.isRead,
           isStarred: email.isStarred,
-        }))
+        })),
+        userId
       )
-      const handled = await applyMetadataResponse(usable, response.items)
       if (!response.ok) {
-        await deferJobs(usable.map(({ job }) => job.id), response.error, response.retryAfterMs)
+        await deferJobs(usable.map(({ job }) => job.id), response.error, response.retryAfterMs, response.errorCode, response.retryAt)
         result.deferred += usable.length
       } else {
+        const handled = await applyMetadataResponse(usable, response.items)
         result.completed += handled.completed
       }
       continue
@@ -227,10 +227,11 @@ export async function processInboxAnalysisQueue(options: { userId?: string; maxB
         subject: email.subject,
         body: email.body.slice(0, 1_400),
         receivedAt: email.receivedAt.toISOString(),
-      }))
+      })),
+      userId
     )
     if (!response.ok) {
-      await deferJobs(usable.map(({ job }) => job.id), response.error, response.retryAfterMs)
+      await deferJobs(usable.map(({ job }) => job.id), response.error, response.retryAfterMs, response.errorCode, response.retryAt)
       result.deferred += usable.length
     } else {
       result.completed += await applyContentResponse(usable, response.items)
@@ -240,29 +241,25 @@ export async function processInboxAnalysisQueue(options: { userId?: string; maxB
   return result
 }
 
-async function nextReadyStage(userId?: string): Promise<"content" | "metadata" | null> {
-  const now = new Date()
-  for (const stage of ["content", "metadata"] as const) {
-    const job = await db.emailAnalysisJob.findFirst({
-      where: {
-        ...(userId ? { userId } : {}),
-        stage,
-        status: { in: ["queued", "deferred"] },
-        runAfter: { lte: now },
-      },
-      select: { id: true },
-      orderBy: [{ priority: "desc" }, { runAfter: "asc" }],
-    })
-    if (job) return stage
-  }
-  return null
+async function nextReadyBatch(requestedUserId?: string): Promise<{ stage: "content" | "metadata"; userId: string } | null> {
+  const job = await db.emailAnalysisJob.findFirst({
+    where: {
+      ...(requestedUserId ? { userId: requestedUserId } : {}),
+      status: { in: ["queued", "deferred"] },
+      runAfter: { lte: new Date() },
+    },
+    select: { stage: true, userId: true },
+    orderBy: [{ runAfter: "asc" }, { priority: "desc" }],
+  })
+  if (!job || (job.stage !== "content" && job.stage !== "metadata")) return null
+  return { stage: job.stage, userId: job.userId }
 }
 
-async function claimReadyJobs(stage: "content" | "metadata", userId?: string) {
+async function claimReadyJobs(stage: "content" | "metadata", userId: string) {
   const now = new Date()
   const candidates = await db.emailAnalysisJob.findMany({
     where: {
-      ...(userId ? { userId } : {}),
+      userId,
       stage,
       status: { in: ["queued", "deferred"] },
       runAfter: { lte: now },
@@ -365,7 +362,7 @@ async function applyContentResponse(
           action: normalizeAction(item.action),
           summary: item.summary.slice(0, 500),
           keyPoints: JSON.stringify(item.keyPoints.slice(0, 5)),
-          suggestedReply: item.suggestedReply.slice(0, 4_000),
+          suggestedReply: "",
           analyzed: true,
           analysisState: "analyzed",
         },
@@ -380,19 +377,21 @@ async function applyContentResponse(
   return completed
 }
 
-async function deferJobs(ids: string[], error?: string, retryAfterMs?: number): Promise<void> {
+async function deferJobs(ids: string[], error?: string, retryAfterMs?: number, errorCode?: string, retryAt?: string): Promise<void> {
   const jobs = await db.emailAnalysisJob.findMany({ where: { id: { in: ids } }, select: { id: true, attempts: true, emailId: true } })
+  const parsedRetryAt = retryAt ? Date.parse(retryAt) : Number.NaN
   const retryMs = Math.max(retryAfterMs ?? 60_000, 20_000)
+  const quotaDeferral = errorCode === "budget_exhausted" || errorCode === "rate_limited"
   await Promise.all(jobs.map(async (job) => {
-    const attempts = job.attempts + 1
-    const failed = attempts >= MAX_ATTEMPTS
+    const attempts = quotaDeferral ? job.attempts : job.attempts + 1
+    const failed = !quotaDeferral && attempts >= MAX_ATTEMPTS
     await db.$transaction([
       db.emailAnalysisJob.update({
         where: { id: job.id },
         data: {
           attempts,
           status: failed ? "failed" : "deferred",
-          runAfter: new Date(Date.now() + retryMs * Math.min(attempts, 4)),
+          runAfter: Number.isFinite(parsedRetryAt) ? new Date(parsedRetryAt) : new Date(Date.now() + retryMs * Math.max(1, Math.min(attempts, 4))),
           lockedAt: null,
           lastError: (error || "AI analysis could not be completed").slice(0, 500),
         },
@@ -413,23 +412,6 @@ async function recoverStaleJobs(): Promise<void> {
   })
 }
 
-/** A database-backed lease makes the pace shared across users and server instances. */
-export async function reserveInboxAiSlot(): Promise<boolean> {
-  const key = "ai:email-analysis:global-slot"
-  const now = new Date()
-  const resetAt = new Date(now.getTime() + GLOBAL_AI_SLOT_MS)
-
-  try {
-    await db.rateLimitBucket.create({ data: { key, count: 1, resetAt } })
-    return true
-  } catch {
-    const claimed = await db.rateLimitBucket.updateMany({
-      where: { key, resetAt: { lte: now } },
-      data: { count: 1, resetAt },
-    })
-    return claimed.count === 1
-  }
-}
 
 function normalizeCategory(value: string): "urgent" | "important" | "normal" | "newsletter" | "spam" {
   return ["urgent", "important", "normal", "newsletter", "spam"].includes(value)

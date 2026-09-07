@@ -39,7 +39,7 @@ export async function POST(req: NextRequest) {
   let extracted = 0
   for (const c of note.chunks) {
     try {
-      const ds = await extractDecisions(c.text, c.headingPath)
+      const ds = await extractDecisions(c.text, c.headingPath, { userId: auth.user.id })
       for (const d of ds) {
         await db.decision.create({
           data: {

@@ -1,6 +1,7 @@
 import { db } from "@/lib/db"
 import { analyzeInboxEmailContentBatch } from "@/server/email/ai-batch"
-import { reserveInboxAiSlot } from "@/server/email/analysis-pipeline"
+import { enqueueInboxAnalysis } from "@/server/email/analysis-pipeline"
+import { selectRelevantText } from "@/lib/relevant-text"
 
 type InboxMetadata = {
   id: string
@@ -17,6 +18,9 @@ type InboxMetadata = {
   receivedAt: Date
 }
 
+const REVIEW_HEADER_LIMIT = 300
+const EXHAUSTIVE_HEADER_LIMIT = 500
+
 const STOP_WORDS = new Set(["the", "a", "an", "my", "mail", "email", "emails", "inbox", "check", "show", "tell", "me", "about", "with", "that", "this", "from", "for", "and", "any", "are", "what", "have", "got"])
 
 export function isInboxReviewQuestion(message: string): boolean {
@@ -26,7 +30,7 @@ export function isInboxReviewQuestion(message: string): boolean {
   return /\b(?:important|urgent|priority|action|reply|review|check|summari[sz]e|details?|what(?:'s| is)|which)\b/.test(text)
 }
 
-export function rankInboxCandidates(question: string, emails: InboxMetadata[]): InboxMetadata[] {
+export function rankInboxCandidates(question: string, emails: InboxMetadata[], limit = 3): InboxMetadata[] {
   const terms = question.toLowerCase().match(/[a-z0-9]{3,}/g)?.filter((term) => !STOP_WORDS.has(term)) ?? []
   const now = Date.now()
 
@@ -41,51 +45,43 @@ export function rankInboxCandidates(question: string, emails: InboxMetadata[]): 
       return { email, score }
     })
     .sort((a, b) => b.score - a.score || b.email.receivedAt.getTime() - a.email.receivedAt.getTime())
-    .slice(0, 3)
+    .slice(0, limit)
     .map(({ email }) => email)
 }
 
 export async function reviewInboxQuestion(userId: string, question: string): Promise<{ answer: string; serviceError: boolean; inspectedBodies: number }> {
-  const metadata = await db.inboxEmail.findMany({
-    where: { userId, isArchived: false },
-    select: {
-      id: true,
-      fromAddress: true,
-      fromName: true,
-      subject: true,
-      category: true,
-      summary: true,
-      analyzed: true,
-      analysisState: true,
-      triageScore: true,
-      isRead: true,
-      isStarred: true,
-      receivedAt: true,
-    },
-    orderBy: { receivedAt: "desc" },
-    take: 100,
-  })
-  const candidates = rankInboxCandidates(question, metadata)
+  const exhaustive = /\b(?:all|every|complete|full|exhaustive|find all|deadlines?)\b/i.test(question)
+  const [metadata, totalAvailable] = await Promise.all([
+    loadReviewMetadata(userId, question, exhaustive ? EXHAUSTIVE_HEADER_LIMIT : REVIEW_HEADER_LIMIT),
+    db.inboxEmail.count({ where: { userId, isArchived: false } }),
+  ])
+  const candidates = rankInboxCandidates(question, metadata, exhaustive ? 8 : 5)
   if (candidates.length === 0) {
     return { answer: "I could not find any emails in your inbox to review.", serviceError: false, inspectedBodies: 0 }
   }
 
   const needsContent = candidates.filter((email) => !email.analyzed || email.analysisState === "metadata" || email.analysisState === "queued" || email.analysisState === "deferred")
   let inspectedBodies = 0
-  let serviceError = false
 
-  if (needsContent.length > 0 && await reserveInboxAiSlot()) {
+  if (needsContent.length > 0) {
+    const selectedForReading = needsContent.slice(0, 3)
+    const queuedForLater = needsContent.slice(3)
+    if (queuedForLater.length > 0) {
+      await enqueueInboxAnalysis(userId, queuedForLater.map((email) => email.id))
+    }
     const bodies = await db.inboxEmail.findMany({
-      where: { userId, id: { in: needsContent.map((email) => email.id) } },
+      where: { userId, id: { in: selectedForReading.map((email) => email.id) } },
       select: { id: true, fromAddress: true, fromName: true, subject: true, body: true, receivedAt: true },
     })
-    const result = await analyzeInboxEmailContentBatch(
+    const result = bodies.length > 0 ? await analyzeInboxEmailContentBatch(
       bodies.map((email) => ({
         ...email,
-        body: email.body.slice(0, 1_400),
+        body: selectRelevantText(email.body, question, 1_800).text,
         receivedAt: email.receivedAt.toISOString(),
-      }))
-    )
+      })),
+      userId,
+      "interactive"
+    ) : { ok: false, items: [], error: "Selected emails are no longer available" }
     if (result.ok) {
       inspectedBodies = bodies.length
       await Promise.all(result.items.map((item) =>
@@ -97,7 +93,7 @@ export async function reviewInboxQuestion(userId: string, question: string): Pro
               action: normalizeAction(item.action),
               summary: item.summary.slice(0, 500),
               keyPoints: JSON.stringify(item.keyPoints.slice(0, 5)),
-              suggestedReply: item.suggestedReply.slice(0, 4_000),
+              suggestedReply: "",
               analyzed: true,
               analysisState: "analyzed",
             },
@@ -109,7 +105,7 @@ export async function reviewInboxQuestion(userId: string, question: string): Pro
         ])
       ))
     } else {
-      serviceError = true
+      await enqueueInboxAnalysis(userId, selectedForReading.map((email) => email.id))
     }
   }
 
@@ -124,13 +120,60 @@ export async function reviewInboxQuestion(userId: string, question: string): Pro
     const summary = email?.summary || "Queued for detailed review."
     return `- **${sender}** — ${candidate.subject}\n  ${summary}`
   })
+  const coverage = metadata.length < totalAvailable
+    ? `I searched ${metadata.length} of ${totalAvailable} synced messages using recency plus sender, subject, and body-text matches.`
+    : `I searched all ${metadata.length} synced messages in this inbox view.`
   const lead = inspectedBodies > 0
-    ? `I screened ${metadata.length} headers first and read the content of ${inspectedBodies} relevant email${inspectedBodies === 1 ? "" : "s"}.`
-    : `I screened ${metadata.length} headers and selected the most relevant emails.`
-  const note = needsContent.length > 0 && inspectedBodies === 0
-    ? " Detailed content review is queued, so this result currently uses local metadata and saved summaries."
-    : ""
-  return { answer: `${lead}${note}\n\n${lines.join("\n\n")}`, serviceError, inspectedBodies }
+    ? `${coverage} I then read ${inspectedBodies} relevant email${inspectedBodies === 1 ? "" : "s"} in detail.`
+    : `${coverage} I selected the most relevant saved results from their metadata and existing analysis.`
+  const remaining = Math.max(0, needsContent.length - inspectedBodies)
+  const note = remaining > 0
+    ? ` Detailed review for ${remaining} selected message${remaining === 1 ? " is" : "s are"} queued or waiting for AI capacity; this is a partial result.`
+    : exhaustive && metadata.length < totalAvailable
+      ? " This is not a complete-mailbox result because the requested scope exceeds the bounded review window."
+      : ""
+  return { answer: `${lead}${note}\n\n${lines.join("\n\n")}`, serviceError: false, inspectedBodies }
+}
+
+async function loadReviewMetadata(userId: string, question: string, limit: number): Promise<InboxMetadata[]> {
+  const select = {
+    id: true,
+    fromAddress: true,
+    fromName: true,
+    subject: true,
+    category: true,
+    summary: true,
+    analyzed: true,
+    analysisState: true,
+    triageScore: true,
+    isRead: true,
+    isStarred: true,
+    receivedAt: true,
+  } as const
+  const terms = question.toLowerCase().match(/[a-z0-9@.]{3,}/g)?.filter((term) => !STOP_WORDS.has(term)).slice(0, 6) ?? []
+  const recent = await db.inboxEmail.findMany({
+    where: { userId, isArchived: false },
+    select,
+    orderBy: { receivedAt: "desc" },
+    take: limit,
+  })
+  if (terms.length === 0) return recent
+  const matched = await db.inboxEmail.findMany({
+    where: {
+      userId,
+      isArchived: false,
+      OR: terms.flatMap((term) => [
+        { fromAddress: { contains: term } },
+        { fromName: { contains: term } },
+        { subject: { contains: term } },
+        { body: { contains: term } },
+      ]),
+    },
+    select,
+    orderBy: { receivedAt: "desc" },
+    take: limit,
+  })
+  return [...new Map([...matched, ...recent].map((email) => [email.id, email])).values()].slice(0, limit)
 }
 
 function normalizeCategory(value: string): "urgent" | "important" | "normal" | "newsletter" | "spam" {

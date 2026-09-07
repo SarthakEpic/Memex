@@ -49,7 +49,8 @@ export async function GET(req: NextRequest) {
     emails.length,
     urgent.length,
     needReply.length,
-    newsletters.length
+    newsletters.length,
+    { userId: auth.user.id }
   )
 
   return NextResponse.json({

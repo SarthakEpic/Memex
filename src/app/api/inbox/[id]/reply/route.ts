@@ -39,7 +39,8 @@ export async function POST(
     email.fromAddress,
     email.subject,
     email.body,
-    instruction
+    instruction,
+    { userId: auth.user.id }
   )
 
   return NextResponse.json({ draft })

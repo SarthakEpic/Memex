@@ -53,6 +53,11 @@ interface AiStatus {
   model: string
   configured: boolean
   missingEnvVar?: string
+  budget?: {
+    enabled: boolean
+    configuredLimits: { tokensPerDay: number; userTokensPerDay: number; backgroundTokensPerDay: number }
+    usage?: Record<string, { used: number; resetAt: string }>
+  }
 }
 
 export function Settings() {
@@ -268,7 +273,7 @@ export function Settings() {
             <DataDisclosure
               icon={Bot}
               title="AI context"
-              body="Chat sends retrieved note chunks, not your full library. Inbox analysis sends sender, subject, and up to 2,000 characters of an email body to the configured AI provider. Provider retention settings apply."
+              body="Chat sends retrieved note chunks, not your full library. Inbox analysis sends sender, subject, and selected relevant excerpts of an email body to the configured AI provider. Provider retention settings apply."
             />
             <DataDisclosure
               icon={Lock}
@@ -562,6 +567,12 @@ function AiProviderCard() {
             {status.configured ? "Ready" : "Not configured"}
           </Badge>
         </div>
+        {status.budget?.enabled && (
+          <div className="grid gap-2 sm:grid-cols-2">
+            <BudgetUsage label="Your daily AI budget" usage={status.budget.usage?.["tokens:user:day"]} limit={status.budget.configuredLimits.userTokensPerDay} />
+            <BudgetUsage label="Shared daily AI budget" usage={status.budget.usage?.["tokens:day"]} limit={status.budget.configuredLimits.tokensPerDay} />
+          </div>
+        )}
         <p className="text-xs leading-relaxed text-muted-foreground">
           {status.configured
             ? "Memex can reach the configured provider. Retention and training controls must also be configured in that provider account."
@@ -569,6 +580,22 @@ function AiProviderCard() {
         </p>
       </CardContent>
     </Card>
+  )
+}
+
+function BudgetUsage({ label, usage, limit }: { label: string; usage?: { used: number; resetAt: string }; limit: number }) {
+  const used = usage?.used || 0
+  const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0
+  return (
+    <div className="space-y-1 rounded-md border p-2.5">
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <span>{label}</span>
+        <span className="tabular-nums text-muted-foreground">{used.toLocaleString()} / {limit.toLocaleString()}</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-muted" aria-label={`${label}: ${percent}% used`}>
+        <div className="h-full bg-primary transition-[width]" style={{ width: `${percent}%` }} />
+      </div>
+    </div>
   )
 }
 

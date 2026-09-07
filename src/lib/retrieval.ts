@@ -78,7 +78,7 @@ export async function retrieve(
   }))
 
   if (opts.rerank && top.length > 1) {
-    top = await llmRerank(query, top)
+    top = await llmRerank(query, top, { userId: opts.userId })
   }
 
   return top.slice(0, topK)

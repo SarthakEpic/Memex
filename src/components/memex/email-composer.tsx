@@ -106,6 +106,7 @@ export function EmailComposer() {
     setSending(true)
     try {
       const data = await apiRequest<{
+        id?: string
         requiresVerification?: boolean
         delivered?: boolean
         realSend?: boolean

@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
   }
   const { bodyMarkdown } = parsed.data
 
-  const subject = await generateEmailSubject(bodyMarkdown)
+  const subject = await generateEmailSubject(bodyMarkdown, { userId: auth.user.id })
 
   if (!subject) {
     return NextResponse.json(

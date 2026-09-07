@@ -2,45 +2,10 @@
 // AI Provider Abstraction Layer
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// This module provides a single, unified interface to multiple LLM providers
-// using the OpenAI SDK as the universal client. Most major providers
-// (Google Gemini, Groq, OpenRouter, Together AI, Mistral, etc.) offer
-// OpenAI-compatible endpoints, so we can support them all with ONE SDK.
-//
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │ SUPPORTED PROVIDERS (all have FREE tiers)                              │
-// │                                                                         │
-// │ 1. Google Gemini (DEFAULT — most generous free tier)                   │
-// │    - 1500 requests/day, 1M tokens/min, 15 RPM                          │
-// │    - Models: gemini-1.5-flash, gemini-1.5-flash-8b, gemini-1.5-pro     │
-// │    - Get key: https://aistudio.google.com/app/apikey                   │
-// │    - Set: AI_PROVIDER=gemini, GEMINI_API_KEY=...                       │
-// │                                                                         │
-// │ 2. Groq (fastest — Llama 3.3 70B on free tier)                         │
-// │    - 30 RPM, 14400 TPM, ~1000 requests/day                            │
-// │    - Models: llama-3.3-70b-versatile, llama-3.1-8b-instant            │
-// │    - Get key: https://console.groq.com/keys                            │
-// │    - Set: AI_PROVIDER=groq, GROQ_API_KEY=...                           │
-// │                                                                         │
-// │ 3. OpenRouter (aggregator — access many models)                        │
-// │    - Has free models (Llama, Mistral, Gemma)                           │
-// │    - Get key: https://openrouter.ai/keys                               │
-// │    - Set: AI_PROVIDER=openrouter, OPENROUTER_API_KEY=...               │
-// │                                                                         │
-// │ 4. OpenAI (paid — most reliable, best quality)                         │
-// │    - Models: gpt-4o-mini, gpt-4o                                       │
-// │    - Get key: https://platform.openai.com/api-keys                     │
-// │    - Set: AI_PROVIDER=openai, OPENAI_API_KEY=...                       │
-// │                                                                         │
-// │ 5. Ollama (100% free, local, no limits — requires your own hardware)  │
-// │    - Install: https://ollama.ai                                        │
-// │    - Models: llama3.1:8b, qwen2.5:7b, mistral:7b                       │
-// │    - Set: AI_PROVIDER=ollama (no API key needed)                       │
-// │                                                                         │
-// │ 6. Together AI, Mistral, Anyscale, etc. — any OpenAI-compatible API   │
-// │    - Set: AI_PROVIDER=custom, AI_BASE_URL=..., AI_API_KEY=...,         │
-// │          AI_MODEL=...                                                   │
-// └─────────────────────────────────────────────────────────────────────────┘
+// This module provides one interface for supported hosted and local providers.
+// Provider pricing, model availability, privacy terms, and quotas change over time;
+// verify them in the provider console and configure Memex's local budget below.
+// No request silently falls back to a different provider.
 //
 // ENVIRONMENT VARIABLES (see .env.example):
 //
@@ -66,7 +31,15 @@
 //
 // ─────────────────────────────────────────────────────────────────────────────
 
+import { createHash } from "node:crypto"
 import OpenAI from "openai"
+import {
+  estimateTokens,
+  reconcileAIBudget,
+  reserveAIBudget,
+  setAIProviderCooldown,
+  type AIRequestIdentity,
+} from "@/server/ai/budget"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Provider configuration
@@ -115,8 +88,7 @@ interface ProviderConfig {
 }
 
 const PROVIDERS: Record<string, ProviderConfig> = {
-  // Google Gemini — via OpenAI-compatible endpoint
-  // Most generous free tier: 1500 requests/day
+  // Google Gemini via its OpenAI-compatible endpoint.
   gemini: {
     name: "Google Gemini",
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -125,8 +97,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     apiKeyRequired: true,
   },
 
-  // Groq — fastest inference, Llama models
-  // Free tier: 30 RPM, ~1000 requests/day
+  // Groq via its OpenAI-compatible endpoint.
   groq: {
     name: "Groq",
     baseURL: "https://api.groq.com/openai/v1",
@@ -135,7 +106,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     apiKeyRequired: true,
   },
 
-  // OpenRouter — aggregator with free models
+  // OpenRouter aggregator. Verify each selected model's current terms.
   openrouter: {
     name: "OpenRouter",
     baseURL: "https://openrouter.ai/api/v1",
@@ -144,7 +115,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     apiKeyRequired: true,
   },
 
-  // OpenAI — paid, best quality
+  // OpenAI.
   openai: {
     name: "OpenAI",
     baseURL: "https://api.openai.com/v1",
@@ -153,7 +124,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     apiKeyRequired: true,
   },
 
-  // Ollama — local, 100% free, no limits
+  // Ollama local runtime; capacity depends on the host machine.
   ollama: {
     name: "Ollama (local)",
     baseURL: process.env.OLLAMA_HOST
@@ -273,7 +244,8 @@ export function getAIClient(): OpenAI {
     apiKey: config.apiKey || "dummy-key-for-ollama",
     // Groq and Gemini can be fast — use a generous timeout
     timeout: 60_000,
-    maxRetries: 2,
+    // Memex owns retry and quota policy. SDK retries would multiply work invisibly.
+    maxRetries: 0,
   })
   clientProvider = providerKey
 
@@ -313,7 +285,7 @@ export function getDefaultMaxTokens(): number {
 //   - Automatic provider detection
 //   - Sensible defaults
 //   - Consistent error handling
-//   - Retry with exponential backoff for rate limits (429)
+//   - Central quota admission, in-flight deduplication, and structured failures
 //
 // Usage:
 //   const result = await chatComplete({
@@ -334,9 +306,13 @@ export interface ChatCompleteOptions {
   maxTokens?: number
   // Override the model for this specific call
   model?: string
-  // If true, don't retry on rate limits (return error immediately)
+  // Kept for API compatibility; Memex now makes one provider attempt per call.
   noRetry?: boolean
+  request?: Partial<AIRequestIdentity> & Pick<AIRequestIdentity, "feature">
+  reasoningEffort?: "low" | "medium" | "high"
 }
+
+export type AIErrorCode = "budget_exhausted" | "rate_limited" | "timeout" | "configuration" | "invalid_request" | "provider_unavailable"
 
 export interface ChatCompleteResult {
   ok: boolean
@@ -345,10 +321,20 @@ export interface ChatCompleteResult {
   // True if the error was a rate limit (caller may want to show a specific message)
   rateLimited?: boolean
   retryAfterMs?: number
+  retryAt?: string
+  errorCode?: AIErrorCode
+  usage?: {
+    promptTokens: number
+    completionTokens: number
+    totalTokens: number
+    cachedTokens: number
+    reasoningTokens: number
+  }
+  finishReason?: string | null
 }
 
-const MAX_RETRIES = 4
-const BASE_BACKOFF_MS = 3000
+const MAX_RETRIES = 0
+const inFlightCompletions = new Map<string, Promise<ChatCompleteResult>>()
 
 function isRateLimited(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err)
@@ -360,32 +346,66 @@ function isRateLimited(err: unknown): boolean {
 }
 
 export async function chatComplete(options: ChatCompleteOptions): Promise<ChatCompleteResult> {
+  const dedupeKey = completionDedupeKey(options)
+  const current = inFlightCompletions.get(dedupeKey)
+  if (current) return current
+  const pending = executeChatComplete(options).finally(() => inFlightCompletions.delete(dedupeKey))
+  inFlightCompletions.set(dedupeKey, pending)
+  return pending
+}
+
+async function executeChatComplete(options: ChatCompleteOptions): Promise<ChatCompleteResult> {
   const providerKey = getActiveProviderKey()
+  const model = options.model || getModel()
+  const maxTokens = options.maxTokens ?? getDefaultMaxTokens()
+  const identity: AIRequestIdentity = {
+    feature: options.request?.feature || "unspecified",
+    workClass: options.request?.workClass || "interactive",
+    userId: options.request?.userId,
+  }
+  const estimatedTokens = estimateTokens(options.messages, maxTokens)
+  const permit = await reserveAIBudget({ provider: providerKey, model, identity, estimatedTokens })
+  if (!permit.admitted) {
+    return {
+      ok: false,
+      content: "",
+      error: "The configured AI allowance is currently reserved or exhausted.",
+      rateLimited: true,
+      errorCode: "budget_exhausted",
+      retryAt: permit.retryAt?.toISOString(),
+      retryAfterMs: permit.retryAt ? Math.max(0, permit.retryAt.getTime() - Date.now()) : undefined,
+    }
+  }
+  const startedAt = Date.now()
 
   // ── Sandbox fallback path ──────────────────────────────────────────────────
   // Uses z-ai-web-dev-sdk directly (only works in the sandbox environment)
   if (providerKey === "sandbox") {
-    return chatCompleteSandbox(options)
+    const result = await chatCompleteSandbox(options)
+    await reconcileAIBudget({ provider: providerKey, model, identity, permit, durationMs: Date.now() - startedAt, success: result.ok, errorCode: result.errorCode })
+    return result
   }
 
   // ── OpenAI-compatible path ──────────────────────────────────────────────────
   const client = getAIClient()
-  const model = options.model || getModel()
   const temperature = options.temperature ?? getDefaultTemperature()
-  const maxTokens = options.maxTokens ?? getDefaultMaxTokens()
 
   let lastErr: unknown
 
   for (let attempt = 0; attempt <= (options.noRetry ? 0 : MAX_RETRIES); attempt++) {
     try {
+      const request = {
+        model,
+        messages: options.messages,
+        temperature,
+        max_tokens: maxTokens,
+        ...(options.reasoningEffort && supportsReasoningEffort(providerKey, model)
+          ? { reasoning_effort: options.reasoningEffort }
+          : {}),
+      }
       const completion = await client.chat.completions.create(
-        {
-          model,
-          messages: options.messages,
-          temperature,
-          max_tokens: maxTokens,
-        },
-        options.noRetry ? { maxRetries: 0, timeout: 15_000 } : undefined
+        request as OpenAI.Chat.Completions.ChatCompletionCreateParamsNonStreaming,
+        { maxRetries: 0, timeout: options.noRetry ? 15_000 : 30_000 }
       )
 
       // Extract the text content — handle different response shapes
@@ -400,36 +420,75 @@ export async function chatComplete(options: ChatCompleteOptions): Promise<ChatCo
         content = String(completion ?? "")
       }
 
-      return { ok: true, content: content.trim() }
+      const usage = extractUsage(completion)
+      const quotaTokens = usage ? Math.max(usage.completionTokens, usage.totalTokens - usage.cachedTokens) : undefined
+      await reconcileAIBudget({ provider: providerKey, model, identity, permit, actualTokens: quotaTokens, promptTokens: usage?.promptTokens, completionTokens: usage?.completionTokens, cachedTokens: usage?.cachedTokens, reasoningTokens: usage?.reasoningTokens, durationMs: Date.now() - startedAt, success: true })
+      return { ok: true, content: content.trim(), usage, finishReason: completion.choices?.[0]?.finish_reason }
     } catch (err: any) {
       lastErr = err
       const retryAfterMs = getRetryAfterMs(err)
 
       // If no-retry mode or not a rate limit, return immediately
       if (options.noRetry || !isRateLimited(err)) {
+        const errorCode = classifyAIError(err)
+        await reconcileAIBudget({ provider: providerKey, model, identity, permit, durationMs: Date.now() - startedAt, success: false, errorCode })
         return {
           ok: false,
           content: "",
           error: err?.message || String(err),
           rateLimited: isRateLimited(err),
           retryAfterMs,
+          errorCode,
         }
       }
 
-      // Rate limited — exponential backoff: 3s, 6s, 12s, 24s
       if (attempt === MAX_RETRIES) break
-      const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000
-      await new Promise((r) => setTimeout(r, backoff))
     }
   }
 
+  const retryAfterMs = getRetryAfterMs(lastErr)
+  await setAIProviderCooldown(providerKey, model, retryAfterMs)
+  await reconcileAIBudget({ provider: providerKey, model, identity, permit, durationMs: Date.now() - startedAt, success: false, errorCode: "rate_limited" })
   return {
     ok: false,
     content: "",
     error: lastErr instanceof Error ? lastErr.message : String(lastErr),
     rateLimited: true,
-    retryAfterMs: getRetryAfterMs(lastErr),
+    retryAfterMs,
+    errorCode: "rate_limited",
   }
+}
+
+function completionDedupeKey(options: ChatCompleteOptions): string {
+  return createHash("sha256").update(JSON.stringify({ provider: getActiveProviderKey(), model: options.model || getModel(), userId: options.request?.userId || "system", feature: options.request?.feature || "unspecified", messages: options.messages, temperature: options.temperature, maxTokens: options.maxTokens, reasoningEffort: options.reasoningEffort })).digest("hex")
+}
+
+function extractUsage(completion: OpenAI.Chat.Completions.ChatCompletion): ChatCompleteResult["usage"] {
+  const usage = completion.usage
+  if (!usage) return undefined
+  return {
+    promptTokens: usage.prompt_tokens || 0,
+    completionTokens: usage.completion_tokens || 0,
+    totalTokens: usage.total_tokens || (usage.prompt_tokens || 0) + (usage.completion_tokens || 0),
+    cachedTokens: usage.prompt_tokens_details?.cached_tokens || 0,
+    reasoningTokens: usage.completion_tokens_details?.reasoning_tokens || 0,
+  }
+}
+
+function supportsReasoningEffort(provider: string, model: string): boolean {
+  if (provider === "groq") return /gpt-oss/i.test(model)
+  if (provider === "openai") return /^(?:o[1-9]|gpt-5)/i.test(model)
+  return false
+}
+
+function classifyAIError(err: unknown): AIErrorCode {
+  const status = (err as { status?: number })?.status
+  const message = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase()
+  if (isRateLimited(err)) return "rate_limited"
+  if (status === 400 || status === 422) return "invalid_request"
+  if (status === 401 || status === 403 || message.includes("api key") || message.includes("authentication")) return "configuration"
+  if (message.includes("timeout") || message.includes("timed out") || status === 408) return "timeout"
+  return "provider_unavailable"
 }
 
 function getRetryAfterMs(err: unknown): number | undefined {
@@ -482,8 +541,6 @@ async function chatCompleteSandbox(options: ChatCompleteOptions): Promise<ChatCo
         }
       }
       if (attempt === MAX_RETRIES) break
-      const backoff = BASE_BACKOFF_MS * Math.pow(2, attempt) + Math.random() * 1000
-      await new Promise((r) => setTimeout(r, backoff))
     }
   }
 
