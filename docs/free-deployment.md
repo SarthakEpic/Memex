@@ -50,21 +50,20 @@ Then push the repository to GitHub.
 ## Step 3: Create The Vercel Project
 
 1. Import the GitHub repo in Vercel.
-2. Framework preset: Next.js.
-3. Install command: `npm install`
-4. Build command:
+2. Framework preset: Next.js (auto-detected).
+3. Install command and build command are already configured in `vercel.json`
+   — no manual build settings needed. The build switches to the Postgres
+   Prisma schema (picked automatically from `DATABASE_URL`), pushes the
+   tables to Neon, and builds the app.
 
-```bash
-npm run db:deploy-schema && npm run build
-```
+Or skip the dashboard entirely with the **Deploy** button in the README —
+it clones the repo into a fresh Vercel project and prompts you for the
+environment variables.
 
-`npm run build` now picks the Prisma schema automatically from
-`DATABASE_URL` (Postgres in production, SQLite locally), generates the Prisma
-client, builds Next.js, and prepares the standalone output.
-`npm run db:deploy-schema` switches to the Postgres schema and pushes the
-tables to Neon. If the database already has data and you only want schema
-sync, that is exactly what `prisma db push` does — it never deletes tables
-that contain rows unless the schema removed them.
+> Running Memex as your personal everyday app? A small always-on VM gives
+> you email ingestion and AI chat without serverless timeouts — see
+> [oracle-vm-deployment.md](oracle-vm-deployment.md) for the free Oracle
+> Cloud path (Docker Compose + automatic HTTPS + built-in scheduler).
 
 ## Step 4: Add Vercel Environment Variables
 

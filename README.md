@@ -2,12 +2,27 @@
 
 > Every claim in a chat answer is hyperlinked to its source chunk — or the model honestly says it can't cite one.
 
+<div align="center">
+
+[![CI](https://github.com/SarthakEpic/Memex/actions/workflows/ci.yml/badge.svg)](https://github.com/SarthakEpic/Memex/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2FSarthakEpic%2FMemex&env=DATABASE_URL,ENCRYPTION_KEY,APP_BASE_URL,RATE_LIMIT_BACKEND,AI_PROVIDER,GEMINI_API_KEY&project-name=memex&repository-name=Memex)
+
+</div>
+
 Memex is a comprehensive AI-powered personal knowledge management system that combines:
 - 📝 **Markdown notes** with smart chunking for precise citation
 - 💬 **Multi-mode AI chat** that cites sources, drafts emails, and helps with app questions
 - 📧 **Email management** — connect your inbox, get AI categorization, summaries, and reply drafts
 - 🎯 **Decision extraction** — AI automatically pulls decisions out of your notes
 - 🔍 **BM25 keyword retrieval** (no vector database needed)
+
+| Workspace overview | Citation-first chat |
+| --- | --- |
+| ![Workspace overview](docs/screenshots/overview.png) | ![Citation-first chat](docs/screenshots/chat.png) |
+| **Notes with searchable chunks** | **Smart Inbox with AI triage** |
+| ![Notes with searchable chunks](docs/screenshots/notes.png) | ![Smart Inbox with AI triage](docs/screenshots/inbox.png) |
 
 ---
 
@@ -35,6 +50,8 @@ sign in with `you@memex.local` / `memex-demo-password`. If you skipped the seed,
 create your own account from the signup page.
 
 For a zero-cost online portfolio deployment, see [docs/free-deployment.md](docs/free-deployment.md).
+To run Memex as your personal always-on app (email + AI chat every day), the
+free Oracle Cloud VM guide is [docs/oracle-vm-deployment.md](docs/oracle-vm-deployment.md).
 
 Quality gates:
 
@@ -331,7 +348,7 @@ The API routes intentionally stay small: they parse input, call a service, and r
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/YOUR_USERNAME/memex.git
+git clone https://github.com/SarthakEpic/Memex.git
 cd memex
 
 # 2. Install dependencies
@@ -562,32 +579,56 @@ npm run db:use-sqlite
 
 ## 🚢 Deployment Guide
 
-### Option 1: Vercel + Neon (Recommended free portfolio deployment)
+### Option 1: Vercel + Neon (free portfolio / demo deployment)
 
 > Note: Vercel's filesystem is read-only, so you MUST use PostgreSQL (not SQLite).
 
-Use the full zero-cost walkthrough in [docs/free-deployment.md](docs/free-deployment.md). The important Vercel settings are:
+Use the full zero-cost walkthrough in [docs/free-deployment.md](docs/free-deployment.md).
+The install and build commands are already configured in `vercel.json` — the
+build auto-detects the Postgres schema from `DATABASE_URL`, pushes the tables,
+and builds. Required env vars: `DATABASE_URL`, `ENCRYPTION_KEY`,
+`APP_BASE_URL`, `RATE_LIMIT_BACKEND=database`, and one AI provider key.
+Optional env vars: `AUTH_SMTP_*` plus `APP_EMAIL_FROM` if you enable
+`REQUIRE_EMAIL_VERIFICATION=true`.
 
-- Install command: `npm install`
-- Build command: `npm run db:use-postgres && npx prisma db push && npm run build`
-- Required env vars: `DATABASE_URL`, `ENCRYPTION_KEY`, `APP_BASE_URL`, `RATE_LIMIT_BACKEND=database`, and one AI provider key.
-- Optional env vars: `AUTH_SMTP_*` plus `APP_EMAIL_FROM` if you enable `REQUIRE_EMAIL_VERIFICATION=true`.
+Or click **Deploy** at the top of this README to clone straight into Vercel.
 
 After deployment, open `/api/health`, create a test account, add a note, and ask one chat question.
 
-### Option 2: Railway
+### Option 2: Always-on free VM — Oracle Cloud (recommended for daily personal use)
 
-1. Push to GitHub
-2. Go to [railway.app](https://railway.app) → New Project → Deploy from GitHub
-3. Add a PostgreSQL database add-on
-4. Set environment variables (same as Vercel)
-5. Railway automatically runs `npm install` and `npm run build`
+Runs the full production stack (app + Postgres + automatic HTTPS + scheduler)
+with Docker Compose on a permanent-free ARM VM. No serverless timeouts, no
+storage cap, cron included.
 
-### Option 3: Your Own VPS (DigitalOcean, Hetzner, AWS EC2)
+```bash
+docker compose up -d --build
+docker compose --profile tools run --rm db-push
+```
+
+Full walkthrough: [docs/oracle-vm-deployment.md](docs/oracle-vm-deployment.md)
+(includes Caddy HTTPS setup, backups, and updates).
+
+### Option 3: Any Docker host (Railway, Koyeb, Render, Fly.io, a VPS)
+
+A production `Dockerfile` ships with the repo (multi-stage, standalone output,
+Postgres Prisma schema by default):
+
+```bash
+docker build -t memex .
+docker run -p 3000:3000 --env-file .env memex
+```
+
+For SQLite instead, build with `--build-arg PRISMA_PROVIDER=sqlite` and mount
+a volume for the database file. On Railway/Render/Koyeb, connect the GitHub
+repo and set the same environment variables as Vercel; point the health check
+at `/api/health`.
+
+### Option 4: Bare Node.js on a VPS (DigitalOcean, Hetzner, AWS EC2)
 
 ```bash
 # On your server:
-git clone https://github.com/YOUR_USERNAME/memex.git
+git clone https://github.com/SarthakEpic/Memex.git
 cd memex
 npm install
 cp .env.example .env
@@ -603,37 +644,6 @@ pm2 start "npm run start" --name memex
 pm2 save && pm2 startup
 ```
 
-### Option 4: Docker
-
-Create a `Dockerfile`:
-```dockerfile
-FROM node:22-alpine AS deps
-WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
-
-FROM node:22-alpine AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
-RUN npm run build
-
-FROM node:22-alpine AS runner
-WORKDIR /app
-ENV NODE_ENV=production
-ENV PORT=3000
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
-EXPOSE 3000
-CMD ["node", "-r", "dotenv/config", "server.js"]
-```
-
-Then:
-```bash
-docker build -t memex .
-docker run -p 3000:3000 --env-file .env memex
-```
 
 ---
 
@@ -873,9 +883,7 @@ npm install package-name
 
 ## 📄 License
 
-
-
----
+Released under the [MIT License](LICENSE) — free to use, modify, and deploy.---
 
 ## 🙏 Acknowledgments
 

@@ -18,6 +18,11 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
 
+# One-off schema push against a running Postgres, used by the compose
+# tooling service: docker compose --profile tools run --rm db-push
+FROM builder AS migrator
+CMD ["npx", "prisma", "db", "push"]
+
 FROM node:${NODE_VERSION}-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 PORT=3000 HOSTNAME=0.0.0.0

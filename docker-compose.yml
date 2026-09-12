@@ -1,0 +1,96 @@
+name: memex
+
+# Production stack for an always-on Docker host (Oracle Cloud Always Free VM,
+# any VPS). App + Postgres + Caddy (automatic HTTPS) + a scheduler container
+# that hits /api/cron/scheduled every 10 minutes.
+#
+# First run:
+#   cp deploy/.env.example .env   (fill it in)
+#   docker compose up -d --build
+#   docker compose --profile tools run --rm db-push
+# See docs/oracle-vm-deployment.md for the full walkthrough.
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-memex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-memex}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-memex} -d ${POSTGRES_DB:-memex}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build:
+      context: .
+      target: runner
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Inside the compose network the app always talks to the db service,
+      # regardless of what DATABASE_URL says in .env.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-memex}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-memex}?schema=public
+      RATE_LIMIT_BACKEND: database
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # One-off schema push against the db service. Run explicitly:
+  #   docker compose --profile tools run --rm db-push
+  db-push:
+    build:
+      context: .
+      target: migrator
+    profiles: ["tools"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-memex}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-memex}?schema=public
+    depends_on:
+      db:
+        condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      MEMEX_DOMAIN: ${MEMEX_DOMAIN:?Set MEMEX_DOMAIN in .env (e.g. memex.example.duckdns.org)}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      app:
+        condition: service_healthy
+
+  scheduler:
+    image: alpine:3.20
+    restart: unless-stopped
+    command: ["/bin/sh", "/entrypoint.sh"]
+    environment:
+      CRON_SECRET: ${CRON_SECRET:-}
+      CRON_SCHEDULE: ${CRON_SCHEDULE:-*/10 * * * *}
+      CRON_TARGET_URL: http://app:3000/api/cron/scheduled
+    volumes:
+      - ./deploy/cron-entrypoint.sh:/entrypoint.sh:ro
+    depends_on:
+      app:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

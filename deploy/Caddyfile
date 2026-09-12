@@ -1,0 +1,12 @@
+# Memex reverse proxy with automatic HTTPS (Let's Encrypt / ZeroSSL).
+# The public domain comes from MEMEX_DOMAIN in .env, rendered by the
+# caddy container's environment.
+{$MEMEX_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy app:3000 {
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+}
