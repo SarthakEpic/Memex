@@ -102,7 +102,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     name: "Groq",
     baseURL: "https://api.groq.com/openai/v1",
     apiKey: process.env.GROQ_API_KEY || "",
-    defaultModel: "llama-3.3-70b-versatile",
+    defaultModel: "openai/gpt-oss-120b",
     apiKeyRequired: true,
   },
 
@@ -111,7 +111,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     name: "OpenRouter",
     baseURL: "https://openrouter.ai/api/v1",
     apiKey: process.env.OPENROUTER_API_KEY || "",
-    defaultModel: "meta-llama/llama-3.3-70b-instruct:free",
+    defaultModel: "google/gemma-4-31b-it:free",
     apiKeyRequired: true,
   },
 

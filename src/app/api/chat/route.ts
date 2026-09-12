@@ -485,7 +485,7 @@ export interface EmailDraftPayload {
 
 function generateFallbackAnswer(question: string, chunks: ContextChunk[]): string {
   if (chunks.length === 0) {
-    return "I'm currently rate-limited and can't process your question right now. Please try again in a minute. Meanwhile, you can browse your notes directly in the Notes section."
+    return "The AI service is temporarily unavailable — this is usually a rate limit or a model configuration issue, not a problem with your question. Please try again in a minute. Meanwhile, you can browse your notes directly in the Notes section."
   }
 
   const topChunks = chunks.slice(0, 3)
