@@ -3,11 +3,11 @@
 This guide is for a zero-cost portfolio deployment. Free tiers can change, so
 verify limits before you depend on them for real users.
 
-> Want to *use* Memex every day rather than just demo it? Two other guides:
-> [hf-spaces-deployment.md](hf-spaces-deployment.md) (full app + Postgres on a
-> free Docker host, **no credit card anywhere**) or
-> [oracle-vm-deployment.md](oracle-vm-deployment.md) (free VM, needs a card
-> check at signup).
+> Want to *use* Memex every day rather than just demo it? The no-card path is
+> this same stack deployed twice — a private instance for you plus the public
+> demo: [everyday-deployment.md](everyday-deployment.md). If you accept a
+> one-time card check at signup (nothing charged), a free always-on VM is
+> stronger: [oracle-vm-deployment.md](oracle-vm-deployment.md).
 
 ## Recommended Free Stack
 
