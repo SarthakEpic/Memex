@@ -127,20 +127,21 @@ The scheduled route `/api/cron/scheduled` processes:
 - expired auth tokens
 
 **Vercel Hobby limitation:** Hobby projects can only run Vercel Cron once per
-day, so the `*/10 * * * *` schedule in `vercel.json` will not fire every ten
-minutes there. Two options:
+day — `vercel.json` therefore ships a once-daily schedule, which is the most
+Hobby will accept (a sub-daily schedule in `vercel.json` blocks deployment
+entirely on Hobby). For the real every-10-minute processing, use an external
+free cron:
 
-1. **External free cron (recommended for Hobby).** Set `CRON_SECRET` in
-   Vercel, create a free cron-job.org job that every 10 minutes calls:
+Set `CRON_SECRET` in Vercel, then create a free cron-job.org job that every
+10 minutes calls:
 
-   ```bash
-   curl -H "Authorization: Bearer <CRON_SECRET>" https://your-app.vercel.app/api/cron/scheduled
-   ```
+```bash
+curl -H "Authorization: Bearer <CRON_SECRET>" https://your-app.vercel.app/api/cron/scheduled
+```
 
-   cron-job.org supports custom request headers in the job's "Advanced" settings.
-
-2. **Paid/Pro Vercel or self-hosted Docker** — then the built-in
-   `vercel.json` cron (or your platform's scheduler) runs every 10 minutes.
+cron-job.org supports custom request headers in the job's "Advanced" settings.
+On Vercel Pro, the daily schedule in `vercel.json` can be raised back to
+`*/10 * * * *`.
 
 ## Alternative: Any Free Docker Host (Railway, Koyeb, Render, Fly.io, a VPS)
 
