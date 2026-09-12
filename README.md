@@ -607,7 +607,10 @@ docker compose --profile tools run --rm db-push
 ```
 
 Full walkthrough: [docs/oracle-vm-deployment.md](docs/oracle-vm-deployment.md)
-(includes Caddy HTTPS setup, backups, and updates).
+(includes Caddy HTTPS setup, backups, and updates). Requires a card check at
+Oracle signup (not charged). **No-card alternative:** the same full stack on
+a free Hugging Face Space — see
+[docs/hf-spaces-deployment.md](docs/hf-spaces-deployment.md).
 
 ### Option 3: Any Docker host (Railway, Koyeb, Render, Fly.io, a VPS)
 

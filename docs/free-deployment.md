@@ -3,6 +3,12 @@
 This guide is for a zero-cost portfolio deployment. Free tiers can change, so
 verify limits before you depend on them for real users.
 
+> Want to *use* Memex every day rather than just demo it? Two other guides:
+> [hf-spaces-deployment.md](hf-spaces-deployment.md) (full app + Postgres on a
+> free Docker host, **no credit card anywhere**) or
+> [oracle-vm-deployment.md](oracle-vm-deployment.md) (free VM, needs a card
+> check at signup).
+
 ## Recommended Free Stack
 
 - Hosting: Vercel Hobby (or any free Docker host — see the Docker section below)

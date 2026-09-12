@@ -1,0 +1,44 @@
+name: Sync to Hugging Face Space
+
+# Mirrors main to a Hugging Face Space (free Docker hosting, no credit card).
+# Enable it once by adding two repository settings on GitHub:
+#   - Variable  HF_SPACE_ID  = <your-username>/<space-name>   (e.g. sarthakepic/memex)
+#   - Secret    HF_TOKEN     = a Hugging Face token with Write access
+# Until HF_SPACE_ID is set, this workflow skips itself.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    if: ${{ vars.HF_SPACE_ID != '' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # HF Spaces require README.md to start with YAML frontmatter declaring
+      # the Docker SDK and the port the app listens on. We inject it only in
+      # the synced copy — the GitHub README stays untouched.
+      - name: Prepare Space README
+        run: |
+          {
+            printf '%s\n' '---' 'title: Memex' 'emoji: 🧠' 'colorFrom: indigo' 'colorTo: purple' 'sdk: docker' 'app_port: 3000' 'pinned: false' '---' ''
+            cat README.md
+          } > README.space.md
+          mv README.space.md README.md
+          git config user.name "hf-sync-bot"
+          git config user.email "actions@github.com"
+          git add README.md
+          git commit -m "chore: inject HF Space frontmatter (sync copy only)" --no-verify || echo "nothing to commit"
+
+      - name: Push to Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+        run: |
+          git remote add space "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_ID}"
+          git push space HEAD:main --force
