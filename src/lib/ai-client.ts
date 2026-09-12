@@ -93,7 +93,7 @@ const PROVIDERS: Record<string, ProviderConfig> = {
     name: "Google Gemini",
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
     apiKey: process.env.GEMINI_API_KEY || "",
-    defaultModel: "gemini-1.5-flash",
+    defaultModel: "gemini-3.6-flash",
     apiKeyRequired: true,
   },
 
