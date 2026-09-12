@@ -77,3 +77,6 @@ server.log
 
 # Deployment backups
 /backups
+
+.vercel
+.env*
