@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build && node scripts/prepare-standalone.mjs",
+    "build": "node scripts/ensure-prisma-provider.mjs && prisma generate && next build && node scripts/prepare-standalone.mjs",
     "start": "node -r dotenv/config .next/standalone/server.js",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
@@ -20,7 +20,9 @@
     "db:reset": "prisma migrate reset",
     "smoke": "node scripts/smoke.mjs",
     "db:use-postgres": "node scripts/use-prisma-provider.mjs postgres && prisma generate",
-    "db:use-sqlite": "node scripts/use-prisma-provider.mjs sqlite && prisma generate"
+    "db:use-sqlite": "node scripts/use-prisma-provider.mjs sqlite && prisma generate",
+    "db:deploy-schema": "node scripts/ensure-prisma-provider.mjs && prisma db push",
+    "db:seed-presentation": "node -r dotenv/config scripts/seed-presentation.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.1.1",
