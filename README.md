@@ -458,7 +458,7 @@ Memex supports multiple AI providers. Choose one based on your needs:
 
 ### Setup Instructions
 
-#### Google Gemini (Recommended — most generous free tier)
+#### Google Gemini
 
 1. Go to [Google AI Studio](https://aistudio.google.com/app/apikey)
 2. Click "Create API Key"
@@ -469,7 +469,13 @@ Memex supports multiple AI providers. Choose one based on your needs:
    GEMINI_API_KEY=AIzaSy...your-key...
    ```
 
-#### Groq (Fastest — great for chat)
+> **Watch out:** AI Studio now issues short-lived keys starting with `AQ.` —
+> they stop working after a while and chat dies with a generic "rate-limited"
+> message. For a durable key, create one in [Google Cloud Console](https://console.cloud.google.com/apis/library/generativelanguage.googleapis.com)
+> (enable the Generative Language API first) so it starts with `AIza`, or use
+> Groq below, whose keys don't expire like this.
+
+#### Groq (Recommended — fastest, stable free-tier keys)
 
 1. Go to [Groq Console](https://console.groq.com/keys)
 2. Create an account and generate an API key
