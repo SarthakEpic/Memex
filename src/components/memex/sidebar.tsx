@@ -1,6 +1,7 @@
 "use client"
 
 import { useState } from "react"
+import { useRouter } from "next/navigation"
 import { useQuery } from "@tanstack/react-query"
 import {
   LayoutDashboard,
@@ -56,6 +57,7 @@ const EMAIL_NAV: { id: Section; label: string; icon: React.ElementType; desc: st
 ]
 
 export function Sidebar() {
+  const router = useRouter()
   const section = useMemex((s) => s.section)
   const setSection = useMemex((s) => s.setSection)
   const openEmail = useMemex((s) => s.openEmailComposer)
@@ -82,7 +84,8 @@ export function Sidebar() {
   const logout = async () => {
     try {
       await apiRequest("/api/auth/logout", { method: "POST" })
-      window.location.href = "/login"
+      router.push("/login")
+      router.refresh()
     } catch (error) {
       toast.error("Could not sign out", { description: getErrorMessage(error) })
     }

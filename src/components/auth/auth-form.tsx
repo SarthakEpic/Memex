@@ -1,6 +1,7 @@
 "use client"
 
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { useState } from "react"
 import { Brain, Loader2, LockKeyhole } from "lucide-react"
 import { Button } from "@/components/ui/button"
@@ -12,6 +13,7 @@ interface AuthFormProps {
 }
 
 export function AuthForm({ mode }: AuthFormProps) {
+  const router = useRouter()
   const isSignup = mode === "signup"
   const [name, setName] = useState("")
   const [email, setEmail] = useState("")
@@ -65,7 +67,8 @@ export function AuthForm({ mode }: AuthFormProps) {
       return
     }
 
-    window.location.href = "/"
+    router.push("/")
+    router.refresh()
   }
 
   return (
