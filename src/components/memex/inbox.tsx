@@ -1063,6 +1063,10 @@ function ConnectAccountDialog({
       )
       return
     }
+    // Full browser navigation is required here: the API route responds with a
+    // 302 to the external OAuth provider, and the redirect chain must happen
+    // in the browser (a client-side router navigation would not preserve it).
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination -- see comment above
     window.location.assign(`/api/email-accounts/oauth/${provider}`)
   }
 
