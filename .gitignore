@@ -72,6 +72,9 @@ server.log
 # Local Codex project memory (do not commit)
 /PROJECT_MEMORY.md
 
+# Sandbox scratch artifacts (pasted screenshots and tool output, not app assets)
+/upload/
+
 # Watchdog logs
 /tmp/watchdog*.log
 
