@@ -74,6 +74,7 @@ server.log
 
 # Sandbox scratch artifacts (pasted screenshots and tool output, not app assets)
 /upload/
+/tool-results/
 
 # Watchdog logs
 /tmp/watchdog*.log
