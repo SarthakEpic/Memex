@@ -76,6 +76,9 @@ server.log
 /upload/
 /tool-results/
 
+# npm is the package manager (see Runtime notes); ignore stray Bun lockfiles
+bun.lock
+
 # Watchdog logs
 /tmp/watchdog*.log
 
