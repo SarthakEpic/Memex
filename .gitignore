@@ -71,6 +71,7 @@ server.log
 
 # Local Codex project memory (do not commit)
 /PROJECT_MEMORY.md
+/worklog.md
 
 # Sandbox scratch artifacts (pasted screenshots and tool output, not app assets)
 /upload/
