@@ -2,6 +2,9 @@
   "name": "memex",
   "version": "0.2.0",
   "private": true,
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "dev": "next dev -p 3000",
     "build": "node scripts/ensure-prisma-provider.mjs && prisma generate && next build && node scripts/prepare-standalone.mjs",
