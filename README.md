@@ -743,6 +743,23 @@ memex/
 
 ---
 
+## 🧪 Development & Verification
+
+Before pushing changes, run the same checks CI runs:
+
+```bash
+npm run lint        # ESLint across src, scripts, and config
+npm run typecheck   # TypeScript, no emit
+npm run test        # Vitest unit suites (retrieval, email, notes, ...)
+npm run build       # Prisma generate + production Next.js build
+```
+
+`npm run ci` chains all of them with a SQLite smoke database, matching
+[.github/workflows/ci.yml](.github/workflows/ci.yml). Local Node should be
+22 or newer (declared in `engines`; `.nvmrc` pins it for `nvm` users).
+
+---
+
 ## 🔧 Troubleshooting
 
 ### "AI features not working"
