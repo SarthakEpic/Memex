@@ -1,0 +1,279 @@
+name: Memex improvement proposals
+
+on:
+  schedule:
+    - cron: "11 3 * * *"
+    - cron: "23 11 * * *"
+    - cron: "37 19 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: memex-vision-improvement
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      changed: ${{ steps.export.outputs.changed }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Choose today's run windows
+        id: schedule
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import datetime, hashlib, os
+          from pathlib import Path
+
+          schedules = ["11 3 * * *", "23 11 * * *", "37 19 * * *"]
+          schedule = os.environ.get("SCHEDULE", "")
+          out = Path(os.environ["GITHUB_OUTPUT"])
+
+          if not schedule:
+              print("run_agent=true", file=out)
+              print("delay_seconds=0", file=out)
+          else:
+              day = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+              repo = os.environ["REPOSITORY"]
+              digest = hashlib.sha256(f"{repo}:{day}".encode()).digest()
+              run_count = 1 + digest[0] % 3
+              ranked = sorted(
+                  schedules,
+                  key=lambda item: hashlib.sha256(f"{repo}:{day}:{item}".encode()).digest()
+              )
+              selected = schedule in ranked[:run_count]
+              jitter = int.from_bytes(
+                  hashlib.sha256(f"{repo}:{day}:{schedule}:delay".encode()).digest()[:4],
+                  "big"
+              ) % 2701
+              print(f"run_agent={str(selected).lower()}", file=out)
+              print(f"delay_seconds={jitter}", file=out)
+          PY
+
+      - name: Check that the project vision is ready
+        id: vision
+        if: steps.schedule.outputs.run_agent == 'true'
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path("VISION.md")
+          text = path.read_text(encoding="utf-8") if path.is_file() else ""
+          ready = (
+              len(text.strip()) >= 250
+              and "<!--" not in text
+              and not re.search(r"(?im)^\s*TODO\b|\[[^\]]+\]", text)
+          )
+          with open("$GITHUB_OUTPUT", "a", encoding="utf-8") as out:
+              out.write(f"ready={str(ready).lower()}\n")
+          if not ready:
+              print("VISION.md is missing or still contains setup prompts; skipping code changes.")
+          PY
+
+      - name: Add a randomized delay
+        if: steps.schedule.outputs.run_agent == 'true' && steps.vision.outputs.ready == 'true' && steps.schedule.outputs.delay_seconds != '0'
+        env:
+          DELAY_SECONDS: ${{ steps.schedule.outputs.delay_seconds }}
+        run: sleep "$DELAY_SECONDS"
+
+      - name: Check Gemini credentials
+        if: steps.schedule.outputs.run_agent == 'true' && steps.vision.outputs.ready == 'true'
+        env:
+          GEMINI_KEY_PRESENT: ${{ secrets.GEMINI_API_KEY != '' }}
+        run: |
+          if [ "$GEMINI_KEY_PRESENT" != "true" ]; then
+            echo "::error::Add GEMINI_API_KEY under Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+
+      - name: Ask Gemini for one worthwhile improvement
+        id: gemini
+        if: steps.schedule.outputs.run_agent == 'true' && steps.vision.outputs.ready == 'true'
+        uses: google-github-actions/run-gemini-cli@v0.1.22
+        with:
+          gemini_cli_version: "0.64.0"
+          gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
+          prompt: |
+            You are an automated coding agent proposing one focused improvement to Memex.
+
+            Read VISION.md first. Treat it as the product decision source. Review the relevant repository code, README, and existing tests before choosing work. Use the repository's existing design and architecture.
+
+            Make a code change only when you can explain a concrete user benefit that follows from the vision and verify that the issue exists in the current code. Prefer a meaningful bug fix or a small, valuable feature over cosmetic churn. Do not invent problems, duplicate existing functionality, add changes merely to create activity, or broaden the task beyond one coherent improvement. If nothing clearly worthwhile is supported by the vision and code, leave the worktree unchanged and explain why.
+
+            Do not read or print environment variables, credentials, .env files, or personal data. Do not access external websites or send repository content to any destination. Do not change VISION.md, .github/**, .gitignore, or generated Gemini CLI files. Do not commit, push, merge, or open a pull request; a separate workflow stage handles validation and review delivery.
+
+            Do not install dependencies or run tests. A separate isolated job runs the repository's full CI after your patch is produced.
+
+            Finish with one line exactly in this format:
+            COMMIT_TITLE: <short, specific, truthful imperative summary under 72 characters>
+            Do not mention schedules or disguise that the change is generated.
+
+      - name: Export a reviewable patch
+        id: export
+        if: steps.schedule.outputs.run_agent == 'true' && steps.vision.outputs.ready == 'true'
+        env:
+          GEMINI_SUMMARY: ${{ steps.gemini.outputs.summary }}
+        run: |
+          python - <<'PY'
+          import os, subprocess
+          from pathlib import Path
+
+          subprocess.run(["git", "add", "--all"], check=True)
+          paths = subprocess.check_output(
+              ["git", "diff", "--cached", "--name-only", "-z", "HEAD"]
+          ).decode().split("\0")
+          paths = [path for path in paths if path]
+          if not paths:
+              print("Gemini left the worktree unchanged; no proposal will be opened.")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+                  out.write("changed=false\n")
+              raise SystemExit(0)
+
+          allowed = (
+              "src/", "prisma/", "docs/", "tests/", "test/",
+              "__tests__/", "README.md", "package.json", "package-lock.json"
+          )
+          for path in paths:
+              if not (path.startswith(allowed) or path in allowed):
+                  raise SystemExit(f"Refusing unexpected generated path: {path}")
+              if path.startswith(".github/") or path.startswith(".env"):
+                  raise SystemExit(f"Refusing sensitive configuration change: {path}")
+
+          proposal = Path("proposal")
+          proposal.mkdir(exist_ok=True)
+          with (proposal / "change.patch").open("wb") as patch:
+              subprocess.run(
+                  ["git", "diff", "--cached", "--binary", "HEAD"],
+                  check=True, stdout=patch
+              )
+          summary = os.environ.get("GEMINI_SUMMARY", "").strip()[:4000]
+          (proposal / "summary.txt").write_text(summary + "\n", encoding="utf-8")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
+              out.write("changed=true\n")
+          PY
+
+      - name: Upload the proposed patch
+        if: steps.export.outputs.changed == 'true'
+        uses: actions/upload-artifact@v6
+        with:
+          name: memex-proposal
+          path: proposal/
+          if-no-files-found: error
+          retention-days: 2
+
+  validate:
+    needs: propose
+    if: needs.propose.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    permissions:
+      contents: read
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Download proposed patch
+        uses: actions/download-artifact@v6
+        with:
+          name: memex-proposal
+          path: proposal/
+
+      - name: Apply proposed patch
+        run: git apply --binary proposal/change.patch
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Prepare test environment
+        env:
+          DATABASE_URL: file:${{ github.workspace }}/prisma/db/ci-smoke.db
+        run: |
+          cp .env.example .env
+          npx prisma generate
+          npm run db:init-sqlite
+
+      - name: Run repository CI
+        env:
+          DATABASE_URL: file:${{ github.workspace }}/prisma/db/ci-smoke.db
+        run: npm run ci
+
+  publish:
+    needs: [propose, validate]
+    if: needs.propose.outputs.changed == 'true' && needs.validate.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          persist-credentials: false
+
+      - name: Download validated patch
+        uses: actions/download-artifact@v6
+        with:
+          name: memex-proposal
+          path: proposal/
+
+      - name: Apply validated patch
+        run: git apply --binary proposal/change.patch
+
+      - name: Prepare a truthful commit title
+        id: details
+        run: |
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          text = Path("proposal/summary.txt").read_text(encoding="utf-8")
+          match = re.search(r"(?im)^COMMIT_TITLE:\s*(.+)$", text)
+          title = match.group(1).strip() if match else ""
+          title = re.sub(r"[\r\n\x00-\x1f]+", " ", title)
+          title = re.sub(r"\s+", " ", title).strip().strip("`'\"")
+          if not title or title.lower() in {"no changes", "no worthwhile improvement"}:
+              title = "Improve Memex based on its product vision"
+          title = title[:72].rstrip(" .:")
+          with open("$GITHUB_OUTPUT", "a", encoding="utf-8") as out:
+              out.write(f"title={title}\n")
+          PY
+
+      - name: Open or update a draft pull request
+        uses: peter-evans/create-pull-request@v8.1.2
+        with:
+          token: ${{ github.token }}
+          base: main
+          branch: proposals/vision-guided-improvement
+          delete-branch: false
+          draft: true
+          sign-commits: true
+          commit-message: ${{ steps.details.outputs.title }}
+          title: ${{ steps.details.outputs.title }}
+          body: |
+            This automated proposal follows the product direction in VISION.md.
+            The patch passed the repository CI workflow in an isolated, read-only validation job.
+            Review the changes and checks before merging. This workflow does not merge pull requests.
