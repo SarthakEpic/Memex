@@ -61,7 +61,7 @@ jobs:
             .sort((left, right) => left.order - right.order)
             .slice(0, runCount)
           const shouldRun = selectedWindows.some(({ index }) => index === windowIndex)
-          const delayMinutes = hash(`memex-ci-delay:${date}:${windowIndex}`) % 360
+          const delayMinutes = hash(`memex-ci-delay:${date}:${windowIndex}`) % 240
 
           console.log(
             shouldRun
