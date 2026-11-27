@@ -5,12 +5,85 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+  schedule:
+    # Four evenly spaced windows in Asia/Kolkata (UTC+5:30), offset from the hour
+    # to reduce the chance of GitHub Actions queue delays.
+    - cron: "47 18 * * *" # 00:17 IST
+    - cron: "47 0 * * *"  # 06:17 IST
+    - cron: "47 6 * * *"  # 12:17 IST
+    - cron: "47 12 * * *" # 18:17 IST
 
 jobs:
+  choose-window:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    outputs:
+      should-run: ${{ steps.selector.outputs.should-run }}
+      delay-minutes: ${{ steps.selector.outputs.delay-minutes }}
+    steps:
+      - name: Choose randomized daily windows
+        id: selector
+        env:
+          SCHEDULE_CRON: ${{ github.event.schedule }}
+        run: |
+          node <<'NODE'
+          const { createHash } = require("node:crypto")
+          const { appendFileSync } = require("node:fs")
+
+          const parts = new Intl.DateTimeFormat("en-CA", {
+            timeZone: "Asia/Kolkata",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+          }).formatToParts(new Date())
+          const dateParts = Object.fromEntries(parts.map(({ type, value }) => [type, value]))
+          const date = `${dateParts.year}-${dateParts.month}-${dateParts.day}`
+
+          const windows = {
+            "47 18 * * *": 0,
+            "47 0 * * *": 1,
+            "47 6 * * *": 2,
+            "47 12 * * *": 3,
+          }
+          const windowIndex = windows[process.env.SCHEDULE_CRON]
+          if (windowIndex === undefined) {
+            throw new Error(`Unexpected schedule entry: ${process.env.SCHEDULE_CRON}`)
+          }
+
+          const hash = (value) =>
+            createHash("sha256").update(value).digest().readUInt32BE(0)
+          const runCount = 1 + (hash(`memex-ci-count:${date}`) % 3)
+          const selectedWindows = Array.from({ length: 4 }, (_, index) => ({
+            index,
+            order: hash(`memex-ci-window:${date}:${index}`),
+          }))
+            .sort((left, right) => left.order - right.order)
+            .slice(0, runCount)
+          const shouldRun = selectedWindows.some(({ index }) => index === windowIndex)
+          const delayMinutes = hash(`memex-ci-delay:${date}:${windowIndex}`) % 360
+
+          console.log(
+            shouldRun
+              ? `Selected window ${windowIndex + 1}/4; delaying ${delayMinutes} minutes.`
+              : `Skipping window ${windowIndex + 1}/4; selected ${runCount} windows today.`
+          )
+          appendFileSync(
+            process.env.GITHUB_OUTPUT,
+            `should-run=${shouldRun}\ndelay-minutes=${delayMinutes}\n`
+          )
+          NODE
+
   verify:
+    needs: choose-window
+    if: ${{ always() && (github.event_name != 'schedule' || (needs.choose-window.result == 'success' && needs.choose-window.outputs.should-run == 'true')) }}
     runs-on: ubuntu-latest
 
     steps:
+      - name: Wait for randomized run time
+        if: github.event_name == 'schedule'
+        run: sleep "${{ needs.choose-window.outputs.delay-minutes }}m"
+
       - name: Checkout
         uses: actions/checkout@v7
 
