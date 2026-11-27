@@ -257,7 +257,7 @@ jobs:
           if not title or title.lower() in {"no changes", "no worthwhile improvement"}:
               title = "Improve Memex based on its product vision"
           title = title[:72].rstrip(" .:")
-          with open("$GITHUB_OUTPUT", "a", encoding="utf-8") as out:
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"title={title}\n")
           PY
 
