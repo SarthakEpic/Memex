@@ -105,6 +105,8 @@ jobs:
         id: gemini
         if: steps.schedule.outputs.run_agent == 'true' && steps.vision.outputs.ready == 'true'
         uses: google-github-actions/run-gemini-cli@v0.1.22
+        env:
+          GEMINI_CLI_TRUST_WORKSPACE: "true"
         with:
           gemini_cli_version: "0.64.0"
           gemini_api_key: ${{ secrets.GEMINI_API_KEY }}
