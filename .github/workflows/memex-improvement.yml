@@ -77,7 +77,7 @@ jobs:
               and "<!--" not in text
               and not re.search(r"(?im)^\s*TODO\b|\[[^\]]+\]", text)
           )
-          with open("$GITHUB_OUTPUT", "a", encoding="utf-8") as out:
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
               out.write(f"ready={str(ready).lower()}\n")
           if not ready:
               print("VISION.md is missing or still contains setup prompts; skipping code changes.")
@@ -247,7 +247,7 @@ jobs:
         id: details
         run: |
           python - <<'PY'
-          import re
+          import os, re
           from pathlib import Path
 
           text = Path("proposal/summary.txt").read_text(encoding="utf-8")
