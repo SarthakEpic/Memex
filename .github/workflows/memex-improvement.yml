@@ -67,7 +67,7 @@ jobs:
         if: steps.schedule.outputs.run_agent == 'true'
         run: |
           python - <<'PY'
-          import re
+          import os, re
           from pathlib import Path
 
           path = Path("VISION.md")
