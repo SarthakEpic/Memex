@@ -39,7 +39,7 @@ jobs:
 
           schedules = ["11 3 * * *", "23 11 * * *", "37 19 * * *"]
           schedule = os.environ.get("SCHEDULE", "")
-          out = Path(os.environ["GITHUB_OUTPUT"])
+          out = open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8")
 
           if not schedule:
               print("run_agent=true", file=out)
@@ -61,6 +61,7 @@ jobs:
               ) % 2701
               print(f"run_agent={str(selected).lower()}", file=out)
               print(f"delay_seconds={jitter}", file=out)
+          out.close()
           PY
 
       - name: Check that the project vision is ready
