@@ -45,7 +45,8 @@ jobs:
               print("run_agent=true", file=out)
               print("delay_seconds=0", file=out)
           else:
-              day = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+              kolkata = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+              day = datetime.datetime.now(kolkata).date().isoformat()
               repo = os.environ["REPOSITORY"]
               digest = hashlib.sha256(f"{repo}:{day}".encode()).digest()
               run_count = 1 + digest[0] % 3
