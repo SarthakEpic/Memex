@@ -86,5 +86,8 @@ bun.lock
 # Deployment backups
 /backups
 
+# Gemini CLI runtime files
+/.gemini/
+
 .vercel
 .env*
